@@ -18,6 +18,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Kapchi",
   description: "Kapchi authentication flow powered by Clerk.",
+  icons: {
+    icon: "/kapchi_logo.png",
+    apple: "/kapchi_logo.png",
+    shortcut: "/kapchi_logo.png",
+  },
 };
 
 export default function RootLayout({
