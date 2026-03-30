@@ -4,6 +4,7 @@ export const AUTH_ROUTES = {
   home: "/",
   signIn: "/sign-in",
   signUp: "/sign-up",
+  userProfile: "/user-profile",
 } as const;
 
 type AuthUserLike = {
