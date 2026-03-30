@@ -33,7 +33,7 @@ export default function RootLayout({
       <body className="min-h-full bg-background text-foreground">
         <ClerkProvider publishableKey={getClerkPublishableKey()}>
           <div className="flex min-h-screen flex-col">
-            <Navbar />
+            <Navbar cartCount={2} />
             <div className="flex flex-1 flex-col">{children}</div>
           </div>
         </ClerkProvider>
