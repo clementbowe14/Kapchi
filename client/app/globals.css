@@ -128,3 +128,14 @@ body {
 .cl-formButtonPrimary:active {
   background: #a1845f;
 }
+
+.user-profile-shell .cl-rootBox,
+.user-profile-shell .cl-cardBox,
+.user-profile-shell .cl-card {
+  width: 100%;
+  max-width: none;
+}
+
+.user-profile-shell .cl-card {
+  min-width: min(100%, 68rem);
+}

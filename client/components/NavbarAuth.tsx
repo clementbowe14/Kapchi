@@ -66,7 +66,10 @@ function AuthenticatedState({ mobile = false, onNavigate }: NavbarAuthProps) {
       <div className="space-y-4 rounded-3xl border border-white/55 bg-white/55 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <UserButton />
+            <UserButton
+              userProfileMode="navigation"
+              userProfileUrl={AUTH_ROUTES.userProfile}
+            />
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#8f734f]">
                 Account
@@ -93,7 +96,10 @@ function AuthenticatedState({ mobile = false, onNavigate }: NavbarAuthProps) {
 
   return (
     <div className="flex items-center gap-3 rounded-full border border-white/60 bg-white/75 py-1.5 pl-1.5 pr-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur">
-      <UserButton />
+      <UserButton
+        userProfileMode="navigation"
+        userProfileUrl={AUTH_ROUTES.userProfile}
+      />
       <p className="text-sm font-medium text-slate-700">Welcome, {displayName}</p>
     </div>
   );
