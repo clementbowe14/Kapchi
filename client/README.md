@@ -1,36 +1,113 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Kapchi Frontend
 
-## Getting Started
+This is the frontend application for Kapchi, built with:
 
-First, run the development server:
+- Next.js 16
+- React 19
+- Tailwind CSS 4
+- Clerk for authentication
+
+## Requirements
+
+- Node.js `>= 20.9.0`
+- npm
+
+If your shell is using an older Node version, switch first. Example with `nvm`:
+
+```bash
+nvm use 22
+```
+
+## Environment Variables
+
+Create a local env file in `client/.env`:
+
+```bash
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_publishable_key
+CLERK_SECRET_KEY=your_secret_key
+```
+
+Notes:
+
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is required for the Clerk frontend provider.
+- `CLERK_SECRET_KEY` is also currently expected by the app setup.
+- Do not commit real production secrets.
+
+## Install Dependencies
+
+From the `client` directory:
+
+```bash
+npm install
+```
+
+## Run the App
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app will be available at:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```txt
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Other Commands
 
-## Learn More
+Run linting:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run lint
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Create a production build:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run build
+```
 
-## Deploy on Vercel
+Start the production build locally:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run start
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Project Structure
+
+Important directories:
+
+- `app/` — App Router pages and layouts
+- `components/` — shared UI components
+- `lib/` — shared frontend utilities
+- `public/` — static assets
+
+## Features Currently Wired
+
+- Clerk authentication
+- Responsive Kapchi navbar
+- Sign-in and sign-up pages
+- Dedicated user profile page
+- Placeholder cart, orders, and about pages
+
+## Common Issues
+
+### Node version errors
+
+If you see errors related to Next.js or unsupported engines, check:
+
+```bash
+node -v
+```
+
+Next.js 16 requires a modern Node version.
+
+### Clerk config errors
+
+If the app crashes on startup with a Clerk config error, verify that `client/.env` exists and contains valid Clerk keys.
+
+### Build issues while offline
+
+The app uses `next/font/google` for Geist. Production builds may fail in restricted or offline environments because the font files are fetched during build.
