@@ -25,9 +25,40 @@ const environmentSchema = Joi.object({
 
   SHIPPO_API_KEY: Joi.string().trim().required(),
 
+  DATABASE_MODE: Joi.string()
+    .valid("local-postgres", "aurora-dsql")
+    .default("local-postgres"),
   DATABASE_URL: Joi.string()
     .uri({ scheme: ["postgres", "postgresql"] })
-    .required(),
+    .when("DATABASE_MODE", {
+      is: "local-postgres",
+      then: Joi.required(),
+      otherwise: Joi.optional()
+    }),
+  DATABASE_POOL_MAX: Joi.number().integer().min(1).default(10),
+  DATABASE_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(1).default(10000),
+  DATABASE_IDLE_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+  DSQL_HOST: Joi.string().hostname().when("DATABASE_MODE", {
+    is: "aurora-dsql",
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  }),
+  DSQL_DATABASE: Joi.string().trim().default("postgres"),
+  DSQL_USER: Joi.string().trim().when("DATABASE_MODE", {
+    is: "aurora-dsql",
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  }),
+  DSQL_AUTH_MODE: Joi.string().valid("admin", "custom").when("DATABASE_MODE", {
+    is: "aurora-dsql",
+    then: Joi.required(),
+    otherwise: Joi.optional()
+  }),
+  DSQL_TOKEN_EXPIRES_IN_SECONDS: Joi.number()
+    .integer()
+    .min(900)
+    .max(604800)
+    .default(3600),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required(),
 
   AWS_REGION: Joi.string().trim().required(),
@@ -49,7 +80,16 @@ type EnvironmentShape = {
   CLERK_SECRET_KEY: string;
   CLERK_WEBHOOK_SECRET: string;
   CLOUDFRONT_BASE_URL: string;
-  DATABASE_URL: string;
+  DATABASE_URL?: string;
+  DATABASE_MODE: "local-postgres" | "aurora-dsql";
+  DATABASE_POOL_MAX: number;
+  DATABASE_CONNECTION_TIMEOUT_MS: number;
+  DATABASE_IDLE_TIMEOUT_MS: number;
+  DSQL_AUTH_MODE?: "admin" | "custom";
+  DSQL_DATABASE: string;
+  DSQL_HOST?: string;
+  DSQL_TOKEN_EXPIRES_IN_SECONDS: number;
+  DSQL_USER?: string;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   NODE_ENV: "development" | "test" | "production";
@@ -110,6 +150,17 @@ export const config = Object.freeze({
     redisUrl: environment.REDIS_URL
   },
   database: {
+    auroraDsql: {
+      authMode: environment.DSQL_AUTH_MODE,
+      database: environment.DSQL_DATABASE,
+      host: environment.DSQL_HOST,
+      tokenExpiresInSeconds: environment.DSQL_TOKEN_EXPIRES_IN_SECONDS,
+      user: environment.DSQL_USER
+    },
+    connectionTimeoutMs: environment.DATABASE_CONNECTION_TIMEOUT_MS,
+    idleTimeoutMs: environment.DATABASE_IDLE_TIMEOUT_MS,
+    mode: environment.DATABASE_MODE,
+    poolMax: environment.DATABASE_POOL_MAX,
     url: environment.DATABASE_URL
   },
   payments: {
