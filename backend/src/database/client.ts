@@ -6,7 +6,6 @@ let databasePool: Pool | undefined;
 
 export function createDatabasePool() {
   return createDatabasePoolFromConfig({
-    awsRegion: config.storage.aws.region,
     database: config.database
   });
 }
