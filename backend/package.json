@@ -7,9 +7,11 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^13.0.1",
     "@fastify/sensible": "^6.0.3",
@@ -18,10 +20,13 @@
     "fastify-plugin": "^5.0.1",
     "joi": "^17.13.3",
     "jose": "^6.0.12",
+    "pg": "^8.22.0",
+    "redis": "^6.0.0",
     "stripe": "^21.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.20.5",
     "typescript": "^5.8.3"
   }
