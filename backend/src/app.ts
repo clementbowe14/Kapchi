@@ -4,6 +4,7 @@ import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
 import * as fastify from "fastify";
 import { config } from "./config/index.js";
+import { closeDatabasePool } from "./database/index.js";
 import { authPlugin } from "./modules/auth/index.js";
 import cartPlugin from "./modules/cart/plugin.js";
 import healthPlugin from "./modules/health/plugin.js";
@@ -32,6 +33,10 @@ export async function buildServer() {
   await app.register(cookie);
   await app.register(postgresPlugin);
   await app.register(redisPlugin);
+
+  app.addHook("onClose", async () => {
+    await closeDatabasePool();
+  });
 
   await app.register(authPlugin);
   await app.register(healthPlugin);

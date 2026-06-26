@@ -108,6 +108,21 @@ together.
 ```bash
 npm install
 npm run dev
+npm test
+npm run test:watch
 npm run typecheck
 npm run build
+```
+
+## Database Configuration
+
+The backend connects to PostgreSQL with a standard connection string. Use a
+local Postgres URL in development and the managed database URL provided by the
+hosting platform in staging and production.
+
+```bash
+DATABASE_URL=postgresql://kapchi:password@localhost:5432/kapchi_dev
+DATABASE_POOL_MAX=10
+DATABASE_CONNECTION_TIMEOUT_MS=10000
+DATABASE_IDLE_TIMEOUT_MS=30000
 ```
