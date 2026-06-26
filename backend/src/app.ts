@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
 import * as fastify from "fastify";
@@ -12,6 +13,8 @@ import paymentsPlugin from "./modules/payments/plugin.js";
 import shippingPlugin from "./modules/shipping/plugin.js";
 import usersPlugin from "./modules/users/plugin.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
+import postgresPlugin from "./plugins/postgres.js";
+import redisPlugin from "./plugins/redis.js";
 
 export async function buildServer() {
   const app = fastify.fastify({
@@ -21,11 +24,15 @@ export async function buildServer() {
   });
 
   await app.register(cors, {
+    credentials: true,
     origin: true
   });
 
   await app.register(helmet);
   await app.register(sensible);
+  await app.register(cookie);
+  await app.register(postgresPlugin);
+  await app.register(redisPlugin);
 
   app.addHook("onClose", async () => {
     await closeDatabasePool();

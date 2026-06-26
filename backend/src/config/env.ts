@@ -73,6 +73,31 @@ function validateEnvironment(): EnvironmentShape {
     );
   }
 
+  const environment = value as EnvironmentShape;
+  environment.DATABASE_SSL_MODE ??=
+    environment.NODE_ENV === "production" ? "require" : "disable";
+
+  const availableDatabaseConnections =
+    environment.DATABASE_MAX_CONNECTIONS -
+    environment.DATABASE_RESERVED_CONNECTIONS;
+  const maxPoolPerInstance = Math.floor(
+    availableDatabaseConnections / environment.DATABASE_MAX_APP_INSTANCES,
+  );
+
+  if (availableDatabaseConnections < environment.DATABASE_MAX_APP_INSTANCES) {
+    throw new Error(
+      "Invalid backend environment configuration:\n" +
+        "- DATABASE_RESERVED_CONNECTIONS must leave at least one connection per app instance",
+    );
+  }
+
+  if (environment.DATABASE_POOL_MAX > maxPoolPerInstance) {
+    throw new Error(
+      "Invalid backend environment configuration:\n" +
+        `- DATABASE_POOL_MAX (${environment.DATABASE_POOL_MAX}) exceeds the per-instance budget (${maxPoolPerInstance}) from DATABASE_MAX_CONNECTIONS, DATABASE_RESERVED_CONNECTIONS, and DATABASE_MAX_APP_INSTANCES`,
+    );
+  }
+
   return value as EnvironmentShape;
 }
 
