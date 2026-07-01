@@ -9,6 +9,7 @@ import { authPlugin } from "./modules/auth/index.js";
 import cartPlugin from "./modules/cart/plugin.js";
 import healthPlugin from "./modules/health/plugin.js";
 import listingsPlugin from "./modules/listings/plugin.js";
+import ordersPlugin from "./modules/orders/plugin.js";
 import paymentsPlugin from "./modules/payments/plugin.js";
 import shippingPlugin from "./modules/shipping/plugin.js";
 import usersPlugin from "./modules/users/plugin.js";
@@ -44,6 +45,7 @@ export async function buildServer() {
   await app.register(usersPlugin, { prefix: "/users" });
   await app.register(listingsPlugin, { prefix: "/listings" });
   await app.register(cartPlugin, { prefix: "/cart" });
+  await app.register(ordersPlugin);
   await app.register(paymentsPlugin, { prefix: "/payments" });
   await app.register(shippingPlugin, { prefix: "/shipping" });
 

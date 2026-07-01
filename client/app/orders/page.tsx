@@ -1,11 +1,14 @@
 import { PageShell } from "@/components/PageShell";
+import { OrderLookupClient } from "./OrderLookupClient";
 
 export default function OrdersPage() {
   return (
     <PageShell
       eyebrow="Orders"
-      title="Track every Kapchi order in one place."
-      description="Browse past purchases, check current fulfillment status, and keep order management simple across desktop and mobile."
-    />
+      title="Look up an order."
+      description="Enter your order ID with the email or phone number used at checkout, or review your account orders when signed in."
+    >
+      <OrderLookupClient />
+    </PageShell>
   );
 }
