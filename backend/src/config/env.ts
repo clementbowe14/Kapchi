@@ -27,6 +27,13 @@ const environmentSchema = Joi.object({
   DATABASE_POOL_MAX: Joi.number().integer().min(1).default(10),
   DATABASE_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(1).default(10000),
   DATABASE_IDLE_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+  DATABASE_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(0).default(15000),
+  DATABASE_SSL_MODE: Joi.string()
+    .valid("disable", "require", "no-verify")
+    .optional(),
+  DATABASE_MAX_CONNECTIONS: Joi.number().integer().min(1).default(20),
+  DATABASE_RESERVED_CONNECTIONS: Joi.number().integer().min(0).default(5),
+  DATABASE_MAX_APP_INSTANCES: Joi.number().integer().min(1).default(3),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required()
 }).unknown(true);
 
@@ -40,6 +47,11 @@ type EnvironmentShape = {
   DATABASE_POOL_MAX: number;
   DATABASE_CONNECTION_TIMEOUT_MS: number;
   DATABASE_IDLE_TIMEOUT_MS: number;
+  DATABASE_STATEMENT_TIMEOUT_MS: number;
+  DATABASE_SSL_MODE?: "disable" | "require" | "no-verify";
+  DATABASE_MAX_CONNECTIONS: number;
+  DATABASE_RESERVED_CONNECTIONS: number;
+  DATABASE_MAX_APP_INSTANCES: number;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   NODE_ENV: "development" | "test" | "production";
@@ -48,6 +60,10 @@ type EnvironmentShape = {
   STRIPE_API_VERSION: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
+};
+
+type ValidatedEnvironmentShape = EnvironmentShape & {
+  DATABASE_SSL_MODE: "disable" | "require" | "no-verify";
 };
 
 function buildErrorMessage(error: Joi.ValidationError) {
@@ -59,7 +75,7 @@ function buildErrorMessage(error: Joi.ValidationError) {
     .join("\n");
 }
 
-function validateEnvironment(): EnvironmentShape {
+function validateEnvironment(): ValidatedEnvironmentShape {
   const { error, value } = environmentSchema.validate(process.env, {
     abortEarly: false,
     convert: true,
@@ -98,7 +114,7 @@ function validateEnvironment(): EnvironmentShape {
     );
   }
 
-  return value as EnvironmentShape;
+  return environment as ValidatedEnvironmentShape;
 }
 
 const environment = validateEnvironment();
@@ -123,9 +139,18 @@ export const config = Object.freeze({
     redisUrl: environment.REDIS_URL
   },
   database: {
-    connectionTimeoutMs: environment.DATABASE_CONNECTION_TIMEOUT_MS,
-    idleTimeoutMs: environment.DATABASE_IDLE_TIMEOUT_MS,
-    poolMax: environment.DATABASE_POOL_MAX,
+    deployment: {
+      databaseMaxConnections: environment.DATABASE_MAX_CONNECTIONS,
+      maxAppInstances: environment.DATABASE_MAX_APP_INSTANCES,
+      reservedConnections: environment.DATABASE_RESERVED_CONNECTIONS
+    },
+    pool: {
+      connectionTimeoutMillis: environment.DATABASE_CONNECTION_TIMEOUT_MS,
+      idleTimeoutMillis: environment.DATABASE_IDLE_TIMEOUT_MS,
+      max: environment.DATABASE_POOL_MAX,
+      statementTimeoutMillis: environment.DATABASE_STATEMENT_TIMEOUT_MS
+    },
+    sslMode: environment.DATABASE_SSL_MODE,
     url: environment.DATABASE_URL
   },
   payments: {
