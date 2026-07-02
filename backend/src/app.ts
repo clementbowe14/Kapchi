@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
 import * as fastify from "fastify";
@@ -8,10 +9,13 @@ import { authPlugin } from "./modules/auth/index.js";
 import cartPlugin from "./modules/cart/plugin.js";
 import healthPlugin from "./modules/health/plugin.js";
 import listingsPlugin from "./modules/listings/plugin.js";
+import ordersPlugin from "./modules/orders/plugin.js";
 import paymentsPlugin from "./modules/payments/plugin.js";
 import shippingPlugin from "./modules/shipping/plugin.js";
 import usersPlugin from "./modules/users/plugin.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
+import postgresPlugin from "./plugins/postgres.js";
+import redisPlugin from "./plugins/redis.js";
 
 export async function buildServer() {
   const app = fastify.fastify({
@@ -21,11 +25,15 @@ export async function buildServer() {
   });
 
   await app.register(cors, {
+    credentials: true,
     origin: true
   });
 
   await app.register(helmet);
   await app.register(sensible);
+  await app.register(cookie);
+  await app.register(postgresPlugin);
+  await app.register(redisPlugin);
 
   app.addHook("onClose", async () => {
     await closeDatabasePool();
@@ -37,6 +45,7 @@ export async function buildServer() {
   await app.register(usersPlugin, { prefix: "/users" });
   await app.register(listingsPlugin, { prefix: "/listings" });
   await app.register(cartPlugin, { prefix: "/cart" });
+  await app.register(ordersPlugin);
   await app.register(paymentsPlugin, { prefix: "/payments" });
   await app.register(shippingPlugin, { prefix: "/shipping" });
 
