@@ -29,6 +29,139 @@ No business logic has been implemented for domain modules yet.
 - PostgreSQL for local development
 - Redis for local development
 
+## Fresh Local Setup
+
+From a fresh checkout, install dependencies and create a local backend env file:
+
+```bash
+cd backend
+npm install
+cp .env.example .env
+```
+
+The example file uses local-only placeholder values. Replace third-party service
+placeholders with development credentials when you need those integrations, but
+do not commit real secrets.
+
+## Local PostgreSQL Setup
+
+The backend expects a PostgreSQL database named `kapchi` owned by a local role
+named `kapchi`. The placeholder password in local docs and `.env.example` is
+`kapchi`; use a different local password if you prefer and update
+`backend/.env` to match.
+
+### Start PostgreSQL
+
+Use an existing local PostgreSQL install, or start one with Docker.
+
+Homebrew on macOS:
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+```
+
+Docker:
+
+```bash
+docker run --name kapchi-postgres \
+  -e POSTGRES_USER=kapchi \
+  -e POSTGRES_PASSWORD=kapchi \
+  -e POSTGRES_DB=kapchi \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+If you already have a PostgreSQL container with that name, start it instead:
+
+```bash
+docker start kapchi-postgres
+```
+
+### Create The Local Database
+
+For a Homebrew or otherwise unmanaged local PostgreSQL instance, create the role
+and database manually:
+
+```bash
+createuser --createdb kapchi
+psql postgres -c "alter user kapchi with password 'kapchi';"
+createdb --owner=kapchi kapchi
+```
+
+If the role or database already exists, PostgreSQL may print an error. That is
+fine when your local objects are already in place.
+
+The Docker command above creates the role and database automatically on first
+container startup.
+
+### Configure Backend Database Variables
+
+Keep these local development values in `backend/.env` unless your local
+PostgreSQL setup uses a different host, port, database, user, or password:
+
+```bash
+DATABASE_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
+DATABASE_DIRECT_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
+DATABASE_POOL_MAX=5
+DATABASE_CONNECTION_TIMEOUT_MS=5000
+DATABASE_IDLE_TIMEOUT_MS=30000
+DATABASE_STATEMENT_TIMEOUT_MS=15000
+DATABASE_SSL_MODE=disable
+DATABASE_MAX_CONNECTIONS=20
+DATABASE_RESERVED_CONNECTIONS=5
+DATABASE_MAX_APP_INSTANCES=3
+```
+
+Use `DATABASE_URL` for runtime traffic. Use `DATABASE_DIRECT_URL` for migration
+or admin commands that need a direct, non-pooled connection.
+
+### Check Connectivity
+
+After PostgreSQL is running and `backend/.env` is configured, verify that the
+backend can reach the database:
+
+```bash
+psql "$DATABASE_URL" -c "select current_database(), current_user;"
+```
+
+If your shell has not loaded `backend/.env`, pass the local URL directly:
+
+```bash
+psql "postgresql://kapchi:kapchi@localhost:5432/kapchi" \
+  -c "select current_database(), current_user;"
+```
+
+You should see `kapchi` for both the current database and current user.
+
+### Reset The Local Database
+
+Resetting destroys local data. Stop the backend before running reset commands.
+
+For Homebrew or another local PostgreSQL service:
+
+```bash
+dropdb --if-exists kapchi
+createdb --owner=kapchi kapchi
+```
+
+For the Docker container:
+
+```bash
+docker rm -f kapchi-postgres
+docker volume prune
+docker run --name kapchi-postgres \
+  -e POSTGRES_USER=kapchi \
+  -e POSTGRES_PASSWORD=kapchi \
+  -e POSTGRES_DB=kapchi \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+Only prune Docker volumes when you are comfortable deleting unused local Docker
+volumes. If you keep other local databases in Docker, remove only the volume for
+this container instead.
+
 ## Environment Variables
 
 Create a local env file in `backend/.env`:
@@ -112,17 +245,4 @@ npm test
 npm run test:watch
 npm run typecheck
 npm run build
-```
-
-## Database Configuration
-
-The backend connects to PostgreSQL with a standard connection string. Use a
-local Postgres URL in development and the managed database URL provided by the
-hosting platform in staging and production.
-
-```bash
-DATABASE_URL=postgresql://kapchi:password@localhost:5432/kapchi_dev
-DATABASE_POOL_MAX=10
-DATABASE_CONNECTION_TIMEOUT_MS=10000
-DATABASE_IDLE_TIMEOUT_MS=30000
 ```
