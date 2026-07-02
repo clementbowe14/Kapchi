@@ -241,6 +241,7 @@ together.
 ```bash
 npm install
 npm run dev
+npm run db:seed:local
 npm test
 npm run test:watch
 npm run typecheck

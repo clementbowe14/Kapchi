@@ -5,11 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "db:migrate:apply": "tsx src/database/migrate.ts apply",
-    "db:migrate:create": "tsx src/database/migrate.ts create",
-    "db:migrate:history": "tsx src/database/migrate.ts history",
-    "db:migrate:reset": "tsx src/database/migrate.ts reset",
-    "db:migrate:status": "tsx src/database/migrate.ts status",
+    "db:seed:local": "tsx src/database/seed.ts",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
