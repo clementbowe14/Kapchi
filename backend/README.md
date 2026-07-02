@@ -108,11 +108,38 @@ together.
 ```bash
 npm install
 npm run dev
+npm run db:seed:local
 npm test
 npm run test:watch
 npm run typecheck
 npm run build
 ```
+
+## Local Seed Data
+
+Run the local seed workflow after applying the PostgreSQL schema to a local
+database:
+
+```bash
+cp .env.example .env
+npm run db:seed:local
+```
+
+`db:seed:local` loads `backend/.env`, connects to `DATABASE_URL`, and inserts a
+small fake catalog plus cart/order records for local development. It is
+idempotent for the seeded products, fonts, trims, fabrics, and demo order, so it
+can be rerun when rebuilding a local database.
+
+Safety guards:
+
+- refuses to run when `NODE_ENV=production`
+- refuses non-local database hosts; use `localhost`, `127.0.0.1`, `::1`, or
+  `0.0.0.0`
+- uses only fake `example.test` customer/contact data and local Stripe-style
+  test identifiers
+
+Do not point `DATABASE_URL` at staging, production, or any database containing
+real customer data when running this command.
 
 ## Database Configuration
 
