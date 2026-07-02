@@ -1,6 +1,5 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
-import { getDatabasePool } from "../../database/index.js";
 
 const healthPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.get("/health", async () => ({
@@ -9,7 +8,7 @@ const healthPlugin: FastifyPluginAsync = async (fastify) => {
   }));
 
   fastify.get("/ready", async () => {
-    await getDatabasePool().query("select 1");
+    await fastify.pg.query("select 1");
 
     return {
       service: "kapchi-backend",

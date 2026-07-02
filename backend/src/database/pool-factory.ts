@@ -1,9 +1,13 @@
 import { Pool, type PoolConfig } from "pg";
 
 export type DatabaseConfig = {
-  connectionTimeoutMs: number;
-  idleTimeoutMs: number;
-  poolMax: number;
+  pool: {
+    connectionTimeoutMillis: number;
+    idleTimeoutMillis: number;
+    max: number;
+    statementTimeoutMillis: number;
+  };
+  sslMode: "disable" | "require" | "no-verify";
   url?: string;
 };
 
@@ -11,13 +15,24 @@ type CreateDatabasePoolOptions = {
   database: DatabaseConfig;
 };
 
-function getSharedPoolConfig(
-  databaseConfig: DatabaseConfig,
-): Pick<PoolConfig, "connectionTimeoutMillis" | "idleTimeoutMillis" | "max"> {
+function buildSslConfig(databaseConfig: DatabaseConfig): PoolConfig["ssl"] {
+  switch (databaseConfig.sslMode) {
+    case "disable":
+      return undefined;
+    case "no-verify":
+      return { rejectUnauthorized: false };
+    case "require":
+      return { rejectUnauthorized: true };
+  }
+}
+
+function getSharedPoolConfig(databaseConfig: DatabaseConfig): PoolConfig {
   return {
-    connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
-    idleTimeoutMillis: databaseConfig.idleTimeoutMs,
-    max: databaseConfig.poolMax
+    connectionTimeoutMillis: databaseConfig.pool.connectionTimeoutMillis,
+    idleTimeoutMillis: databaseConfig.pool.idleTimeoutMillis,
+    max: databaseConfig.pool.max,
+    ssl: buildSslConfig(databaseConfig),
+    statement_timeout: databaseConfig.pool.statementTimeoutMillis
   };
 }
 

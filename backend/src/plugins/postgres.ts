@@ -1,8 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
-import { Pool } from "pg";
-import type { PoolClient, QueryResult, QueryResultRow } from "pg";
+import {
+  Pool,
+  type PoolClient,
+  type QueryResult,
+  type QueryResultRow
+} from "pg";
 import { config } from "../config/index.js";
+import { createDatabasePoolFromConfig } from "../database/pool-factory.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -11,25 +16,9 @@ declare module "fastify" {
   }
 }
 
-function buildSslConfig() {
-  switch (config.database.sslMode) {
-    case "disable":
-      return undefined;
-    case "no-verify":
-      return { rejectUnauthorized: false };
-    case "require":
-      return { rejectUnauthorized: true };
-  }
-}
-
 const postgresPlugin: FastifyPluginAsync = async (fastify) => {
-  const pool = new Pool({
-    connectionString: config.database.url,
-    connectionTimeoutMillis: config.database.pool.connectionTimeoutMillis,
-    idleTimeoutMillis: config.database.pool.idleTimeoutMillis,
-    max: config.database.pool.max,
-    ssl: buildSslConfig(),
-    statement_timeout: config.database.pool.statementTimeoutMillis
+  const pool = createDatabasePoolFromConfig({
+    database: config.database
   });
 
   pool.on("error", (error) => {
