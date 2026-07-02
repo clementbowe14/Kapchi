@@ -30,9 +30,13 @@ function createBaseDatabaseConfig(
   overrides: Partial<DatabaseConfig> = {},
 ): DatabaseConfig {
   return {
-    connectionTimeoutMs: 10000,
-    idleTimeoutMs: 30000,
-    poolMax: 10,
+    pool: {
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      max: 10,
+      statementTimeoutMillis: 15000
+    },
+    sslMode: "disable",
     url: "postgresql://kapchi:password@localhost:5432/kapchi_dev",
     ...overrides
   };
@@ -54,8 +58,34 @@ describe("createDatabasePoolFromConfig", () => {
           "postgresql://kapchi:password@localhost:5432/kapchi_dev",
         connectionTimeoutMillis: 10000,
         idleTimeoutMillis: 30000,
-        max: 10
+        max: 10,
+        ssl: undefined,
+        statement_timeout: 15000
       }
+    ]);
+  });
+
+  it("enables verified TLS when SSL mode is require", () => {
+    createDatabasePoolFromConfig({
+      database: createBaseDatabaseConfig({ sslMode: "require" })
+    });
+
+    expect(mocks.poolConfigs).toEqual([
+      expect.objectContaining({
+        ssl: { rejectUnauthorized: true }
+      })
+    ]);
+  });
+
+  it("enables non-verifying TLS when SSL mode is no-verify", () => {
+    createDatabasePoolFromConfig({
+      database: createBaseDatabaseConfig({ sslMode: "no-verify" })
+    });
+
+    expect(mocks.poolConfigs).toEqual([
+      expect.objectContaining({
+        ssl: { rejectUnauthorized: false }
+      })
     ]);
   });
 
