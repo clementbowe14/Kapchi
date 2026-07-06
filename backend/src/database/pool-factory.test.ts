@@ -65,28 +65,28 @@ describe("createDatabasePoolFromConfig", () => {
     ]);
   });
 
-  it("enables verified TLS when SSL mode is require", () => {
+  it("configures verified TLS when SSL mode requires it", () => {
     createDatabasePoolFromConfig({
       database: createBaseDatabaseConfig({ sslMode: "require" })
     });
 
-    expect(mocks.poolConfigs).toEqual([
-      expect.objectContaining({
-        ssl: { rejectUnauthorized: true }
-      })
-    ]);
+    expect(mocks.poolConfigs[0]).toMatchObject({
+      ssl: {
+        rejectUnauthorized: true
+      }
+    });
   });
 
-  it("enables non-verifying TLS when SSL mode is no-verify", () => {
+  it("configures unverified TLS only when requested", () => {
     createDatabasePoolFromConfig({
       database: createBaseDatabaseConfig({ sslMode: "no-verify" })
     });
 
-    expect(mocks.poolConfigs).toEqual([
-      expect.objectContaining({
-        ssl: { rejectUnauthorized: false }
-      })
-    ]);
+    expect(mocks.poolConfigs[0]).toMatchObject({
+      ssl: {
+        rejectUnauthorized: false
+      }
+    });
   });
 
   it("requires DATABASE_URL", () => {

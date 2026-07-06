@@ -15,21 +15,23 @@ type CreateDatabasePoolOptions = {
   database: DatabaseConfig;
 };
 
-function getSharedPoolConfig(
-  databaseConfig: DatabaseConfig,
-): Pick<
-  PoolConfig,
-  | "connectionTimeoutMillis"
-  | "idleTimeoutMillis"
-  | "max"
-  | "ssl"
-  | "statement_timeout"
-> {
+function buildSslConfig(databaseConfig: DatabaseConfig): PoolConfig["ssl"] {
+  switch (databaseConfig.sslMode) {
+    case "disable":
+      return undefined;
+    case "no-verify":
+      return { rejectUnauthorized: false };
+    case "require":
+      return { rejectUnauthorized: true };
+  }
+}
+
+function getSharedPoolConfig(databaseConfig: DatabaseConfig): PoolConfig {
   return {
     connectionTimeoutMillis: databaseConfig.pool.connectionTimeoutMillis,
     idleTimeoutMillis: databaseConfig.pool.idleTimeoutMillis,
     max: databaseConfig.pool.max,
-    ssl: buildSslConfig(databaseConfig.sslMode),
+    ssl: buildSslConfig(databaseConfig),
     statement_timeout: databaseConfig.pool.statementTimeoutMillis
   };
 }

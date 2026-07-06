@@ -1,6 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
-import type { PoolClient, QueryResult, QueryResultRow } from "pg";
+import {
+  Pool,
+  type PoolClient,
+  type QueryResult,
+  type QueryResultRow
+} from "pg";
 import { config } from "../config/index.js";
 import { createDatabasePoolFromConfig } from "../database/pool-factory.js";
 
@@ -9,18 +14,6 @@ declare module "fastify" {
     pg: ReturnType<typeof createDatabasePoolFromConfig>;
     withPgClient<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
   }
-}
-
-function getSafePostgresError(error: unknown) {
-  if (!(error instanceof Error)) {
-    return { message: "Unknown PostgreSQL error" };
-  }
-
-  return {
-    code: "code" in error ? error.code : undefined,
-    message: error.message,
-    name: error.name
-  };
 }
 
 const postgresPlugin: FastifyPluginAsync = async (fastify) => {

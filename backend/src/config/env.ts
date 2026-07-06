@@ -23,11 +23,16 @@ const environmentSchema = Joi.object({
   STRIPE_WEBHOOK_SECRET: Joi.string().trim().required(),
   STRIPE_API_VERSION: Joi.string().trim().default("2026-02-25.clover"),
 
-  DATABASE_URL: Joi.string().uri({ scheme: ["postgres", "postgresql"] }).required(),
-  DATABASE_POOL_MAX: Joi.number().integer().min(1).default(10),
-  DATABASE_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(1).default(10000),
+  DATABASE_URL: Joi.string()
+    .uri({ scheme: ["postgres", "postgresql"] })
+    .required(),
+  DATABASE_DIRECT_URL: Joi.string()
+    .uri({ scheme: ["postgres", "postgresql"] })
+    .optional(),
+  DATABASE_POOL_MAX: Joi.number().integer().min(1).default(5),
+  DATABASE_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(1).default(5000),
   DATABASE_IDLE_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
-  DATABASE_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(0).default(15000),
+  DATABASE_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(1).default(15000),
   DATABASE_SSL_MODE: Joi.string()
     .valid("disable", "require", "no-verify")
     .optional(),
@@ -44,6 +49,7 @@ type EnvironmentShape = {
   CLERK_SECRET_KEY: string;
   CLERK_WEBHOOK_SECRET: string;
   DATABASE_URL: string;
+  DATABASE_DIRECT_URL?: string;
   DATABASE_POOL_MAX: number;
   DATABASE_CONNECTION_TIMEOUT_MS: number;
   DATABASE_IDLE_TIMEOUT_MS: number;
@@ -79,7 +85,6 @@ function validateEnvironment(): ValidatedEnvironmentShape {
   const { error, value } = environmentSchema.validate(process.env, {
     abortEarly: false,
     convert: true,
-    presence: "required",
     stripUnknown: false
   });
 
@@ -90,9 +95,6 @@ function validateEnvironment(): ValidatedEnvironmentShape {
   }
 
   const environment = value as EnvironmentShape;
-  environment.DATABASE_SSL_MODE ??=
-    environment.NODE_ENV === "production" ? "require" : "disable";
-
   const availableDatabaseConnections =
     environment.DATABASE_MAX_CONNECTIONS -
     environment.DATABASE_RESERVED_CONNECTIONS;
@@ -114,10 +116,13 @@ function validateEnvironment(): ValidatedEnvironmentShape {
     );
   }
 
-  return environment as ValidatedEnvironmentShape;
+  return environment;
 }
 
 const environment = validateEnvironment();
+const databaseSslMode =
+  environment.DATABASE_SSL_MODE ??
+  (environment.NODE_ENV === "production" ? "require" : "disable");
 
 export const config = Object.freeze({
   app: {
@@ -144,13 +149,14 @@ export const config = Object.freeze({
       maxAppInstances: environment.DATABASE_MAX_APP_INSTANCES,
       reservedConnections: environment.DATABASE_RESERVED_CONNECTIONS
     },
+    directUrl: environment.DATABASE_DIRECT_URL,
     pool: {
       connectionTimeoutMillis: environment.DATABASE_CONNECTION_TIMEOUT_MS,
       idleTimeoutMillis: environment.DATABASE_IDLE_TIMEOUT_MS,
       max: environment.DATABASE_POOL_MAX,
       statementTimeoutMillis: environment.DATABASE_STATEMENT_TIMEOUT_MS
     },
-    sslMode: environment.DATABASE_SSL_MODE,
+    sslMode: databaseSslMode,
     url: environment.DATABASE_URL
   },
   payments: {
