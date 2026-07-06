@@ -68,6 +68,10 @@ type EnvironmentShape = {
   STRIPE_WEBHOOK_SECRET: string;
 };
 
+type ValidatedEnvironmentShape = EnvironmentShape & {
+  DATABASE_SSL_MODE: "disable" | "require" | "no-verify";
+};
+
 function buildErrorMessage(error: Joi.ValidationError) {
   return error.details
     .map((detail) => {
@@ -77,7 +81,7 @@ function buildErrorMessage(error: Joi.ValidationError) {
     .join("\n");
 }
 
-function validateEnvironment(): EnvironmentShape {
+function validateEnvironment(): ValidatedEnvironmentShape {
   const { error, value } = environmentSchema.validate(process.env, {
     abortEarly: false,
     convert: true,

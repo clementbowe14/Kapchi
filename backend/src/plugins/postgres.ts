@@ -11,7 +11,7 @@ import { createDatabasePoolFromConfig } from "../database/pool-factory.js";
 
 declare module "fastify" {
   interface FastifyInstance {
-    pg: Pool;
+    pg: ReturnType<typeof createDatabasePoolFromConfig>;
     withPgClient<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
   }
 }
@@ -22,12 +22,31 @@ const postgresPlugin: FastifyPluginAsync = async (fastify) => {
   });
 
   pool.on("error", (error) => {
-    fastify.log.error({ err: error }, "PostgreSQL pool error");
+    fastify.log.error(
+      { err: getSafePostgresError(error) },
+      "PostgreSQL pool error",
+    );
   });
 
-  const readinessCheck: QueryResult<QueryResultRow> = await pool.query(
-    "select 1",
-  );
+  let readinessCheck: QueryResult<QueryResultRow>;
+
+  try {
+    readinessCheck = await pool.query("select 1");
+  } catch (error) {
+    fastify.log.error(
+      {
+        err: getSafePostgresError(error),
+        databaseMaxConnections:
+          config.database.deployment.databaseMaxConnections,
+        maxAppInstances: config.database.deployment.maxAppInstances,
+        poolMax: config.database.pool.max,
+        reservedConnections: config.database.deployment.reservedConnections,
+        sslMode: config.database.sslMode
+      },
+      "PostgreSQL readiness check failed",
+    );
+    throw error;
+  }
 
   fastify.log.info(
     {
