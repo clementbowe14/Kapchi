@@ -1,6 +1,11 @@
 # Kapchi
 An online store selling indigenous graduation products and connecting the community through a unified cultural identity.
 
+## Local Development
+
+Backend setup, including local PostgreSQL startup, database creation/reset, and
+connectivity checks, is documented in `backend/README.md`.
+
 ## Docker Deployment
 
 The root `Dockerfile` builds the Fastify backend and Next.js frontend into one
