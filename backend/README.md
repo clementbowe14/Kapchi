@@ -173,6 +173,11 @@ cp .env.example .env
 Replace the placeholder values before running the backend. Do not commit real
 production secrets.
 
+For Stripe payment flow verification, including Checkout success, failed
+payments, cancellation or expiration, duplicate webhook delivery, required
+placeholder environment variables, Stripe CLI setup, and database checks, see
+[`docs/payment-verification.md`](docs/payment-verification.md).
+
 ### PostgreSQL Connection Pooling
 
 The backend uses one shared `pg.Pool`, exposed to Fastify as `app.pg`. Request
