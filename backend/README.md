@@ -162,6 +162,81 @@ Only prune Docker volumes when you are comfortable deleting unused local Docker
 volumes. If you keep other local databases in Docker, remove only the volume for
 this container instead.
 
+## Local Redis Setup
+
+The backend requires Redis during startup. The local placeholder URL is
+`redis://localhost:6379`; keep it in `backend/.env` unless your Redis instance
+uses a different host, port, database, or password.
+
+### Start Redis
+
+Use an existing local Redis install, or start one with Docker.
+
+Homebrew on macOS:
+
+```bash
+brew install redis
+brew services start redis
+```
+
+Docker:
+
+```bash
+docker run --name kapchi-redis \
+  -p 6379:6379 \
+  -d redis:7-alpine
+```
+
+If you already have a Redis container with that name, start it instead:
+
+```bash
+docker start kapchi-redis
+```
+
+### Configure Backend Redis Variables
+
+Keep this local development value in `backend/.env` unless your local Redis
+setup differs:
+
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
+Do not put production Redis credentials in `.env.example` or commit them to the
+repository. Use a secret manager or deployment environment variables for shared
+or hosted Redis instances.
+
+### Check Connectivity
+
+After Redis is running, verify that it responds before starting the backend.
+
+For the Docker container above:
+
+```bash
+docker exec kapchi-redis redis-cli ping
+```
+
+For a local `redis-cli` install:
+
+```bash
+redis-cli -u redis://localhost:6379 ping
+```
+
+Both commands should print `PONG`.
+
+### Redis-Backed Features
+
+The backend registers the Redis client at startup and exits if Redis is
+unreachable. Current Redis-backed behavior includes:
+
+- guest cart session lookup and creation for the `session_id` cookie
+- seven-day guest session storage under `guest_session:<hashed-session-id>` keys
+- guest cart item reads under `guest_cart:<cart-id>:items` keys
+
+The parent Redis infrastructure work tracks broader use for sessions, guest
+carts, caching, and background jobs. Add any new Redis-backed feature here when
+it lands so local setup stays accurate.
+
 ## Environment Variables
 
 Create a local env file in `backend/.env`:
@@ -172,6 +247,27 @@ cp .env.example .env
 
 Replace the placeholder values before running the backend. Do not commit real
 production secrets.
+
+### Redis Secret Hygiene
+
+`backend/.env.example` uses `REDIS_URL=redis://localhost:6379` as a local-only
+placeholder. Keep real Redis URLs, usernames, passwords, and provider tokens in
+untracked local env files or the deployment platform's secret manager.
+
+For production, configure `REDIS_URL` as a runtime secret in the hosting
+provider, for example DigitalOcean App Platform encrypted environment variables,
+using the managed Redis provider's connection string. Do not paste production
+Redis credentials into README snippets, issue comments, screenshots, committed
+`.env` files, or test fixtures.
+
+If a production Redis credential has been committed or otherwise exposed, rotate
+or revoke the Redis user/password/token in the provider, update the deployment
+secret, redeploy, and invalidate the old credential. Treat a redacted git diff
+as insufficient unless the provider-side credential has also been rotated.
+
+Future CI should include secret scanning before merge, such as GitHub secret
+scanning with push protection plus a Gitleaks or TruffleHog job if this repo adds
+custom GitHub Actions workflows.
 
 For Stripe payment flow verification, including Checkout success, failed
 payments, cancellation or expiration, duplicate webhook delivery, required

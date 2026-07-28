@@ -3,8 +3,8 @@ An online store selling indigenous graduation products and connecting the commun
 
 ## Local Development
 
-Backend setup, including local PostgreSQL startup, database creation/reset, and
-connectivity checks, is documented in `backend/README.md`.
+Backend setup, including local PostgreSQL startup, Redis configuration, database
+creation/reset, and connectivity checks, is documented in `backend/README.md`.
 
 ## Docker Deployment
 
@@ -21,7 +21,7 @@ Required runtime environment variables:
 ```bash
 NODE_ENV=production
 DATABASE_URL=postgresql://...
-REDIS_URL=redis://...
+REDIS_URL=rediss://<redis-user>:<redis-password>@<redis-host>:<redis-port>/<redis-db>
 CLERK_PUBLISHABLE_KEY=...
 CLERK_SECRET_KEY=...
 CLERK_JWT_ISSUER=...
@@ -48,6 +48,18 @@ STRIPE_API_VERSION=2026-02-25.clover
 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is also needed at build time for the Next.js
 build. In DigitalOcean App Platform, configure it with build and run scope.
+
+Configure production Redis credentials only through the deployment platform's
+environment variable or secret manager. For DigitalOcean App Platform, set
+`REDIS_URL` as an encrypted runtime environment variable using the managed Redis
+provider connection string; do not commit production Redis URLs, usernames,
+passwords, or tokens to this repository. If any production Redis credential is
+ever exposed in git, logs, or a shared shell history, rotate or revoke it in the
+Redis provider before redeploying the app.
+
+GitHub secret scanning with push protection should stay enabled for this
+repository. If a custom CI pipeline is added later, include a secret scan such as
+Gitleaks or TruffleHog so accidental Redis credentials are caught before merge.
 
 Build locally:
 
