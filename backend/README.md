@@ -39,16 +39,16 @@ npm install
 cp .env.example .env
 ```
 
-The example file uses local-only placeholder values. Replace third-party service
-placeholders with development credentials when you need those integrations, but
-do not commit real secrets.
+The example file uses placeholder values only. Replace third-party service and
+database placeholders in `backend/.env` when you need those integrations, but do
+not commit real secrets.
 
 ## Local PostgreSQL Setup
 
-The backend expects a PostgreSQL database named `kapchi` owned by a local role
-named `kapchi`. The placeholder password in local docs and `.env.example` is
-`kapchi`; use a different local password if you prefer and update
-`backend/.env` to match.
+The backend expects a PostgreSQL database available through `DATABASE_URL`. The
+examples below use a local-only database named `kapchi_local`, a local role named
+`kapchi_local`, and the placeholder password `replace_me_local_password`. Use a
+different local password if you prefer and update `backend/.env` to match.
 
 ### Start PostgreSQL
 
@@ -65,9 +65,9 @@ Docker:
 
 ```bash
 docker run --name kapchi-postgres \
-  -e POSTGRES_USER=kapchi \
-  -e POSTGRES_PASSWORD=kapchi \
-  -e POSTGRES_DB=kapchi \
+  -e POSTGRES_USER=kapchi_local \
+  -e POSTGRES_PASSWORD=replace_me_local_password \
+  -e POSTGRES_DB=kapchi_local \
   -p 5432:5432 \
   -d postgres:16
 ```
@@ -84,9 +84,9 @@ For a Homebrew or otherwise unmanaged local PostgreSQL instance, create the role
 and database manually:
 
 ```bash
-createuser --createdb kapchi
-psql postgres -c "alter user kapchi with password 'kapchi';"
-createdb --owner=kapchi kapchi
+createuser --createdb kapchi_local
+psql postgres -c "alter user kapchi_local with password 'replace_me_local_password';"
+createdb --owner=kapchi_local kapchi_local
 ```
 
 If the role or database already exists, PostgreSQL may print an error. That is
@@ -101,8 +101,8 @@ Keep these local development values in `backend/.env` unless your local
 PostgreSQL setup uses a different host, port, database, user, or password:
 
 ```bash
-DATABASE_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
-DATABASE_DIRECT_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
+DATABASE_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
+DATABASE_DIRECT_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
 DATABASE_POOL_MAX=5
 DATABASE_CONNECTION_TIMEOUT_MS=5000
 DATABASE_IDLE_TIMEOUT_MS=30000
@@ -128,11 +128,11 @@ psql "$DATABASE_URL" -c "select current_database(), current_user;"
 If your shell has not loaded `backend/.env`, pass the local URL directly:
 
 ```bash
-psql "postgresql://kapchi:kapchi@localhost:5432/kapchi" \
+psql "postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local" \
   -c "select current_database(), current_user;"
 ```
 
-You should see `kapchi` for both the current database and current user.
+You should see `kapchi_local` for both the current database and current user.
 
 ### Reset The Local Database
 
@@ -141,8 +141,8 @@ Resetting destroys local data. Stop the backend before running reset commands.
 For Homebrew or another local PostgreSQL service:
 
 ```bash
-dropdb --if-exists kapchi
-createdb --owner=kapchi kapchi
+dropdb --if-exists kapchi_local
+createdb --owner=kapchi_local kapchi_local
 ```
 
 For the Docker container:
@@ -151,9 +151,9 @@ For the Docker container:
 docker rm -f kapchi-postgres
 docker volume prune
 docker run --name kapchi-postgres \
-  -e POSTGRES_USER=kapchi \
-  -e POSTGRES_PASSWORD=kapchi \
-  -e POSTGRES_DB=kapchi \
+  -e POSTGRES_USER=kapchi_local \
+  -e POSTGRES_PASSWORD=replace_me_local_password \
+  -e POSTGRES_DB=kapchi_local \
   -p 5432:5432 \
   -d postgres:16
 ```
@@ -191,8 +191,8 @@ Keep schema migrations outside the application request pool.
 Pool and deployment variables:
 
 ```bash
-DATABASE_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
-DATABASE_DIRECT_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
+DATABASE_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
+DATABASE_DIRECT_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
 DATABASE_POOL_MAX=5
 DATABASE_CONNECTION_TIMEOUT_MS=5000
 DATABASE_IDLE_TIMEOUT_MS=30000
@@ -276,6 +276,36 @@ Tune pool settings in this order:
 3. Set `DATABASE_MAX_APP_INSTANCES` to the highest number of backend instances the platform can run at once.
 4. Recalculate `DATABASE_POOL_MAX` with the startup formula above.
 5. Increase the database plan before increasing app instances beyond the formula.
+
+### Production PostgreSQL Secret Hygiene
+
+Configure production `DATABASE_URL` and `DATABASE_DIRECT_URL` only in the
+deployment provider's encrypted environment or secret manager. Do not commit
+production `.env` files, database console exports, screenshots, connection URLs,
+usernames, passwords, certificates, or access tokens to this repository.
+
+For DigitalOcean App Platform, set the PostgreSQL connection strings as runtime
+environment variables or managed database bindings on the backend service. Keep
+`DATABASE_DIRECT_URL` restricted to migrations or admin jobs that need a direct
+connection, and use the provider's pooled connection endpoint for `DATABASE_URL`
+when the production database plan requires pooling.
+
+If any real database credential is exposed in git, logs, screenshots, tickets,
+or chat, rotate or revoke it in the database provider before redeploying. The
+owner of the deployment credentials is responsible for confirming rotation and
+updating the provider-side environment values; do not record the replacement
+secret in git.
+
+The repository includes `.gitleaks.toml` with PostgreSQL URL and database
+password checks. Run this before pushing secret-sensitive changes:
+
+```bash
+gitleaks detect --source . --config .gitleaks.toml
+```
+
+When CI workflows are added to this repository, wire that same Gitleaks command
+into pull request checks. Also enable GitHub secret scanning and push protection
+for the repository if the account plan supports them.
 
 ## Scripts
 

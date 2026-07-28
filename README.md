@@ -21,6 +21,7 @@ Required runtime environment variables:
 ```bash
 NODE_ENV=production
 DATABASE_URL=postgresql://...
+DATABASE_DIRECT_URL=postgresql://...
 REDIS_URL=redis://...
 CLERK_PUBLISHABLE_KEY=...
 CLERK_SECRET_KEY=...
@@ -48,6 +49,19 @@ STRIPE_API_VERSION=2026-02-25.clover
 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is also needed at build time for the Next.js
 build. In DigitalOcean App Platform, configure it with build and run scope.
+
+Configure production PostgreSQL credentials in the deployment platform's
+encrypted runtime environment or managed database binding, not in committed
+files or the Docker image. On DigitalOcean App Platform, set `DATABASE_URL` and
+`DATABASE_DIRECT_URL` on the backend service at runtime. If any real PostgreSQL
+URL, username, password, certificate, or token is exposed, rotate or revoke it in
+the database provider before redeploying and update only the provider-side
+secret value.
+
+GitHub secret scanning with push protection should stay enabled for this
+repository. If a custom CI pipeline is added later, include a secret scan such as
+Gitleaks or TruffleHog so accidental PostgreSQL credentials are caught before
+merge.
 
 Build locally:
 

@@ -15,8 +15,8 @@ PORT=4000
 STRIPE_SECRET_KEY=sk_test_replace_me
 STRIPE_WEBHOOK_SECRET=whsec_replace_me
 STRIPE_API_VERSION=2026-02-25.clover
-DATABASE_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
-DATABASE_DIRECT_URL=postgresql://kapchi:kapchi@localhost:5432/kapchi
+DATABASE_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
+DATABASE_DIRECT_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
 ```
 
 Start the backend from the backend workspace:
