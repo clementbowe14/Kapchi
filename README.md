@@ -3,8 +3,8 @@ An online store selling indigenous graduation products and connecting the commun
 
 ## Local Development
 
-Backend setup, including local PostgreSQL startup, database creation/reset, and
-connectivity checks, is documented in `backend/README.md`.
+Backend setup, including local PostgreSQL and Redis startup, database
+creation/reset, and connectivity checks, is documented in `backend/README.md`.
 
 ## Docker Deployment
 
