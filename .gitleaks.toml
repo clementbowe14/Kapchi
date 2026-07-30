@@ -1,0 +1,21 @@
+title = "Kapchi secret scanning"
+
+[allowlist]
+description = "Repository placeholders and test fixtures only"
+regexes = [
+  '''postgres(?:ql)?://(?:replace_me|user|kapchi)(?:[A-Za-z0-9_-]*):(?:replace_me|pass|password|kapchi)(?:[A-Za-z0-9_-]*)@(?:localhost|127\.0\.0\.1|db\.example\.com)(?::[0-9]+)?/[A-Za-z0-9_-]+''',
+  '''postgresql://\.\.\.''',
+]
+
+[[rules]]
+id = "postgres-connection-url"
+description = "PostgreSQL connection URL with embedded credentials"
+regex = '''postgres(?:ql)?://[^:\s]+:[^@\s]+@[^\s'"`]+'''
+keywords = ["postgres://", "postgresql://"]
+
+[[rules]]
+id = "database-password-assignment"
+description = "Database password variable assignment"
+regex = '''(?i)(?:DATABASE|POSTGRES|PG|DB)[A-Z0-9_]*(?:PASSWORD|PASS|SECRET)[A-Z0-9_]*\s*[:=]\s*['"]?([^'"\s#]+)'''
+secretGroup = 1
+keywords = ["DATABASE", "POSTGRES", "PG", "DB_PASSWORD"]
