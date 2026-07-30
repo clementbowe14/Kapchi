@@ -23,6 +23,16 @@ type AssetRow = {
   visibility: AssetVisibility;
 };
 
+type PendingAssetRow = AssetRow & {
+  authenticated_user_id: string | null;
+  cart_id: string | null;
+  created_by_auth_subject: string | null;
+  expected_pathname: string | null;
+  fabric_id: string | null;
+  listing_customization_set_id: string | null;
+  listing_id: string | null;
+};
+
 type UploadIntentBody = {
   byteSize: number;
   cartId?: string;
@@ -171,11 +181,21 @@ function storageKeyFromBlob(blob: BlobCompletion) {
   return new URL(blob.url).pathname.replace(/^\/+/, "");
 }
 
+function buildPathname(context: AssetContext, assetId: string, filename: string) {
+  return ["kapchi", context, assetId, sanitizeFilename(filename)].join("/");
+}
+
 function assertConfiguredCallbackSecret(request: FastifyRequest, reply: FastifyReply) {
   const expectedSecret = config.assets.uploadCallbackSecret;
 
   if (!expectedSecret) {
-    return true;
+    void requestError(
+      reply,
+      503,
+      "UPLOAD_CALLBACK_SECRET_NOT_CONFIGURED",
+      "Upload completion callback secret is not configured.",
+    );
+    return false;
   }
 
   if (request.headers["x-kapchi-upload-callback-secret"] !== expectedSecret) {
@@ -251,6 +271,27 @@ async function validateImageCustomization(listingId: string, customizationSetId:
   return null;
 }
 
+async function validateCartContainsCustomization(
+  cartId: string,
+  listingId: string,
+  customizationSetId: string,
+) {
+  const result = await getDatabasePool().query<{ id: string }>(
+    `
+      select id
+      from cart_items
+      where cart_id = $1
+        and listing_id = $2
+        and listing_customization_set_id = $3
+        and validation_status = 'valid'
+      limit 1
+    `,
+    [cartId, listingId, customizationSetId],
+  );
+
+  return Boolean(result.rows[0]);
+}
+
 async function authorizeCustomerUpload(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -297,6 +338,21 @@ async function authorizeCustomerUpload(
         403,
         "FORBIDDEN",
         "The requested cart is not available for this customer.",
+      );
+    }
+
+    if (
+      !(await validateCartContainsCustomization(
+        body.cartId,
+        body.listingId,
+        body.customizationSetId,
+      ))
+    ) {
+      return requestError(
+        reply,
+        403,
+        "FORBIDDEN",
+        "Customization image uploads require the selected stole customization to be in the active cart.",
       );
     }
 
@@ -347,6 +403,21 @@ async function authorizeCustomerUpload(
       403,
       "FORBIDDEN",
       "The requested guest cart is not available for this session.",
+    );
+  }
+
+  if (
+    !(await validateCartContainsCustomization(
+      body.cartId,
+      body.listingId,
+      body.customizationSetId,
+    ))
+  ) {
+    return requestError(
+      reply,
+      403,
+      "FORBIDDEN",
+      "Customization image uploads require the selected stole customization to be in the active cart.",
     );
   }
 
@@ -437,8 +508,9 @@ async function createPendingAsset(
     cartId: string | null;
     createdByAuthSubject: string | null;
   },
+  assetId: string,
+  pathname: string,
 ) {
-  const assetId = randomUUID();
   const visibility = defaultVisibility(body.context, body.visibility);
   const result = await getDatabasePool().query<AssetRow>(
     `
@@ -454,9 +526,10 @@ async function createPendingAsset(
         created_by_auth_subject,
         cart_id,
         listing_id,
+        listing_customization_set_id,
         fabric_id,
         metadata
-      ) values ($1, 'vercel_blob', $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11)
+      ) values ($1, 'vercel_blob', $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
       returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status
     `,
     [
@@ -469,8 +542,10 @@ async function createPendingAsset(
       authorization.createdByAuthSubject,
       authorization.cartId,
       body.listingId ?? null,
+      body.customizationSetId ?? null,
       body.fabricId ?? null,
       JSON.stringify({
+        expectedPathname: pathname,
         originalFilename: body.filename,
         source: "vercel_blob_client_upload_intent"
       })
@@ -478,6 +553,89 @@ async function createPendingAsset(
   );
 
   return result.rows[0];
+}
+
+async function findPendingAsset(assetId: string) {
+  const result = await getDatabasePool().query<PendingAssetRow>(
+    `
+      select
+        id,
+        provider,
+        storage_key,
+        url,
+        content_type,
+        byte_size,
+        checksum,
+        visibility,
+        context,
+        status,
+        authenticated_user_id,
+        created_by_auth_subject,
+        cart_id,
+        listing_id,
+        listing_customization_set_id,
+        fabric_id,
+        metadata->>'expectedPathname' as expected_pathname
+      from assets
+      where id = $1
+      limit 1
+    `,
+    [assetId],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+function nullish(value: string | undefined) {
+  return value ?? null;
+}
+
+function validatePendingAssetMatchesPayload(
+  asset: PendingAssetRow | null,
+  payload: UploadPayload,
+  authorization?: {
+    authenticatedUserId: string | null;
+    cartId: string | null;
+    createdByAuthSubject: string | null;
+  },
+) {
+  if (!asset) {
+    return "Upload asset not found.";
+  }
+
+  if (asset.provider !== "vercel_blob" || asset.status !== "pending") {
+    return "Upload asset is not pending Vercel Blob finalization.";
+  }
+
+  if (!asset.expected_pathname) {
+    return "Upload asset is missing its expected Blob pathname.";
+  }
+
+  const mismatches = [
+    asset.content_type !== payload.contentType,
+    asset.byte_size !== payload.byteSize,
+    asset.context !== payload.context,
+    asset.visibility !== payload.visibility,
+    asset.cart_id !== nullish(payload.cartId),
+    asset.listing_id !== nullish(payload.listingId),
+    asset.listing_customization_set_id !== nullish(payload.customizationSetId),
+    asset.fabric_id !== nullish(payload.fabricId)
+  ];
+
+  if (mismatches.some(Boolean)) {
+    return "Upload token payload does not match the pending asset record.";
+  }
+
+  if (
+    authorization &&
+    (asset.authenticated_user_id !== authorization.authenticatedUserId ||
+      asset.cart_id !== authorization.cartId ||
+      asset.created_by_auth_subject !== authorization.createdByAuthSubject)
+  ) {
+    return "Upload token caller does not match the pending asset owner.";
+  }
+
+  return null;
 }
 
 const assetsPlugin: FastifyPluginAsync = async (fastify) => {
@@ -503,14 +661,15 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
         return authorization;
       }
 
-      const asset = await createPendingAsset(body, authorization);
+      const assetId = randomUUID();
+      const pathname = buildPathname(body.context, assetId, body.filename);
+      const asset = await createPendingAsset(
+        body,
+        authorization,
+        assetId,
+        pathname,
+      );
       const payload = buildTokenPayload(body, asset.id);
-      const pathname = [
-        "kapchi",
-        body.context,
-        asset.id,
-        sanitizeFilename(body.filename)
-      ].join("/");
 
       return {
         access: payload.visibility === "public_catalog" ? "public" : "private",
@@ -539,10 +698,11 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
         return requestError(reply, 400, "VALIDATION_ERROR", error.message);
       }
 
+      const body = value as { clientPayload: unknown; pathname: string };
       let payload: UploadPayload;
 
       try {
-        payload = parsePayload(value.clientPayload);
+        payload = parsePayload(body.clientPayload);
       } catch (parseError) {
         const message =
           parseError instanceof Error
@@ -557,9 +717,29 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
         return authorization;
       }
 
+      const pendingAsset = await findPendingAsset(payload.assetId);
+      const pendingAssetError = validatePendingAssetMatchesPayload(
+        pendingAsset,
+        payload,
+        authorization,
+      );
+
+      if (pendingAssetError) {
+        return requestError(reply, 400, "VALIDATION_ERROR", pendingAssetError);
+      }
+
+      if (pendingAsset?.expected_pathname !== body.pathname) {
+        return requestError(
+          reply,
+          400,
+          "VALIDATION_ERROR",
+          "Upload pathname does not match the pending asset record.",
+        );
+      }
+
       return {
         access: payload.visibility === "public_catalog" ? "public" : "private",
-        addRandomSuffix: true,
+        addRandomSuffix: false,
         allowedContentTypes: config.assets.allowedImageContentTypes,
         maximumSizeInBytes: config.assets.maxImageBytes,
         tokenPayload: JSON.stringify(payload)
@@ -594,8 +774,21 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
       return requestError(reply, 400, "VALIDATION_ERROR", message);
     }
 
+    const pendingAsset = await findPendingAsset(payload.assetId);
+    const pendingAssetError = validatePendingAssetMatchesPayload(
+      pendingAsset,
+      payload,
+    );
+
+    if (pendingAssetError) {
+      const statusCode = pendingAsset ? 400 : 404;
+      const errorCode = pendingAsset ? "VALIDATION_ERROR" : "ASSET_NOT_FOUND";
+      return requestError(reply, statusCode, errorCode, pendingAssetError);
+    }
+
     const blobContentType = body.blob.contentType ?? payload.contentType;
     const blobSize = body.blob.size ?? payload.byteSize;
+    const storageKey = storageKeyFromBlob(body.blob);
 
     if (!config.assets.allowedImageContentTypes.includes(blobContentType)) {
       return requestError(
@@ -615,6 +808,24 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
       );
     }
 
+    if (blobContentType !== payload.contentType || blobSize !== payload.byteSize) {
+      return requestError(
+        reply,
+        400,
+        "VALIDATION_ERROR",
+        "Completed upload metadata does not match the pending asset record.",
+      );
+    }
+
+    if (pendingAsset?.expected_pathname !== storageKey) {
+      return requestError(
+        reply,
+        400,
+        "VALIDATION_ERROR",
+        "Completed upload pathname does not match the pending asset record.",
+      );
+    }
+
     const result = await getDatabasePool().query<AssetRow>(
       `
         update assets
@@ -629,11 +840,12 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
           status = 'uploaded',
           metadata = metadata || $8::jsonb
         where id = $1
+          and status = 'pending'
         returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status
       `,
       [
         payload.assetId,
-        storageKeyFromBlob(body.blob),
+        storageKey,
         body.blob.url,
         blobContentType,
         blobSize,

@@ -13,6 +13,7 @@ create table assets (
   created_by_auth_subject text,
   cart_id uuid references carts(id) on delete set null,
   listing_id uuid references listings(id) on delete set null,
+  listing_customization_set_id uuid references listing_customization_sets(id) on delete set null,
   fabric_id uuid references fabrics(id) on delete set null,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
@@ -41,6 +42,9 @@ create index assets_cart_context_idx
 create index assets_listing_context_idx
   on assets(listing_id, context, created_at)
   where listing_id is not null;
+create index assets_listing_customization_context_idx
+  on assets(listing_customization_set_id, context, created_at)
+  where listing_customization_set_id is not null;
 create index assets_fabric_context_idx
   on assets(fabric_id, context, created_at)
   where fabric_id is not null;

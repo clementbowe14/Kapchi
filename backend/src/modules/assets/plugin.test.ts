@@ -43,6 +43,10 @@ vi.mock("../../database/index.js", () => ({
   })
 }));
 
+vi.mock("node:crypto", () => ({
+  randomUUID: () => "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61"
+}));
+
 vi.mock("../auth/index.js", () => ({
   authMiddleware: async (request: { auth: unknown }) => {
     request.auth = mocks.auth
@@ -69,16 +73,24 @@ const ids = {
   asset: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
   cart: "1d66d9cc-0987-46e1-b719-c3e5a09f5013",
   customizationSet: "fba94989-b950-4087-bac1-8c1ad4970655",
-  listing: "396256fa-68f9-4882-934a-5cedffbd8204"
+  listing: "396256fa-68f9-4882-934a-5cedffbd8204",
+  otherListing: "661f833a-41c5-4ec9-8232-e1883f6be7ed"
 };
 
 function assetRow(overrides = {}) {
   return {
+    authenticated_user_id: null,
     byte_size: 2048,
+    cart_id: ids.cart,
     checksum: null,
     content_type: "image/png",
     context: "customization_image",
+    created_by_auth_subject: null,
+    expected_pathname: `kapchi/customization_image/${ids.asset}/photo.png`,
+    fabric_id: null,
     id: ids.asset,
+    listing_customization_set_id: ids.customizationSet,
+    listing_id: ids.listing,
     provider: "vercel_blob",
     status: "pending",
     storage_key: null,
@@ -164,6 +176,7 @@ describe("assetsPlugin", () => {
       })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
+      .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
       .mockResolvedValueOnce({ rows: [assetRow()] });
 
     const app = await buildTestServer();
@@ -199,6 +212,54 @@ describe("assetsPlugin", () => {
       ids.cart,
       "hashed-guest-session"
     ]);
+    expect(mocks.query.mock.calls[3][1]).toEqual([
+      ids.cart,
+      ids.listing,
+      ids.customizationSet
+    ]);
+
+    await app.close();
+  });
+
+  it("rejects customer uploads when the customization is not in the active cart", async () => {
+    mocks.guestCart = {
+      cartId: ids.cart,
+      sessionId: "guest-session"
+    };
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            enabled: true,
+            image_max_bytes: 5242880,
+            listing_status: "active",
+            listing_type: "graduation_stole",
+            requires_image: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        byteSize: 2048,
+        cartId: ids.cart,
+        contentType: "image/png",
+        context: "customization_image",
+        customizationSetId: ids.customizationSet,
+        filename: "photo.png",
+        listingId: ids.listing
+      },
+      url: "/upload-intents"
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toContain("active cart");
+    expect(mocks.query).toHaveBeenCalledTimes(4);
 
     await app.close();
   });
@@ -241,14 +302,148 @@ describe("assetsPlugin", () => {
     await app.close();
   });
 
+  it("authorizes Blob upload tokens only when the pending asset matches the caller and pathname", async () => {
+    mocks.guestCart = {
+      cartId: ids.cart,
+      sessionId: "guest-session"
+    };
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            enabled: true,
+            image_max_bytes: 5242880,
+            listing_status: "active",
+            listing_type: "graduation_stole",
+            requires_image: true
+          }
+        ]
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
+      .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
+      .mockResolvedValueOnce({ rows: [assetRow()] });
+    const tokenPayload = JSON.stringify({
+      assetId: ids.asset,
+      byteSize: 2048,
+      cartId: ids.cart,
+      contentType: "image/png",
+      context: "customization_image",
+      customizationSetId: ids.customizationSet,
+      filename: "photo.png",
+      issuedAt: new Date().toISOString(),
+      listingId: ids.listing,
+      visibility: "private"
+    });
+
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        clientPayload: tokenPayload,
+        pathname: `kapchi/customization_image/${ids.asset}/photo.png`
+      },
+      url: "/upload-token-authorizations"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      access: "private",
+      addRandomSuffix: false,
+      allowedContentTypes: ["image/jpeg", "image/png", "image/webp"],
+      maximumSizeInBytes: 5242880,
+      tokenPayload
+    });
+    expect(mocks.query.mock.calls[4][1]).toEqual([ids.asset]);
+
+    await app.close();
+  });
+
   it("finalizes a Vercel Blob upload into provider-neutral asset metadata", async () => {
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [assetRow()]
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          assetRow({
+            checksum: "etag-123",
+            status: "uploaded",
+            storage_key: `kapchi/customization_image/${ids.asset}/photo.png`,
+            url: "https://blob.example/photo.png"
+          })
+        ]
+      });
+    const tokenPayload = JSON.stringify({
+      assetId: ids.asset,
+      byteSize: 2048,
+      cartId: ids.cart,
+      contentType: "image/png",
+      context: "customization_image",
+      customizationSetId: ids.customizationSet,
+      filename: "photo.png",
+      issuedAt: new Date().toISOString(),
+      listingId: ids.listing,
+      visibility: "private"
+    });
+
+    const app = await buildTestServer();
+    const response = await app.inject({
+      headers: {
+        "x-kapchi-upload-callback-secret": "test-callback-secret"
+      },
+      method: "POST",
+      payload: {
+        blob: {
+          contentType: "image/png",
+          etag: "etag-123",
+          pathname: `kapchi/customization_image/${ids.asset}/photo.png`,
+          size: 2048,
+          url: "https://blob.example/photo.png"
+        },
+        tokenPayload
+      },
+      url: "/upload-completions"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      asset: {
+        byteSize: 2048,
+        checksum: "etag-123",
+        contentType: "image/png",
+        context: "customization_image",
+        id: ids.asset,
+        provider: "vercel_blob",
+        status: "uploaded",
+        storageKey: `kapchi/customization_image/${ids.asset}/photo.png`,
+        url: null,
+        visibility: "private"
+      },
+      assetId: ids.asset
+    });
+    expect(mocks.query.mock.calls[1][1]).toEqual([
+      ids.asset,
+      `kapchi/customization_image/${ids.asset}/photo.png`,
+      "https://blob.example/photo.png",
+      "image/png",
+      2048,
+      "etag-123",
+      "private",
+      JSON.stringify({
+        completedBy: "vercel_blob_callback",
+        downloadUrl: null
+      })
+    ]);
+
+    await app.close();
+  });
+
+  it("rejects upload completion when token payload does not match the pending asset", async () => {
     mocks.query.mockResolvedValueOnce({
       rows: [
         assetRow({
-          checksum: "etag-123",
-          status: "uploaded",
-          storage_key: "kapchi/customization_image/photo.png",
-          url: "https://blob.example/photo.png"
+          listing_id: ids.otherListing
         })
       ]
     });
@@ -284,35 +479,9 @@ describe("assetsPlugin", () => {
       url: "/upload-completions"
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
-      asset: {
-        byteSize: 2048,
-        checksum: "etag-123",
-        contentType: "image/png",
-        context: "customization_image",
-        id: ids.asset,
-        provider: "vercel_blob",
-        status: "uploaded",
-        storageKey: "kapchi/customization_image/photo.png",
-        url: null,
-        visibility: "private"
-      },
-      assetId: ids.asset
-    });
-    expect(mocks.query.mock.calls[0][1]).toEqual([
-      ids.asset,
-      "kapchi/customization_image/photo.png",
-      "https://blob.example/photo.png",
-      "image/png",
-      2048,
-      "etag-123",
-      "private",
-      JSON.stringify({
-        completedBy: "vercel_blob_callback",
-        downloadUrl: null
-      })
-    ]);
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain("pending asset record");
+    expect(mocks.query).toHaveBeenCalledTimes(1);
 
     await app.close();
   });
