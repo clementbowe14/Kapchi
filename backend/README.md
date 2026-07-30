@@ -248,6 +248,27 @@ cp .env.example .env
 Replace the placeholder values before running the backend. Do not commit real
 production secrets.
 
+### Redis Secret Hygiene
+
+`backend/.env.example` uses `REDIS_URL=redis://localhost:6379` as a local-only
+placeholder. Keep real Redis URLs, usernames, passwords, and provider tokens in
+untracked local env files or the deployment platform's secret manager.
+
+For production, configure `REDIS_URL` as a runtime secret in the hosting
+provider, for example DigitalOcean App Platform encrypted environment variables,
+using the managed Redis provider's connection string. Do not paste production
+Redis credentials into README snippets, issue comments, screenshots, committed
+`.env` files, or test fixtures.
+
+If a production Redis credential has been committed or otherwise exposed, rotate
+or revoke the Redis user/password/token in the provider, update the deployment
+secret, redeploy, and invalidate the old credential. Treat a redacted git diff
+as insufficient unless the provider-side credential has also been rotated.
+
+Future CI should include secret scanning before merge, such as GitHub secret
+scanning with push protection plus a Gitleaks or TruffleHog job if this repo adds
+custom GitHub Actions workflows.
+
 For Stripe payment flow verification, including Checkout success, failed
 payments, cancellation or expiration, duplicate webhook delivery, required
 placeholder environment variables, Stripe CLI setup, and database checks, see
