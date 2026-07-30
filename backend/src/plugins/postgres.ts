@@ -16,6 +16,18 @@ declare module "fastify" {
   }
 }
 
+function getSafePostgresError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+
+  return {
+    message: error.message,
+    name: error.name,
+    stack: error.stack
+  };
+}
+
 const postgresPlugin: FastifyPluginAsync = async (fastify) => {
   const pool = createDatabasePoolFromConfig({
     database: config.database

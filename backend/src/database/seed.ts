@@ -369,6 +369,7 @@ async function seedListing(db: Queryable, listing: SeedListing) {
 async function seedCartAndOrder(db: Queryable) {
   const cartId = "00000000-0000-4000-8000-000000000053";
   const orderId = "00000000-0000-4000-8000-000000000153";
+  const assetId = "00000000-0000-4000-8000-000000000061";
   const cartItemId = "00000000-0000-4000-8000-000000000253";
   const orderItemId = "00000000-0000-4000-8000-000000000353";
 
@@ -429,6 +430,62 @@ async function seedCartAndOrder(db: Queryable) {
     [cartId, listingRow.unit_amount_cents, seededAt],
   );
 
+  await db.query(
+    `
+      insert into assets (
+        id,
+        provider,
+        storage_key,
+        url,
+        content_type,
+        byte_size,
+        checksum,
+        visibility,
+        context,
+        status,
+        cart_id,
+        listing_id,
+        metadata
+      ) values (
+        $1,
+        'vercel_blob',
+        'local-seed/uploads/class-of-2026.png',
+        'https://example.test/kapchi-local-seed/uploads/class-of-2026.png',
+        'image/png',
+        2048,
+        'local-seed-checksum',
+        'private',
+        'customization_image',
+        'attached',
+        $2,
+        $3,
+        $4
+      )
+      on conflict (id) do update set
+        provider = excluded.provider,
+        storage_key = excluded.storage_key,
+        url = excluded.url,
+        content_type = excluded.content_type,
+        byte_size = excluded.byte_size,
+        checksum = excluded.checksum,
+        visibility = excluded.visibility,
+        context = excluded.context,
+        status = excluded.status,
+        cart_id = excluded.cart_id,
+        listing_id = excluded.listing_id,
+        metadata = excluded.metadata
+    `,
+    [
+      assetId,
+      cartId,
+      listingRow.listing_id,
+      JSON.stringify({
+        originalFilename: "class-of-2026.png",
+        source: "db:seed:local"
+      })
+    ],
+  );
+
   await db.query("delete from cart_items where id = $1", [cartItemId]);
   await db.query(
     `
@@ -443,8 +500,9 @@ async function seedCartAndOrder(db: Queryable) {
         unit_amount_cents,
         currency,
         customization_payload,
+        customization_asset_id,
         validation_status
-      ) values ($1, $2, $3, $4, $5, $6, 1, $7, 'usd', $8, 'valid')
+      ) values ($1, $2, $3, $4, $5, $6, 1, $7, 'usd', $8, $9, 'valid')
     `,
     [
       cartItemId,
@@ -455,11 +513,12 @@ async function seedCartAndOrder(db: Queryable) {
       listingRow.fabric_id,
       listingRow.unit_amount_cents,
       JSON.stringify({
-        imageObjectKey: "local-seed/uploads/class-of-2026.png",
+        imageAssetId: assetId,
         line1: "Class of 2026",
         line2: "Kapchi Demo",
         trim: "Local Gold Trim"
-      })
+      }),
+      assetId
     ],
   );
 
@@ -578,8 +637,9 @@ async function seedCartAndOrder(db: Queryable) {
         listing_snapshot,
         fabric_snapshot,
         customization_snapshot,
+        customization_asset_id,
         production_notes
-      ) values ($1, $2, $3, $4, $5, 1, $6, $6, 'usd', $7, $8, $9, $10, $11, $12)
+      ) values ($1, $2, $3, $4, $5, 1, $6, $6, 'usd', $7, $8, $9, $10, $11, $12, $13)
     `,
     [
       orderItemId,
@@ -600,10 +660,12 @@ async function seedCartAndOrder(db: Queryable) {
         sku: "LOCAL-SEED-NAVY-SATIN"
       }),
       JSON.stringify({
+        imageAssetId: assetId,
         line1: "Class of 2026",
         line2: "Kapchi Demo",
         trim: "Local Gold Trim"
       }),
+      assetId,
       "Local seed order. Safe to delete.",
     ],
   );

@@ -2,6 +2,7 @@
 
 import { ClerkLoaded, ClerkLoading, useAuth, useUser } from "@clerk/nextjs";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { buildApiUrl } from "@/lib/api";
 
 export type CustomerOrderItem = {
   id: string;
@@ -39,12 +40,6 @@ type RequestState = "idle" | "loading" | "success" | "error";
 
 const SENSITIVE_KEY_PATTERN =
   /(admin|internal|metadata|secret|token|stripe|paymentintent|payment_intent|clerk|userid|user_id|customerid|customer_id|note|notes)/i;
-
-function buildApiUrl(path: string) {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
-
-  return `${baseUrl ?? ""}${path}`;
-}
 
 function humanizeKey(key: string) {
   return key

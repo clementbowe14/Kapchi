@@ -1,19 +1,14 @@
 import { createHash } from "node:crypto";
-import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, expect, test } from "vitest";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { RedisClientType } from "redis";
 
 const envDefaults: Record<string, string> = {
-  AWS_ACCESS_KEY_ID: "test-access-key",
-  AWS_REGION: "us-east-1",
-  AWS_SECRET_ACCESS_KEY: "test-secret-key",
   CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
   CLERK_JWT_ISSUER: "https://clerk.test",
   CLERK_PUBLISHABLE_KEY: "test-publishable-key",
   CLERK_SECRET_KEY: "test-secret-key",
   CLERK_WEBHOOK_SECRET: "test-webhook-secret",
-  CLOUDFRONT_BASE_URL: "https://cdn.test",
   DATABASE_MAX_APP_INSTANCES: "3",
   DATABASE_MAX_CONNECTIONS: "20",
   DATABASE_POOL_MAX: "5",
@@ -23,7 +18,6 @@ const envDefaults: Record<string, string> = {
   DATABASE_URL: "postgres://user:pass@localhost:5432/kapchi_test",
   NODE_ENV: "test",
   REDIS_URL: "redis://localhost:6379",
-  S3_BUCKET: "kapchi-test",
   SHIPPO_API_KEY: "test-shippo-key",
   STRIPE_SECRET_KEY: "sk_test_123",
   STRIPE_WEBHOOK_SECRET: "whsec_test"
@@ -120,15 +114,15 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.deepEqual(context, {
+    expect(context).toEqual({
       cartId: session.cartId,
       sessionId
     });
-    assert.deepEqual(calls.get, [hashedKey]);
-    assert.notEqual(calls.get[0], `guest_session:${sessionId}`);
-    assert.equal(calls.get[0].includes(sessionId), false);
-    assert.equal(calls.setEx.length, 0);
-    assert.equal(cookies.length, 0);
+    expect(calls.get).toEqual([hashedKey]);
+    expect(calls.get[0]).not.toBe(`guest_session:${sessionId}`);
+    expect(calls.get[0].includes(sessionId)).toBe(false);
+    expect(calls.setEx.length).toBe(0);
+    expect(cookies.length).toBe(0);
   });
 
   test("sets a seven-day httpOnly lax root cookie for new non-production sessions", async () => {
@@ -140,16 +134,16 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.equal(calls.get.length, 0);
-    assert.equal(calls.setEx.length, 1);
-    assert.equal(calls.setEx[0].ttl, sevenDaysInSeconds);
-    assert.match(calls.setEx[0].key, /^guest_session:[a-f0-9]{64}$/);
-    assert.equal(calls.setEx[0].key, `guest_session:${sha256(context.sessionId)}`);
+    expect(calls.get.length).toBe(0);
+    expect(calls.setEx.length).toBe(1);
+    expect(calls.setEx[0].ttl).toBe(sevenDaysInSeconds);
+    expect(calls.setEx[0].key).toMatch(/^guest_session:[a-f0-9]{64}$/);
+    expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
 
-    assert.equal(cookies.length, 1);
-    assert.equal(cookies[0].name, "session_id");
-    assert.equal(cookies[0].value, context.sessionId);
-    assert.deepEqual(cookies[0].options, {
+    expect(cookies.length).toBe(1);
+    expect(cookies[0].name).toBe("session_id");
+    expect(cookies[0].value).toBe(context.sessionId);
+    expect(cookies[0].options).toEqual({
       httpOnly: true,
       maxAge: sevenDaysInSeconds,
       path: "/",
@@ -159,7 +153,7 @@ describe("guest session cart context", () => {
   });
 
   test("sets secure cookies for new production sessions", async () => {
-    assert.equal(buildGuestSessionCookieOptions("production").secure, true);
+    expect(buildGuestSessionCookieOptions("production").secure).toBe(true);
   });
 
   test("reuses valid existing sessions without refreshing the cookie", async () => {
@@ -178,12 +172,12 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.deepEqual(context, {
+    expect(context).toEqual({
       cartId: session.cartId,
       sessionId
     });
-    assert.equal(calls.setEx.length, 0);
-    assert.equal(cookies.length, 0);
+    expect(calls.setEx.length).toBe(0);
+    expect(cookies.length).toBe(0);
   });
 
   test("creates a new session when the cookie is missing", async () => {
@@ -195,10 +189,10 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.equal(calls.get.length, 0);
-    assert.equal(calls.setEx.length, 1);
-    assert.equal(calls.setEx[0].key, `guest_session:${sha256(context.sessionId)}`);
-    assert.equal(cookies[0].value, context.sessionId);
+    expect(calls.get.length).toBe(0);
+    expect(calls.setEx.length).toBe(1);
+    expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
+    expect(cookies[0].value).toBe(context.sessionId);
   });
 
   test("creates a new session when Redis has no session for a valid cookie", async () => {
@@ -211,11 +205,11 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.deepEqual(calls.get, [`guest_session:${sha256(sessionId)}`]);
-    assert.equal(calls.setEx.length, 1);
-    assert.equal(calls.setEx[0].key, `guest_session:${sha256(context.sessionId)}`);
-    assert.notEqual(context.sessionId, sessionId);
-    assert.equal(cookies[0].value, context.sessionId);
+    expect(calls.get).toEqual([`guest_session:${sha256(sessionId)}`]);
+    expect(calls.setEx.length).toBe(1);
+    expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
+    expect(context.sessionId).not.toBe(sessionId);
+    expect(cookies[0].value).toBe(context.sessionId);
   });
 
   test("creates a new session when the cookie is invalid", async () => {
@@ -227,10 +221,10 @@ describe("guest session cart context", () => {
       reply,
     );
 
-    assert.equal(calls.get.length, 0);
-    assert.equal(calls.setEx.length, 1);
-    assert.equal(calls.setEx[0].key, `guest_session:${sha256(context.sessionId)}`);
-    assert.equal(cookies[0].value, context.sessionId);
+    expect(calls.get.length).toBe(0);
+    expect(calls.setEx.length).toBe(1);
+    expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
+    expect(cookies[0].value).toBe(context.sessionId);
   });
 });
 
@@ -247,8 +241,8 @@ describe("guest cart items", () => {
 
     const result = await getGuestCartItems(redis, cartId);
 
-    assert.deepEqual(result, items);
-    assert.deepEqual(calls.get, [buildGuestCartItemsKey(cartId)]);
+    expect(result).toEqual(items);
+    expect(calls.get).toEqual([buildGuestCartItemsKey(cartId)]);
   });
 
   test("returns an empty array for missing guest cart items", async () => {
@@ -256,7 +250,7 @@ describe("guest cart items", () => {
 
     const result = await getGuestCartItems(redis, "missing-cart");
 
-    assert.deepEqual(result, []);
+    expect(result).toEqual([]);
   });
 
   test("returns an empty array for non-array guest cart values", async () => {
@@ -267,7 +261,7 @@ describe("guest cart items", () => {
 
     const result = await getGuestCartItems(redis, cartId);
 
-    assert.deepEqual(result, []);
+    expect(result).toEqual([]);
   });
 
   test("returns an empty array for malformed guest cart values", async () => {
@@ -278,6 +272,6 @@ describe("guest cart items", () => {
 
     const result = await getGuestCartItems(redis, cartId);
 
-    assert.deepEqual(result, []);
+    expect(result).toEqual([]);
   });
 });

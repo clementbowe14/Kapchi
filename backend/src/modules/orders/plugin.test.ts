@@ -59,6 +59,11 @@ const orderRow = {
 };
 
 const itemRow = {
+  asset_byte_size: null,
+  asset_content_type: null,
+  asset_id: null,
+  asset_provider: null,
+  asset_visibility: null,
   id: "5863e978-6764-41f4-96bd-ea2337d11204",
   order_id: orderRow.id,
   quantity: 1,
@@ -69,6 +74,15 @@ const itemRow = {
   fabric_snapshot: { name: "Linen" },
   customization_snapshot: { size: "M", monogram: "CB" },
   production_notes: "do not expose"
+};
+
+const itemRowWithAsset = {
+  ...itemRow,
+  asset_byte_size: 2048,
+  asset_content_type: "image/png",
+  asset_id: "3a318519-8cf8-4392-af89-47a191242b44",
+  asset_provider: "vercel_blob",
+  asset_visibility: "private"
 };
 
 async function buildTestServer() {
@@ -126,6 +140,34 @@ describe("ordersPlugin", () => {
       ]
     });
     expect(response.body).not.toContain("production_notes");
+
+    await app.close();
+  });
+
+  it("returns safe asset metadata for customization images without exposing private URLs", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [orderRow] })
+      .mockResolvedValueOnce({ rows: [itemRowWithAsset] });
+
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders/lookup",
+      payload: {
+        orderId: "KAP-1001",
+        email: "customer@example.com"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0].customizationAsset).toEqual({
+      byteSize: 2048,
+      contentType: "image/png",
+      id: "3a318519-8cf8-4392-af89-47a191242b44",
+      provider: "vercel_blob",
+      visibility: "private"
+    });
+    expect(response.body).not.toContain("blob.vercel-storage.com");
 
     await app.close();
   });

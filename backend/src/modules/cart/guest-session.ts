@@ -127,6 +127,29 @@ export async function getOrCreateGuestCartContext(
   return createGuestCartContext(request.server.redis, reply);
 }
 
+export async function getGuestCartContext(
+  request: FastifyRequest,
+): Promise<GuestCartContext | null> {
+  const sessionId = request.cookies[GUEST_SESSION_COOKIE];
+
+  if (!isValidSessionId(sessionId)) {
+    return null;
+  }
+
+  const session = parseGuestSession(
+    await request.server.redis.get(buildGuestSessionKey(sessionId)),
+  );
+
+  if (!session) {
+    return null;
+  }
+
+  return {
+    cartId: session.cartId,
+    sessionId
+  };
+}
+
 export async function getGuestCartItems(redis: RedisClientType, cartId: string) {
   const value = await redis.get(buildGuestCartItemsKey(cartId));
 
