@@ -105,7 +105,7 @@ describe("OrderLookupClient", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/orders/lookup",
+        "/api/orders/lookup",
         expect.objectContaining({
           headers: {
             "Content-Type": "application/json",
@@ -141,7 +141,7 @@ describe("OrderLookupClient", () => {
 
     expect(await screen.findByText("Graduation stole")).toBeInTheDocument();
     expect(authState.getToken).toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledWith("/orders/me", {
+    expect(fetchMock).toHaveBeenCalledWith("/api/orders/me", {
       headers: { Authorization: "Bearer test-token" },
     });
   });

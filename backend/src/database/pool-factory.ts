@@ -36,17 +36,6 @@ function getSharedPoolConfig(databaseConfig: DatabaseConfig): PoolConfig {
   };
 }
 
-function buildSslConfig(databaseSslMode: DatabaseConfig["sslMode"]) {
-  switch (databaseSslMode) {
-    case "disable":
-      return undefined;
-    case "no-verify":
-      return { rejectUnauthorized: false };
-    case "require":
-      return { rejectUnauthorized: true };
-  }
-}
-
 function createPostgresPool(databaseConfig: DatabaseConfig) {
   if (!databaseConfig.url) {
     throw new Error("DATABASE_URL is required");

@@ -39,10 +39,21 @@ const environmentSchema = Joi.object({
   DATABASE_MAX_CONNECTIONS: Joi.number().integer().min(1).default(20),
   DATABASE_RESERVED_CONNECTIONS: Joi.number().integer().min(0).default(5),
   DATABASE_MAX_APP_INSTANCES: Joi.number().integer().min(1).default(3),
+  ASSET_UPLOAD_ALLOWED_IMAGE_TYPES: Joi.string()
+    .trim()
+    .default("image/jpeg,image/png,image/webp"),
+  ASSET_UPLOAD_CALLBACK_SECRET: Joi.string().trim().optional(),
+  ASSET_UPLOAD_MAX_IMAGE_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(5 * 1024 * 1024),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required()
 }).unknown(true);
 
 type EnvironmentShape = {
+  ASSET_UPLOAD_ALLOWED_IMAGE_TYPES: string;
+  ASSET_UPLOAD_CALLBACK_SECRET?: string;
+  ASSET_UPLOAD_MAX_IMAGE_BYTES: number;
   CLERK_JWKS_URL: string;
   CLERK_JWT_ISSUER: string;
   CLERK_PUBLISHABLE_KEY: string;
@@ -116,13 +127,15 @@ function validateEnvironment(): ValidatedEnvironmentShape {
     );
   }
 
-  return environment;
+  return {
+    ...environment,
+    DATABASE_SSL_MODE:
+      environment.DATABASE_SSL_MODE ??
+      (environment.NODE_ENV === "production" ? "require" : "disable")
+  };
 }
 
 const environment = validateEnvironment();
-const databaseSslMode =
-  environment.DATABASE_SSL_MODE ??
-  (environment.NODE_ENV === "production" ? "require" : "disable");
 
 export const config = Object.freeze({
   app: {
@@ -130,6 +143,15 @@ export const config = Object.freeze({
     logLevel: environment.LOG_LEVEL,
     nodeEnv: environment.NODE_ENV,
     port: environment.PORT
+  },
+  assets: {
+    allowedImageContentTypes: environment.ASSET_UPLOAD_ALLOWED_IMAGE_TYPES.split(
+      ",",
+    )
+      .map((contentType) => contentType.trim())
+      .filter(Boolean),
+    maxImageBytes: environment.ASSET_UPLOAD_MAX_IMAGE_BYTES,
+    uploadCallbackSecret: environment.ASSET_UPLOAD_CALLBACK_SECRET
   },
   auth: {
     clerk: {
@@ -156,7 +178,7 @@ export const config = Object.freeze({
       max: environment.DATABASE_POOL_MAX,
       statementTimeoutMillis: environment.DATABASE_STATEMENT_TIMEOUT_MS
     },
-    sslMode: databaseSslMode,
+    sslMode: environment.DATABASE_SSL_MODE,
     url: environment.DATABASE_URL
   },
   payments: {

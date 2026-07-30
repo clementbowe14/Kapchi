@@ -30,6 +30,8 @@ CLERK_WEBHOOK_SECRET=...
 STRIPE_SECRET_KEY=...
 STRIPE_WEBHOOK_SECRET=...
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...
+BLOB_READ_WRITE_TOKEN=...
+ASSET_UPLOAD_CALLBACK_SECRET=...
 ```
 
 Optional runtime environment variables:
@@ -44,10 +46,18 @@ DATABASE_POOL_MAX=10
 DATABASE_CONNECTION_TIMEOUT_MS=10000
 DATABASE_IDLE_TIMEOUT_MS=30000
 STRIPE_API_VERSION=2026-02-25.clover
+ASSET_UPLOAD_ALLOWED_IMAGE_TYPES=image/jpeg,image/png,image/webp
+ASSET_UPLOAD_MAX_IMAGE_BYTES=5242880
 ```
 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is also needed at build time for the Next.js
 build. In DigitalOcean App Platform, configure it with build and run scope.
+
+Vercel Blob customer upload support uses `BLOB_READ_WRITE_TOKEN` in the Next.js
+runtime and `ASSET_UPLOAD_CALLBACK_SECRET` in both the Next.js and Fastify
+runtimes. Fastify authorizes upload intent and stores canonical provider-neutral
+asset metadata; the Next.js route only handles the Vercel Blob token exchange
+and completion callback.
 
 Configure production PostgreSQL credentials in the deployment platform's
 encrypted runtime environment or managed database binding, not in committed

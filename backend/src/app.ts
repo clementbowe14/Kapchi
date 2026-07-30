@@ -6,6 +6,7 @@ import * as fastify from "fastify";
 import { config } from "./config/index.js";
 import { closeDatabasePool } from "./database/index.js";
 import { authPlugin } from "./modules/auth/index.js";
+import assetsPlugin from "./modules/assets/plugin.js";
 import cartPlugin from "./modules/cart/plugin.js";
 import healthPlugin from "./modules/health/plugin.js";
 import listingsPlugin from "./modules/listings/plugin.js";
@@ -42,6 +43,7 @@ export async function buildServer() {
   await app.register(authPlugin);
   await app.register(healthPlugin);
 
+  await app.register(assetsPlugin, { prefix: "/assets" });
   await app.register(usersPlugin, { prefix: "/users" });
   await app.register(listingsPlugin, { prefix: "/listings" });
   await app.register(cartPlugin, { prefix: "/cart" });

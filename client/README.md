@@ -25,13 +25,37 @@ Create a local env file in `client/.env`:
 ```bash
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_publishable_key
 CLERK_SECRET_KEY=your_secret_key
+BLOB_READ_WRITE_TOKEN=vercel_blob_read_write_token
+ASSET_UPLOAD_CALLBACK_SECRET=replace_me_shared_callback_secret
+BACKEND_INTERNAL_URL=http://localhost:4000
+# Optional for full local Vercel Blob callbacks through a tunnel:
+# VERCEL_BLOB_CALLBACK_URL=https://your-ngrok-domain.ngrok-free.app
 ```
 
 Notes:
 
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is required for the Clerk frontend provider.
 - `CLERK_SECRET_KEY` is also currently expected by the app setup.
+- `BLOB_READ_WRITE_TOKEN` is used by the Next.js Blob upload route to issue
+  short-lived browser upload tokens.
+- `ASSET_UPLOAD_CALLBACK_SECRET` must match the backend value so completed Blob
+  uploads can finalize the canonical asset row.
+- `BACKEND_INTERNAL_URL` points the Next.js Blob route at Fastify for upload
+  authorization and metadata persistence.
 - Do not commit real production secrets.
+
+## Customer Image Uploads
+
+Customer customization uploads use the Vercel Blob client SDK. The browser first
+asks Fastify for an upload intent through `/api/assets/upload-intents`; Fastify
+validates the cart/listing/customization context and creates a pending
+provider-neutral asset row. The browser then uploads directly to Vercel Blob
+through `/api/blob/upload`. That Next.js route uses Vercel's `handleUpload`
+helper only as the Blob transport adapter and calls Fastify again when Vercel
+reports completion.
+
+Frontend code should save the returned `assetId` with customization/cart/order
+data. Do not store raw Blob URLs in customization payloads.
 
 ## Install Dependencies
 

@@ -13,14 +13,16 @@ This backend workspace currently includes:
   - `requireAuth`
   - `requireRole`
   - `requirePermission`
-- empty module registration points for:
+- module registration points for:
+  - assets
   - users
   - listings
   - cart
   - payments
   - shipping
 
-No business logic has been implemented for domain modules yet.
+Some domain modules are still skeletal. Asset upload authorization and customer
+order lookup are wired.
 
 ## Requirements
 
@@ -273,6 +275,55 @@ For Stripe payment flow verification, including Checkout success, failed
 payments, cancellation or expiration, duplicate webhook delivery, required
 placeholder environment variables, Stripe CLI setup, and database checks, see
 [`docs/payment-verification.md`](docs/payment-verification.md).
+
+### Customer Image Asset Uploads
+
+Customer-uploaded customization images are stored in Vercel Blob, while
+PostgreSQL owns the canonical provider-neutral `assets` row. The domain model
+uses `provider`, `storage_key`, `url`, `content_type`, `byte_size`, `checksum`,
+`visibility`, `context`, and ownership/linkage fields so the storage adapter can
+move to Cloudflare R2 later without rewriting cart, order, or customization
+records.
+
+The Fastify backend is the source of truth for upload authorization and asset
+metadata:
+
+- `POST /assets/upload-intents` validates the actor, upload context, content
+  type, size, and cart/listing/fabric ownership before creating a pending asset
+  row.
+- `POST /assets/upload-token-authorizations` revalidates a pending intent before
+  the Next.js Vercel Blob route issues a client upload token.
+- `POST /assets/upload-completions` finalizes the pending asset row after Vercel
+  Blob reports the upload metadata.
+
+Supported contexts:
+
+| Context | Who can upload | Visibility default |
+| --- | --- | --- |
+| `customization_image` | Authenticated customer or guest with the matching active cart session, active graduation stole listing, and image-enabled customization set | `private` |
+| `catalog_listing_image` | Admin role or catalog/listing asset permission | `public_catalog` |
+| `fabric_image` | Admin role or fabric/catalog asset permission | `public_catalog` |
+
+Guest sessions are resolved through the `session_id` cookie and Redis session
+record. The raw session token is never stored in PostgreSQL; guest uploads link
+to the cart id and hashed guest cart ownership already used by the backend.
+
+Backend variables:
+
+```bash
+ASSET_UPLOAD_ALLOWED_IMAGE_TYPES=image/jpeg,image/png,image/webp
+ASSET_UPLOAD_MAX_IMAGE_BYTES=5242880
+ASSET_UPLOAD_CALLBACK_SECRET=replace_me_shared_callback_secret
+```
+
+Use the same `ASSET_UPLOAD_CALLBACK_SECRET` in the Next.js runtime so only the
+frontend's Vercel Blob callback adapter can finalize uploads. Configure the real
+secret in deployment environment variables, not in committed files.
+
+Local Vercel Blob callback behavior depends on Vercel being able to reach the
+Next.js callback route. Use a tunnel such as ngrok and set
+`VERCEL_BLOB_CALLBACK_URL` in `client/.env` when testing the full callback flow
+locally.
 
 ### PostgreSQL Connection Pooling
 

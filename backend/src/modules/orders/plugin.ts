@@ -19,6 +19,11 @@ type OrderRow = {
 };
 
 type OrderItemRow = {
+  asset_byte_size: number | null;
+  asset_content_type: string | null;
+  asset_id: string | null;
+  asset_provider: string | null;
+  asset_visibility: string | null;
   id: string;
   order_id: string;
   quantity: number;
@@ -51,6 +56,13 @@ type CustomerSafeOrder = {
 };
 
 type CustomerSafeOrderItem = {
+  customizationAsset?: {
+    byteSize: number;
+    contentType: string;
+    id: string;
+    provider: string;
+    visibility: string;
+  };
   id: string;
   quantity: number;
   unitAmountCents: number;
@@ -139,7 +151,22 @@ function serializeOrderItem(item: OrderItemRow): CustomerSafeOrderItem {
     currency: item.currency,
     listingSnapshot: item.listing_snapshot,
     ...(item.fabric_snapshot === null ? {} : { fabricSnapshot: item.fabric_snapshot }),
-    customizationSummary: item.customization_snapshot
+    customizationSummary: item.customization_snapshot,
+    ...(item.asset_id &&
+    item.asset_provider &&
+    item.asset_content_type &&
+    typeof item.asset_byte_size === "number" &&
+    item.asset_visibility
+      ? {
+          customizationAsset: {
+            byteSize: item.asset_byte_size,
+            contentType: item.asset_content_type,
+            id: item.asset_id,
+            provider: item.asset_provider,
+            visibility: item.asset_visibility
+          }
+        }
+      : {})
   };
 }
 
@@ -184,18 +211,24 @@ async function loadOrderItems(orderIds: string[]) {
   const result = await getDatabasePool().query<OrderItemRow>(
     `
       select
-        id,
-        order_id,
-        quantity,
-        unit_amount_cents,
-        total_amount_cents,
-        currency,
-        listing_snapshot,
-        fabric_snapshot,
-        customization_snapshot
-      from order_items
-      where order_id = any($1::uuid[])
-      order by created_at asc, id asc
+        oi.id,
+        oi.order_id,
+        oi.quantity,
+        oi.unit_amount_cents,
+        oi.total_amount_cents,
+        oi.currency,
+        oi.listing_snapshot,
+        oi.fabric_snapshot,
+        oi.customization_snapshot,
+        a.id as asset_id,
+        a.provider as asset_provider,
+        a.content_type as asset_content_type,
+        a.byte_size as asset_byte_size,
+        a.visibility as asset_visibility
+      from order_items oi
+      left join assets a on a.id = oi.customization_asset_id
+      where oi.order_id = any($1::uuid[])
+      order by oi.created_at asc, oi.id asc
     `,
     [orderIds],
   );
