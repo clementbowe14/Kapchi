@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
+  MAX_CART_SUBTOTAL_CENTS,
   MAX_GUEST_CART_ITEMS,
   serializeGuestCartItems,
   type GuestCartContext,
@@ -237,8 +238,9 @@ export class CartRepository {
               from cart_items ci
               where ci.customization_asset_id = a.id
                 and ($5::uuid is null or ci.id <> $5::uuid)
-            )
+          )
           limit 1
+          for update of a
         `,
         [
           input.imageAssetId,
@@ -489,15 +491,37 @@ export class CartRepository {
     );
   }
 
-  async attachAsset(client: Queryable, cartId: string, assetId: string | null) {
-    if (!assetId) {
+  async attachAsset(client: Queryable, cartId: string, input: CartItemInput) {
+    if (!input.imageAssetId) {
       return;
     }
 
-    await client.query(
-      "update assets set status = 'attached' where id = $1 and cart_id = $2",
-      [assetId, cartId],
+    const attached = await client.query<{ id: string }>(
+      `
+        update assets
+        set status = 'attached'
+        where id = $1
+          and cart_id = $2
+          and listing_id = $3
+          and listing_customization_set_id = $4
+          and context = 'customization_image'
+          and visibility = 'private'
+          and status in ('uploaded', 'attached')
+        returning id
+      `,
+      [
+        input.imageAssetId,
+        cartId,
+        input.listingId,
+        input.listingCustomizationSetId
+      ],
     );
+
+    if (attached.rows.length !== 1) {
+      throw new CartConflictError(
+        "The selected customization image is no longer available.",
+      );
+    }
   }
 
   async releaseAsset(client: Queryable, cartId: string, assetId: string | null) {
@@ -521,18 +545,34 @@ export class CartRepository {
   }
 
   async finishMutation(client: Queryable, cart: CartRow): Promise<CartMutationResult> {
-    const subtotal = await client.query<{ subtotal_cents: number }>(
+    const total = await client.query<{ subtotal_cents: string }>(
       `
-        update carts c
-        set subtotal_cents = coalesce((
-          select sum(ci.quantity * ci.unit_amount_cents)::integer
-          from cart_items ci
-          where ci.cart_id = c.id
-        ), 0)
-        where c.id = $1
-        returning subtotal_cents
+        select coalesce(
+          sum(ci.quantity::bigint * ci.unit_amount_cents::bigint),
+          0::bigint
+        )::text as subtotal_cents
+        from cart_items ci
+        where ci.cart_id = $1
       `,
       [cart.id],
+    );
+    const subtotalCents = BigInt(total.rows[0]?.subtotal_cents ?? "0");
+
+    if (
+      subtotalCents < 0n ||
+      subtotalCents > BigInt(MAX_CART_SUBTOTAL_CENTS)
+    ) {
+      throw new CartConflictError("Cart total exceeds the supported maximum.");
+    }
+
+    const subtotal = await client.query<{ subtotal_cents: number }>(
+      `
+        update carts
+        set subtotal_cents = $2
+        where id = $1
+        returning subtotal_cents
+      `,
+      [cart.id, Number(subtotalCents)],
     );
     const items = await this.loadProjection(client, cart.id);
 
@@ -573,6 +613,17 @@ export class CartRepository {
   }
 
   async loadGuestView(context: GuestCartContext): Promise<GuestCartView> {
+    const cart = await this.loadGuestCartShell(context);
+
+    return {
+      cartId: cart.id,
+      expiresAt: cart.expires_at,
+      items: await this.loadProjection(this.pool, cart.id),
+      subtotalCents: cart.subtotal_cents
+    };
+  }
+
+  async loadGuestCartShell(context: GuestCartContext) {
     const cartResult = await this.pool.query<CartRow>(
       `
         select id, currency, subtotal_cents, expires_at
@@ -591,11 +642,6 @@ export class CartRepository {
       throw new CartNotFoundError();
     }
 
-    return {
-      cartId: cart.id,
-      expiresAt: cart.expires_at,
-      items: await this.loadProjection(this.pool, cart.id),
-      subtotalCents: cart.subtotal_cents
-    };
+    return cart;
   }
 }

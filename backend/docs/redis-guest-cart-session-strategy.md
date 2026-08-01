@@ -133,6 +133,13 @@ These limits protect the cart response from malformed or unexpectedly large
 cache values. Code that writes this projection must build a fresh value from
 durable rows rather than copying arbitrary request data into Redis.
 
+After PostgreSQL validates the durable cart shell and guest ownership, a valid
+Redis projection may be returned without reloading the durable item rows. The
+display can therefore lag PostgreSQL until the next mutation, cache miss, or
+rejected cache value triggers a rebuild. This staleness is accepted only for
+cart display; checkout always reloads and revalidates PostgreSQL rows and never
+uses the Redis projection for price, availability, ownership, or order data.
+
 ## PostgreSQL Durable Model
 
 PostgreSQL remains the source of truth for checkout and orders:

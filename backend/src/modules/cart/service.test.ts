@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import type { RedisClientType } from "redis";
 
@@ -75,7 +75,30 @@ function projectionRow() {
   };
 }
 
-function createPool({ authorized = true } = {}) {
+function displayItem() {
+  return {
+    cartItemId: ids.cartItem,
+    listingId: ids.listing,
+    listingSlug: "graduation-stole",
+    title: "Graduation Stole",
+    quantity: 2,
+    unitAmountCents: 8500,
+    currency: "usd",
+    fabricId: null,
+    customizationSetId: ids.customizationSet,
+    customizationSummary: {
+      imageAssetId: null,
+      line1: "Class of 2027",
+      line2: "Kapchi University"
+    },
+    validationStatus: "valid"
+  } as const;
+}
+
+function createPool({
+  authorized = true,
+  cartExpiresAt = expiresAt
+}: { authorized?: boolean; cartExpiresAt?: string } = {}) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
   const release = vi.fn();
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
@@ -91,7 +114,7 @@ function createPool({ authorized = true } = {}) {
               {
                 id: ids.cart,
                 currency: "usd",
-                expires_at: expiresAt,
+                expires_at: cartExpiresAt,
                 subtotal_cents: 0
               }
             ]
@@ -122,7 +145,10 @@ function createPool({ authorized = true } = {}) {
     if (sql.includes("insert into cart_items")) {
       return { rows: [{ id: ids.cartItem }] };
     }
-    if (sql.includes("update carts c")) {
+    if (sql.includes("sum(ci.quantity::bigint")) {
+      return { rows: [{ subtotal_cents: "17000" }] };
+    }
+    if (sql.includes("update carts")) {
       return { rows: [{ subtotal_cents: 17000 }] };
     }
     if (sql.includes("from cart_items ci") && sql.includes("join listings")) {
@@ -140,7 +166,7 @@ function createPool({ authorized = true } = {}) {
   return { calls, pool, query, release };
 }
 
-function createRedis(setError?: Error) {
+function createRedis(setError?: Error, cachedValue: string | null = null) {
   const setEx = vi.fn(async (_key: string, _ttl: number, _value: string) => {
     if (setError) {
       throw setError;
@@ -149,7 +175,7 @@ function createRedis(setError?: Error) {
   });
   const redis = {
     del: vi.fn(async () => 1),
-    get: vi.fn(async () => null),
+    get: vi.fn(async () => cachedValue),
     setEx
   } as unknown as RedisClientType;
   return { redis, setEx };
@@ -168,11 +194,42 @@ function createCustomPool(
   return { pool, query };
 }
 
+function createReadPool() {
+  const query = vi.fn(async (sql: string) => {
+    if (sql.includes("from carts")) {
+      return {
+        rows: [
+          {
+            id: ids.cart,
+            currency: "usd",
+            expires_at: expiresAt,
+            subtotal_cents: 17000
+          }
+        ]
+      };
+    }
+    if (sql.includes("from cart_items ci") && sql.includes("join listings")) {
+      return { rows: [projectionRow()] };
+    }
+    return { rows: [] };
+  });
+  const pool = {
+    connect: vi.fn(),
+    query
+  } as unknown as Pool;
+
+  return { pool, query };
+}
+
 describe("CartService guest mutations", () => {
   const logger = { warn: vi.fn() };
 
   beforeEach(() => {
     logger.warn.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("locks hashed durable ownership and persists server-derived pricing", async () => {
@@ -240,6 +297,156 @@ describe("CartService guest mutations", () => {
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("secret-host");
   });
 
+  it("writes the projection with the remaining durable cart lifetime", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2027-08-01T11:00:00.000Z");
+    const { pool } = createPool({ cartExpiresAt: expiresAt });
+    const { redis, setEx } = createRedis();
+    const service = new CartService(pool, redis, logger as never);
+
+    await service.addGuestItem({ cartId: ids.cart, sessionId }, input());
+
+    expect(setEx).toHaveBeenCalledWith(
+      `guest_cart:${ids.cart}:items`,
+      3600,
+      expect.any(String),
+    );
+  });
+
+  it("locks an owned image and rolls back when conditional attachment loses the row", async () => {
+    const { pool, query } = createCustomPool(async (sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts") && sql.includes("for update")) {
+        return {
+          rows: [
+            {
+              id: ids.cart,
+              currency: "usd",
+              expires_at: expiresAt,
+              subtotal_cents: 0
+            }
+          ]
+        };
+      }
+      if (sql.includes("select count(*)")) {
+        return { rows: [{ count: 0 }] };
+      }
+      if (sql.includes("from listings l")) {
+        return {
+          rows: [
+            {
+              currency: "usd",
+              customization_enabled: true,
+              listing_status: "active",
+              max_chars: 120,
+              min_chars: 0,
+              price_variant_active: true,
+              requires_fabric: false,
+              requires_image: true,
+              requires_text: true,
+              unit_amount_cents: 8500
+            }
+          ]
+        };
+      }
+      if (sql.includes("from assets a")) {
+        return { rows: [{ id: ids.asset }] };
+      }
+      if (sql.includes("insert into cart_items")) {
+        return { rows: [{ id: ids.cartItem }] };
+      }
+      if (sql.includes("update assets")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+    const { redis, setEx } = createRedis();
+    const service = new CartService(pool, redis, logger as never);
+
+    await expect(
+      service.addGuestItem(
+        { cartId: ids.cart, sessionId },
+        { ...input(), imageAssetId: ids.asset },
+      ),
+    ).rejects.toMatchObject({ name: "CartConflictError" });
+
+    const sql = query.mock.calls.map(([statement]) => String(statement));
+    expect(sql.find((statement) => statement.includes("from assets a"))).toContain(
+      "for update of a",
+    );
+    expect(sql.find((statement) => statement.includes("update assets"))).toContain(
+      "status in ('uploaded', 'attached')",
+    );
+    expect(sql.at(-1)).toBe("rollback");
+    expect(setEx).not.toHaveBeenCalled();
+  });
+
+  it("rolls back before writing an overflowing subtotal", async () => {
+    const { pool, query } = createCustomPool(async (sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts") && sql.includes("for update")) {
+        return {
+          rows: [
+            {
+              id: ids.cart,
+              currency: "usd",
+              expires_at: expiresAt,
+              subtotal_cents: 0
+            }
+          ]
+        };
+      }
+      if (sql.includes("select count(*)")) {
+        return { rows: [{ count: 0 }] };
+      }
+      if (sql.includes("from listings l")) {
+        return {
+          rows: [
+            {
+              currency: "usd",
+              customization_enabled: true,
+              listing_status: "active",
+              max_chars: 120,
+              min_chars: 0,
+              price_variant_active: true,
+              requires_fabric: false,
+              requires_image: false,
+              requires_text: true,
+              unit_amount_cents: 8500
+            }
+          ]
+        };
+      }
+      if (sql.includes("insert into cart_items")) {
+        return { rows: [{ id: ids.cartItem }] };
+      }
+      if (sql.includes("sum(ci.quantity::bigint")) {
+        return { rows: [{ subtotal_cents: "2147483648" }] };
+      }
+      return { rows: [] };
+    });
+    const { redis, setEx } = createRedis();
+    const service = new CartService(pool, redis, logger as never);
+
+    await expect(
+      service.addGuestItem({ cartId: ids.cart, sessionId }, input()),
+    ).rejects.toMatchObject({
+      message: "Cart total exceeds the supported maximum.",
+      name: "CartConflictError"
+    });
+
+    const sql = query.mock.calls.map(([statement]) => String(statement));
+    expect(sql.some((statement) => statement.includes("set subtotal_cents = $2"))).toBe(
+      false,
+    );
+    expect(sql.at(-1)).toBe("rollback");
+    expect(setEx).not.toHaveBeenCalled();
+  });
+
   it("releases fabric inventory and an unreferenced asset when removing a line", async () => {
     const { pool, query } = createCustomPool(async (sql) => {
       if (["begin", "commit", "rollback"].includes(sql)) {
@@ -280,7 +487,10 @@ describe("CartService guest mutations", () => {
           ]
         };
       }
-      if (sql.includes("update carts c")) {
+      if (sql.includes("sum(ci.quantity::bigint")) {
+        return { rows: [{ subtotal_cents: "0" }] };
+      }
+      if (sql.includes("update carts")) {
         return { rows: [{ subtotal_cents: 0 }] };
       }
       return { rows: [] };
@@ -393,5 +603,44 @@ describe("CartService guest mutations", () => {
 
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
     expect(setEx).not.toHaveBeenCalled();
+  });
+});
+
+describe("CartService guest display projection", () => {
+  const logger = { warn: vi.fn() };
+
+  beforeEach(() => {
+    logger.warn.mockReset();
+  });
+
+  it("returns a valid cache hit after only durable cart-shell validation", async () => {
+    const { pool, query } = createReadPool();
+    const { redis, setEx } = createRedis(undefined, JSON.stringify([displayItem()]));
+    const service = new CartService(pool, redis, logger as never);
+
+    const result = await service.getGuestCart({ cartId: ids.cart, sessionId });
+
+    expect(result.items).toEqual([displayItem()]);
+    expect(query).toHaveBeenCalledOnce();
+    expect(String(query.mock.calls[0][0])).toContain("from carts");
+    expect(String(query.mock.calls[0][0])).not.toContain("join listings");
+    expect(setEx).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a cache miss", null],
+    ["a rejected cache value", "{malformed"]
+  ])("rebuilds the PostgreSQL projection after %s", async (_label, cachedValue) => {
+    const { pool, query } = createReadPool();
+    const { redis, setEx } = createRedis(undefined, cachedValue);
+    const service = new CartService(pool, redis, logger as never);
+
+    const result = await service.getGuestCart({ cartId: ids.cart, sessionId });
+
+    expect(result.items).toEqual([displayItem()]);
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("join listings")),
+    ).toBe(true);
+    expect(setEx).toHaveBeenCalledOnce();
   });
 });

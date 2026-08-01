@@ -33,7 +33,7 @@ export class CartService {
   private readonly repository: CartRepository;
 
   constructor(
-    pool: Pick<Pool, "connect" | "query">,
+    private readonly pool: Pick<Pool, "connect" | "query">,
     private readonly redis: RedisClientType,
     private readonly logger: SafeLogger,
   ) {
@@ -41,28 +41,36 @@ export class CartService {
   }
 
   async getGuestCart(context: GuestCartContext) {
-    const view = await this.repository.loadGuestView(durableContext(context));
+    const cart = await this.repository.loadGuestCartShell(durableContext(context));
 
     try {
-      const cached = await readGuestCartItems(this.redis, view.cartId);
-      const durableValue = serializeGuestCartItems(view.items);
-      const cachedValue = cached.hit ? serializeGuestCartItems(cached.items) : null;
+      const cached = await readGuestCartItems(this.redis, cart.id);
 
-      if (cachedValue !== durableValue) {
-        await writeGuestCartItems(
-          this.redis,
-          view.cartId,
-          view.items,
-          remainingTtlSeconds(view.expiresAt),
-        );
+      if (cached.hit) {
+        // Display projections may be stale until the next mutation. Checkout never trusts them.
+        return {
+          cartId: cart.id,
+          expiresAt: cart.expires_at,
+          items: cached.items,
+          subtotalCents: cart.subtotal_cents
+        };
       }
     } catch (error) {
       this.logger.warn(
-        { cartId: view.cartId, cacheError: safeCacheError(error) },
-        "Guest cart projection refresh failed",
+        { cartId: cart.id, cacheError: safeCacheError(error) },
+        "Guest cart projection read failed",
       );
     }
 
+    const view = {
+      cartId: cart.id,
+      expiresAt: cart.expires_at,
+      items: await this.repository.loadProjection(this.pool, cart.id),
+      subtotalCents: cart.subtotal_cents
+    };
+
+    serializeGuestCartItems(view.items);
+    await this.refreshAfterMutation(view);
     return view;
   }
 
@@ -88,7 +96,7 @@ export class CartService {
           null,
         );
       }
-      await this.repository.attachAsset(client, cart.id, input.imageAssetId);
+      await this.repository.attachAsset(client, cart.id, input);
 
       return {
         ...(await this.repository.finishMutation(client, cart)),
@@ -137,7 +145,7 @@ export class CartService {
         input,
         selection.unit_amount_cents,
       );
-      await this.repository.attachAsset(client, cart.id, input.imageAssetId);
+      await this.repository.attachAsset(client, cart.id, input);
 
       if (current.customization_asset_id !== input.imageAssetId) {
         await this.repository.releaseAsset(
@@ -193,4 +201,5 @@ export class CartService {
       );
     }
   }
+
 }

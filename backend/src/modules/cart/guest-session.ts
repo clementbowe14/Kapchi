@@ -13,7 +13,7 @@ const CURRENCY_PATTERN = /^[a-z]{3}$/;
 export const MAX_GUEST_CART_PROJECTION_BYTES = 64 * 1024;
 export const MAX_GUEST_CART_ITEMS = 100;
 export const MAX_GUEST_CART_QUANTITY = 999;
-const MAX_POSTGRES_INTEGER = 2_147_483_647;
+export const MAX_CART_SUBTOTAL_CENTS = 2_147_483_647;
 const MAX_LISTING_TEXT_LENGTH = 255;
 const MAX_CUSTOMIZATION_LINE_LENGTH = 512;
 type CookieNodeEnv = typeof config.app.nodeEnv;
@@ -203,7 +203,7 @@ function parseGuestCartDisplayItem(value: unknown): GuestCartDisplayItem | null 
     !isBoundedString(value.listingSlug, 1, MAX_LISTING_TEXT_LENGTH) ||
     !isBoundedString(value.title, 1, MAX_LISTING_TEXT_LENGTH) ||
     !isIntegerBetween(value.quantity, 1, MAX_GUEST_CART_QUANTITY) ||
-    !isIntegerBetween(value.unitAmountCents, 0, MAX_POSTGRES_INTEGER) ||
+    !isIntegerBetween(value.unitAmountCents, 0, MAX_CART_SUBTOTAL_CENTS) ||
     typeof value.currency !== "string" ||
     !CURRENCY_PATTERN.test(value.currency) ||
     !(value.fabricId === null || isUuid(value.fabricId)) ||

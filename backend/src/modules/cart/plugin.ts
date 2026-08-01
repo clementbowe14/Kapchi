@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply, RouteHandlerMethod } from "fastify";
 import Joi from "joi";
+import { authMiddleware } from "../auth/index.js";
 import {
   getGuestCartContext,
   getOrCreateGuestCartContext
@@ -63,6 +64,15 @@ function parseCartItem(body: unknown) {
   });
 }
 
+function rejectAuthenticatedMutation(reply: FastifyReply) {
+  return requestError(
+    reply,
+    403,
+    "AUTHENTICATED_CART_MUTATION_UNAVAILABLE",
+    "Authenticated cart mutations are not available yet.",
+  );
+}
+
 const cartPlugin: FastifyPluginAsync = async (fastify) => {
   const service = new CartService(fastify.pg, fastify.redis, fastify.log);
 
@@ -83,80 +93,106 @@ const cartPlugin: FastifyPluginAsync = async (fastify) => {
     };
   };
 
-  fastify.get("/", getCart);
+  fastify.get("/", { preHandler: [authMiddleware] }, getCart);
 
-  fastify.post("/items", async (request, reply) => {
-    const { error, value } = parseCartItem(request.body);
+  fastify.post(
+    "/items",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      if (request.auth) {
+        return rejectAuthenticatedMutation(reply);
+      }
 
-    if (error) {
-      return requestError(reply, 400, "VALIDATION_ERROR", error.message);
-    }
+      const { error, value } = parseCartItem(request.body);
 
-    try {
-      const context = await getOrCreateGuestCartContext(request, reply);
-      const result = await service.addGuestItem(context, value as CartItemInput);
-      return reply.code(201).send(result);
-    } catch (mutationError) {
-      return handleCartError(reply, mutationError);
-    }
-  });
+      if (error) {
+        return requestError(reply, 400, "VALIDATION_ERROR", error.message);
+      }
 
-  fastify.patch("/items/:cartItemId", async (request, reply) => {
-    const body = parseCartItem(request.body);
-    const params = cartItemParamsSchema.validate(request.params, {
-      abortEarly: false,
-      allowUnknown: false
-    });
+      try {
+        const context = await getOrCreateGuestCartContext(request, reply);
+        const result = await service.addGuestItem(context, value as CartItemInput);
+        return reply.code(201).send(result);
+      } catch (mutationError) {
+        return handleCartError(reply, mutationError);
+      }
+    },
+  );
 
-    if (body.error || params.error) {
-      return requestError(
-        reply,
-        400,
-        "VALIDATION_ERROR",
-        body.error?.message ?? params.error?.message ?? "Invalid cart item request.",
-      );
-    }
+  fastify.patch(
+    "/items/:cartItemId",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      if (request.auth) {
+        return rejectAuthenticatedMutation(reply);
+      }
 
-    const context = await getGuestCartContext(request);
-    if (!context) {
-      return requestError(reply, 404, "CART_NOT_FOUND", "Cart not found.");
-    }
+      const body = parseCartItem(request.body);
+      const params = cartItemParamsSchema.validate(request.params, {
+        abortEarly: false,
+        allowUnknown: false
+      });
 
-    try {
-      return await service.updateGuestItem(
-        context,
-        (params.value as { cartItemId: string }).cartItemId,
-        body.value as CartItemInput,
-      );
-    } catch (mutationError) {
-      return handleCartError(reply, mutationError);
-    }
-  });
+      if (body.error || params.error) {
+        return requestError(
+          reply,
+          400,
+          "VALIDATION_ERROR",
+          body.error?.message ??
+            params.error?.message ??
+            "Invalid cart item request.",
+        );
+      }
 
-  fastify.delete("/items/:cartItemId", async (request, reply) => {
-    const { error, value } = cartItemParamsSchema.validate(request.params, {
-      abortEarly: false,
-      allowUnknown: false
-    });
+      const context = await getGuestCartContext(request);
+      if (!context) {
+        return requestError(reply, 404, "CART_NOT_FOUND", "Cart not found.");
+      }
 
-    if (error) {
-      return requestError(reply, 400, "VALIDATION_ERROR", error.message);
-    }
+      try {
+        return await service.updateGuestItem(
+          context,
+          (params.value as { cartItemId: string }).cartItemId,
+          body.value as CartItemInput,
+        );
+      } catch (mutationError) {
+        return handleCartError(reply, mutationError);
+      }
+    },
+  );
 
-    const context = await getGuestCartContext(request);
-    if (!context) {
-      return requestError(reply, 404, "CART_NOT_FOUND", "Cart not found.");
-    }
+  fastify.delete(
+    "/items/:cartItemId",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      if (request.auth) {
+        return rejectAuthenticatedMutation(reply);
+      }
 
-    try {
-      return await service.removeGuestItem(
-        context,
-        (value as { cartItemId: string }).cartItemId,
-      );
-    } catch (mutationError) {
-      return handleCartError(reply, mutationError);
-    }
-  });
+      const { error, value } = cartItemParamsSchema.validate(request.params, {
+        abortEarly: false,
+        allowUnknown: false
+      });
+
+      if (error) {
+        return requestError(reply, 400, "VALIDATION_ERROR", error.message);
+      }
+
+      const context = await getGuestCartContext(request);
+      if (!context) {
+        return requestError(reply, 404, "CART_NOT_FOUND", "Cart not found.");
+      }
+
+      try {
+        return await service.removeGuestItem(
+          context,
+          (value as { cartItemId: string }).cartItemId,
+        );
+      } catch (mutationError) {
+        return handleCartError(reply, mutationError);
+      }
+    },
+  );
 };
 
 export default fp(cartPlugin, {
