@@ -5,7 +5,12 @@ import type { RedisClientType } from "redis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  constructEvent: vi.fn()
+  constructEvent: vi.fn(),
+  verifyClerkToken: vi.fn()
+}));
+
+vi.mock("../auth/jwt.js", () => ({
+  verifyClerkToken: mocks.verifyClerkToken
 }));
 
 vi.mock("../../config/index.js", () => ({
@@ -34,10 +39,14 @@ vi.mock("stripe", () => ({
   })
 }));
 
-const { default: paymentsPlugin } = await import("./plugin.js");
+const [{ authPlugin }, { default: paymentsPlugin }] = await Promise.all([
+  import("../auth/index.js"),
+  import("./plugin.js")
+]);
 
 async function buildTestServer() {
   const app = fastify({ logger: false });
+  await app.register(authPlugin);
   await app.register(paymentsPlugin, { prefix: "/payments" });
 
   return app;
@@ -46,6 +55,7 @@ async function buildTestServer() {
 describe("paymentsPlugin Stripe webhooks", () => {
   beforeEach(() => {
     mocks.constructEvent.mockReset();
+    mocks.verifyClerkToken.mockReset();
   });
 
   it("returns 400 when the Stripe signature is missing", async () => {
@@ -88,6 +98,43 @@ describe("paymentsPlugin Stripe webhooks", () => {
     await app.close();
   });
 
+  it("rejects authenticated checkout before guest or Redis access", async () => {
+    mocks.verifyClerkToken.mockResolvedValue({
+      claims: {},
+      permissions: [],
+      roles: [],
+      sessionId: "sess_authenticated",
+      token: "verified-token",
+      userId: "user_123"
+    });
+    const poolQuery = vi.fn();
+    const redisGet = vi.fn();
+    const app = fastify({ logger: false });
+    await app.register(cookie);
+    await app.register(authPlugin);
+    app.decorate("pg", { query: poolQuery } as unknown as Pool);
+    app.decorate("redis", { get: redisGet } as unknown as RedisClientType);
+    await app.register(paymentsPlugin, { prefix: "/payments" });
+
+    const response = await app.inject({
+      headers: { authorization: "Bearer verified-token" },
+      method: "POST",
+      payload: { customerEmail: "customer@example.com" },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "CART_CLAIM_REQUIRED",
+      message: "Claim the guest cart before starting authenticated checkout.",
+      statusCode: 409
+    });
+    expect(poolQuery).not.toHaveBeenCalled();
+    expect(redisGet).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
   it("derives checkout ownership from PostgreSQL without reading Redis", async () => {
     const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
     const poolQuery = vi.fn(async (_sql: string, _values: unknown[] = []) => ({
@@ -114,6 +161,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const redis = { get: redisGet } as unknown as RedisClientType;
     const app = fastify({ logger: false });
     await app.register(cookie);
+    await app.register(authPlugin);
     app.decorate("pg", pool);
     app.decorate("redis", redis);
     await app.register(paymentsPlugin, { prefix: "/payments" });

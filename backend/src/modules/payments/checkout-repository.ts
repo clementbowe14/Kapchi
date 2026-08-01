@@ -38,6 +38,7 @@ type CartItemRow = QueryResultRow & {
   fabric_name: string | null;
   fabric_quantity_on_hand: number | null;
   fabric_quantity_reserved: number | null;
+  fabric_reservation_id: string | null;
   fabric_reservation_quantity: number | null;
   fabric_reservation_fabric_id: string | null;
   fabric_sku: string | null;
@@ -54,17 +55,33 @@ type CartItemRow = QueryResultRow & {
   quantity: number;
   requires_image: boolean;
   requires_text: boolean;
-  stripe_price_id: string;
-  stripe_product_id: string;
+  stripe_price_id: string | null;
+  stripe_product_id: string | null;
   unit_amount_cents: number;
   variant_active: boolean;
   variant_customization_set_id: string;
   variant_listing_id: string;
 };
 
+type CartItemLockRow = QueryResultRow & {
+  customization_asset_id: string | null;
+  fabric_id: string | null;
+  id: string;
+  listing_customization_set_id: string;
+  listing_id: string;
+  listing_price_variant_id: string;
+};
+
 type ExistingOrderRow = QueryResultRow & {
   customer_email: string | null;
   id: string;
+  stripe_checkout_session_id: string | null;
+};
+
+type RetiredOrderRow = QueryResultRow & {
+  cart_id: string | null;
+  payment_status: string;
+  status: string;
   stripe_checkout_session_id: string | null;
 };
 
@@ -120,6 +137,8 @@ function validationFailure(item: CartItemRow) {
     item.listing_status !== "active" ||
     !item.customization_enabled ||
     !item.variant_active ||
+    !item.stripe_price_id ||
+    !item.stripe_product_id ||
     item.customization_listing_id !== item.listing_id ||
     item.variant_listing_id !== item.listing_id ||
     item.variant_customization_set_id !== item.listing_customization_set_id
@@ -171,6 +190,13 @@ function validationFailure(item: CartItemRow) {
   if (item.listing_requires_fabric && !item.fabric_id) {
     return {
       message: "A required fabric selection is missing.",
+      status: "invalid" as const
+    };
+  }
+
+  if (!item.fabric_id && item.fabric_reservation_id) {
+    return {
+      message: "A cart item has an unexpected fabric reservation.",
       status: "invalid" as const
     };
   }
@@ -268,7 +294,7 @@ export class CheckoutRepository {
         throw new CheckoutNeedsReviewError("The cart checkout state cannot be recovered.");
       }
 
-      const items = await this.loadCartItems(client, cart.id);
+      const items = await this.lockAndLoadCartItems(client, cart.id);
       if (items.length === 0) {
         throw new CheckoutNeedsReviewError("The cart is empty.");
       }
@@ -411,20 +437,42 @@ export class CheckoutRepository {
           ],
         );
 
-        await client.query(
-          `
-            update fabric_reservations
-            set order_id = $2, order_item_id = $3
-            where cart_item_id = $1 and status = 'active'
-          `,
-          [item.cart_item_id, orderId, orderItemId],
-        );
+        if (item.fabric_id && item.fabric_reservation_id) {
+          const reservation = await client.query<{ id: string }>(
+            `
+              update fabric_reservations
+              set order_id = $2, order_item_id = $3
+              where id = $1
+                and cart_item_id = $4
+                and cart_id = $5
+                and fabric_id = $6
+                and quantity = $7
+                and status = 'active'
+              returning id
+            `,
+            [
+              item.fabric_reservation_id,
+              orderId,
+              orderItemId,
+              item.cart_item_id,
+              cart.id,
+              item.fabric_id,
+              item.quantity
+            ],
+          );
+
+          if (reservation.rows.length !== 1) {
+            throw new CheckoutNeedsReviewError(
+              "A fabric reservation changed while checkout was starting.",
+            );
+          }
+        }
 
         lines.push({
           currency: item.currency,
           orderItemId,
           quantity: item.quantity,
-          stripePriceId: item.stripe_price_id
+          stripePriceId: item.stripe_price_id!
         });
       }
 
@@ -509,10 +557,124 @@ export class CheckoutRepository {
       `
         update orders
         set payment_status = 'failed'
-        where id = $1 and payment_status in ('unpaid', 'failed')
+        where id = $1
+          and status = 'pending_payment'
+          and payment_status in ('unpaid', 'checkout_started', 'failed')
       `,
       [orderId],
     );
+  }
+
+  async retireTerminalCheckout(
+    orderId: string,
+    session: { expiresAt: Date | null; sessionId: string },
+    reason: "provider_session_expired" | "provider_session_unusable",
+  ) {
+    await this.withTransaction(async (client) => {
+      const orderResult = await client.query<RetiredOrderRow>(
+        `
+          select cart_id, status, payment_status, stripe_checkout_session_id
+          from orders
+          where id = $1
+          for update
+        `,
+        [orderId],
+      );
+      const order = orderResult.rows[0];
+
+      if (!order) {
+        throw new CheckoutCartNotFoundError();
+      }
+      if (order.status === "cancelled") {
+        return;
+      }
+      if (order.status !== "pending_payment" || order.payment_status === "paid") {
+        throw new CheckoutNeedsReviewError(
+          "A completed checkout cannot be replaced.",
+        );
+      }
+      if (
+        order.stripe_checkout_session_id &&
+        order.stripe_checkout_session_id !== session.sessionId
+      ) {
+        throw new CheckoutNeedsReviewError(
+          "Checkout already uses another provider session.",
+        );
+      }
+
+      if (order.cart_id) {
+        await client.query("select id from carts where id = $1 for update", [
+          order.cart_id
+        ]);
+      }
+
+      const retired = await client.query<{ id: string }>(
+        `
+          update orders
+          set
+            status = 'cancelled',
+            payment_status = 'failed',
+            cancelled_at = now(),
+            stripe_checkout_session_id = coalesce(
+              stripe_checkout_session_id,
+              $2
+            ),
+            checkout_expires_at = coalesce($3, checkout_expires_at)
+          where id = $1
+            and status = 'pending_payment'
+            and payment_status in ('unpaid', 'checkout_started', 'failed')
+          returning id
+        `,
+        [orderId, session.sessionId, session.expiresAt],
+      );
+      if (retired.rows.length !== 1) {
+        throw new CheckoutNeedsReviewError(
+          "Checkout state changed while replacing an unusable session.",
+        );
+      }
+
+      if (order.cart_id) {
+        await client.query(
+          `
+            update carts c
+            set status = 'active'
+            where c.id = $1
+              and c.status = 'checkout_started'
+              and (c.expires_at is null or c.expires_at > now())
+              and not exists (
+                select 1
+                from orders other
+                where other.cart_id = c.id
+                  and other.id <> $2
+                  and (
+                    other.payment_status = 'paid'
+                    or (
+                      other.status = 'pending_payment'
+                      and other.payment_status in ('unpaid', 'checkout_started')
+                    )
+                  )
+              )
+          `,
+          [order.cart_id, orderId],
+        );
+      }
+
+      await client.query(
+        `
+          insert into order_events (
+            order_id, actor_type, event_type, from_value, to_value, metadata
+          ) values (
+            $1,
+            'system',
+            'checkout.provider_session_retired',
+            'pending_payment',
+            'cancelled',
+            $2::jsonb
+          )
+        `,
+        [orderId, JSON.stringify({ reason })],
+      );
+    });
   }
 
   private async findExistingOrder(client: Queryable, cartId: string) {
@@ -553,6 +715,114 @@ export class CheckoutRepository {
       quantity: row.quantity,
       stripePriceId: row.stripe_price_id
     }));
+  }
+
+  private async lockAndLoadCartItems(client: Queryable, cartId: string) {
+    const lockedItems = await client.query<CartItemLockRow>(
+      `
+        select
+          id,
+          listing_id,
+          listing_customization_set_id,
+          listing_price_variant_id,
+          fabric_id,
+          customization_asset_id
+        from cart_items
+        where cart_id = $1
+        order by created_at asc, id asc
+        for update
+      `,
+      [cartId],
+    );
+
+    for (const item of lockedItems.rows) {
+      const catalog = await client.query<{ id: string }>(
+        `
+          select l.id
+          from listings l
+          join listing_customization_sets lcs
+            on lcs.id = $2 and lcs.listing_id = l.id
+          join customization_sets cs on cs.id = lcs.customization_set_id
+          join listing_price_variants lpv
+            on lpv.id = $3
+            and lpv.listing_id = l.id
+            and lpv.listing_customization_set_id = lcs.id
+          where l.id = $1
+          for update of l, lcs, cs, lpv
+        `,
+        [
+          item.listing_id,
+          item.listing_customization_set_id,
+          item.listing_price_variant_id
+        ],
+      );
+      this.assertSingleLockedRow(catalog.rows, "catalog selection");
+
+      if (item.fabric_id) {
+        const fabric = await client.query<{ id: string }>(
+          `
+            select f.id
+            from fabrics f
+            join listing_fabrics lf
+              on lf.fabric_id = f.id and lf.listing_id = $2
+            where f.id = $1
+            for update of f, lf
+          `,
+          [item.fabric_id, item.listing_id],
+        );
+        this.assertSingleLockedRow(fabric.rows, "fabric selection");
+      }
+
+      const reservations = await client.query<{ id: string }>(
+        `
+          select id
+          from fabric_reservations
+          where cart_item_id = $1 and status = 'active'
+          order by id asc
+          for update
+        `,
+        [item.id],
+      );
+      if (reservations.rows.length > 1) {
+        throw new CheckoutNeedsReviewError(
+          "A cart item has conflicting fabric reservations.",
+        );
+      }
+
+      if (item.customization_asset_id) {
+        const asset = await client.query<{ id: string }>(
+          `
+            select id
+            from assets
+            where id = $1
+            for update
+          `,
+          [item.customization_asset_id],
+        );
+        this.assertSingleLockedRow(asset.rows, "customization asset");
+      }
+    }
+
+    const items = await this.loadCartItems(client, cartId);
+    const lockedIds = new Set(lockedItems.rows.map((item) => item.id));
+    if (
+      items.length !== lockedItems.rows.length ||
+      items.some((item) => !lockedIds.has(item.cart_item_id))
+    ) {
+      throw new CheckoutNeedsReviewError(
+        "The cart changed while checkout was starting.",
+      );
+    }
+
+    return items;
+  }
+
+  private assertSingleLockedRow(rows: unknown[], label: string) {
+    if (rows.length !== 1) {
+      throw new CheckoutNeedsReviewError(
+        `The ${label} changed while checkout was starting.`,
+      );
+    }
   }
 
   private async loadCartItems(client: Queryable, cartId: string) {
@@ -596,6 +866,7 @@ export class CheckoutRepository {
           f.quantity_reserved as fabric_quantity_reserved,
           lf.active as fabric_listing_active,
           fr.quantity as fabric_reservation_quantity,
+          fr.id as fabric_reservation_id,
           fr.fabric_id as fabric_reservation_fabric_id,
           a.cart_id as asset_cart_id,
           a.listing_id as asset_listing_id,

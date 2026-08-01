@@ -18,3 +18,10 @@ export class CheckoutProviderError extends Error {
     this.name = "CheckoutProviderError";
   }
 }
+
+export class CheckoutAlreadyCompleteError extends Error {
+  constructor() {
+    super("This checkout has already completed.");
+    this.name = "CheckoutAlreadyCompleteError";
+  }
+}

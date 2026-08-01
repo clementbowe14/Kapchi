@@ -2,8 +2,10 @@ import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
 import { config } from "../../config/index.js";
+import { authMiddleware } from "../auth/index.js";
 import { getGuestCartSessionContext } from "../cart/guest-session.js";
 import {
+  CheckoutAlreadyCompleteError,
   CheckoutCartNotFoundError,
   CheckoutNeedsReviewError,
   CheckoutProviderError
@@ -54,62 +56,84 @@ const paymentsPlugin: FastifyPluginAsync = async (fastify) => {
     },
   );
 
-  fastify.post("/checkout-sessions", async (request, reply) => {
-    const { error, value } = checkoutSchema.validate(parseJsonBody(request.body), {
-      abortEarly: false,
-      allowUnknown: false,
-      stripUnknown: false
-    });
-
-    if (error) {
-      return reply.code(400).send({
-        error: "VALIDATION_ERROR",
-        message: error.message,
-        statusCode: 400
-      });
-    }
-
-    const context = await getGuestCartSessionContext(request);
-    if (!context) {
-      return reply.code(404).send({
-        error: "CART_NOT_FOUND",
-        message: "Cart not found.",
-        statusCode: 404
-      });
-    }
-
-    try {
-      const result = await checkoutService.startGuestCheckout(
-        context,
-        value as CheckoutContact,
-      );
-      return reply.code(201).send(result);
-    } catch (checkoutError) {
-      if (checkoutError instanceof CheckoutCartNotFoundError) {
-        return reply.code(404).send({
-          error: "CART_NOT_FOUND",
-          message: checkoutError.message,
-          statusCode: 404
-        });
-      }
-      if (checkoutError instanceof CheckoutNeedsReviewError) {
+  fastify.post(
+    "/checkout-sessions",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      if (request.auth) {
         return reply.code(409).send({
-          error: "CART_NEEDS_REVIEW",
-          message: checkoutError.message,
+          error: "CART_CLAIM_REQUIRED",
+          message: "Claim the guest cart before starting authenticated checkout.",
           statusCode: 409
         });
       }
-      if (checkoutError instanceof CheckoutProviderError) {
-        return reply.code(502).send({
-          error: "CHECKOUT_PROVIDER_ERROR",
-          message: checkoutError.message,
-          statusCode: 502
+
+      const { error, value } = checkoutSchema.validate(
+        parseJsonBody(request.body),
+        {
+          abortEarly: false,
+          allowUnknown: false,
+          stripUnknown: false
+        },
+      );
+
+      if (error) {
+        return reply.code(400).send({
+          error: "VALIDATION_ERROR",
+          message: error.message,
+          statusCode: 400
         });
       }
 
-      throw checkoutError;
-    }
-  });
+      const context = await getGuestCartSessionContext(request);
+      if (!context) {
+        return reply.code(404).send({
+          error: "CART_NOT_FOUND",
+          message: "Cart not found.",
+          statusCode: 404
+        });
+      }
+
+      try {
+        const result = await checkoutService.startGuestCheckout(
+          context,
+          value as CheckoutContact,
+        );
+        return reply.code(201).send(result);
+      } catch (checkoutError) {
+        if (checkoutError instanceof CheckoutCartNotFoundError) {
+          return reply.code(404).send({
+            error: "CART_NOT_FOUND",
+            message: checkoutError.message,
+            statusCode: 404
+          });
+        }
+        if (checkoutError instanceof CheckoutNeedsReviewError) {
+          return reply.code(409).send({
+            error: "CART_NEEDS_REVIEW",
+            message: checkoutError.message,
+            statusCode: 409
+          });
+        }
+        if (checkoutError instanceof CheckoutProviderError) {
+          return reply.code(502).send({
+            error: "CHECKOUT_PROVIDER_ERROR",
+            message: checkoutError.message,
+            statusCode: 502
+          });
+        }
+        if (checkoutError instanceof CheckoutAlreadyCompleteError) {
+          return reply.code(409).send({
+            error: "CHECKOUT_ALREADY_COMPLETE",
+            message: checkoutError.message,
+            statusCode: 409
+          });
+        }
+
+        throw checkoutError;
+      }
+    },
+  );
 
   fastify.post("/webhooks/stripe", async (request, reply) => {
     const signature = request.headers["stripe-signature"];

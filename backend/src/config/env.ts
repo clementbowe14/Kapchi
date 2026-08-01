@@ -22,12 +22,20 @@ const environmentSchema = Joi.object({
   STRIPE_SECRET_KEY: Joi.string().trim().required(),
   STRIPE_WEBHOOK_SECRET: Joi.string().trim().required(),
   STRIPE_API_VERSION: Joi.string().trim().default("2026-02-25.clover"),
-  STRIPE_CHECKOUT_SUCCESS_URL: Joi.string()
-    .uri({ scheme: ["http", "https"] })
-    .default("http://localhost:3000/orders"),
-  STRIPE_CHECKOUT_CANCEL_URL: Joi.string()
-    .uri({ scheme: ["http", "https"] })
-    .default("http://localhost:3000/cart"),
+  STRIPE_CHECKOUT_SUCCESS_URL: Joi.when("NODE_ENV", {
+    is: "production",
+    then: Joi.string().uri({ scheme: ["https"] }).required(),
+    otherwise: Joi.string()
+      .uri({ scheme: ["http", "https"] })
+      .default("http://localhost:3000/orders")
+  }),
+  STRIPE_CHECKOUT_CANCEL_URL: Joi.when("NODE_ENV", {
+    is: "production",
+    then: Joi.string().uri({ scheme: ["https"] }).required(),
+    otherwise: Joi.string()
+      .uri({ scheme: ["http", "https"] })
+      .default("http://localhost:3000/cart")
+  }),
 
   DATABASE_URL: Joi.string()
     .uri({ scheme: ["postgres", "postgresql"] })
@@ -100,8 +108,10 @@ function buildErrorMessage(error: Joi.ValidationError) {
     .join("\n");
 }
 
-function validateEnvironment(): ValidatedEnvironmentShape {
-  const { error, value } = environmentSchema.validate(process.env, {
+export function validateEnvironment(
+  environmentInput: NodeJS.ProcessEnv = process.env,
+): ValidatedEnvironmentShape {
+  const { error, value } = environmentSchema.validate(environmentInput, {
     abortEarly: false,
     convert: true,
     stripUnknown: false
