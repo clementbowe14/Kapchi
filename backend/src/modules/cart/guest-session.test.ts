@@ -34,6 +34,7 @@ const {
   buildGuestCartItemsKey,
   getGuestCartItems,
   getGuestCartContext,
+  getGuestCartSessionContext,
   getOrCreateGuestCartContext,
   MAX_GUEST_SESSION_RECORD_BYTES,
   readGuestCartItems
@@ -674,6 +675,24 @@ describe("guest session cart context", () => {
         }),
       ),
     ).resolves.toBeNull();
+  });
+
+  test("checkout lookup resolves the hashed cookie from PostgreSQL without Redis", async () => {
+    const sessionId = "checkout_session_id_abcdefghijklmnopqrstuvwxyz123456";
+    const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
+    const { calls: redisCalls, redis } = createRedisMock();
+    const { calls, database } = createDatabaseMock([{ rows: [{ id: cartId }] }]);
+
+    await expect(
+      getGuestCartSessionContext(
+        createRequestMock(redis, database, { session_id: sessionId }),
+      ),
+    ).resolves.toEqual({ cartId, sessionId });
+    expect(redisCalls.get).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].values).toEqual([sha256(sessionId)]);
+    expect(calls[0].values).not.toContain(sessionId);
+    expect(calls[0].text).toContain("status = 'checkout_started'");
   });
 });
 

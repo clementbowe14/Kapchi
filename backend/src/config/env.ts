@@ -22,6 +22,12 @@ const environmentSchema = Joi.object({
   STRIPE_SECRET_KEY: Joi.string().trim().required(),
   STRIPE_WEBHOOK_SECRET: Joi.string().trim().required(),
   STRIPE_API_VERSION: Joi.string().trim().default("2026-02-25.clover"),
+  STRIPE_CHECKOUT_SUCCESS_URL: Joi.string()
+    .uri({ scheme: ["http", "https"] })
+    .default("http://localhost:3000/orders"),
+  STRIPE_CHECKOUT_CANCEL_URL: Joi.string()
+    .uri({ scheme: ["http", "https"] })
+    .default("http://localhost:3000/cart"),
 
   DATABASE_URL: Joi.string()
     .uri({ scheme: ["postgres", "postgresql"] })
@@ -75,6 +81,8 @@ type EnvironmentShape = {
   PORT: number;
   REDIS_URL: string;
   STRIPE_API_VERSION: string;
+  STRIPE_CHECKOUT_CANCEL_URL: string;
+  STRIPE_CHECKOUT_SUCCESS_URL: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
 };
@@ -182,6 +190,10 @@ export const config = Object.freeze({
     url: environment.DATABASE_URL
   },
   payments: {
+    checkout: {
+      cancelUrl: environment.STRIPE_CHECKOUT_CANCEL_URL,
+      successUrl: environment.STRIPE_CHECKOUT_SUCCESS_URL
+    },
     stripe: {
       apiVersion: environment.STRIPE_API_VERSION,
       secretKey: environment.STRIPE_SECRET_KEY,

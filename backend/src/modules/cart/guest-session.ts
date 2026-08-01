@@ -392,6 +392,41 @@ export async function getGuestCartContext(
   };
 }
 
+export async function getGuestCartSessionContext(
+  request: FastifyRequest,
+): Promise<GuestCartContext | null> {
+  const sessionId = request.cookies[GUEST_SESSION_COOKIE];
+
+  if (!isValidSessionId(sessionId)) {
+    return null;
+  }
+
+  const result = await request.server.pg.query<{ id: string }>(
+    `
+      select id
+      from carts
+      where guest_token_hash = $1
+        and (
+          (status = 'active' and expires_at > now())
+          or status = 'checkout_started'
+        )
+      order by created_at desc, id desc
+      limit 1
+    `,
+    [hashSessionId(sessionId)],
+  );
+  const cartId = result.rows[0]?.id;
+
+  if (!cartId) {
+    return null;
+  }
+
+  return {
+    cartId,
+    sessionId
+  };
+}
+
 function parseGuestCartItemsValue(value: string | null): GuestCartCacheResult {
   if (!value) {
     return { hit: false };
