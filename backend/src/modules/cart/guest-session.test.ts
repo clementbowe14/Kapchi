@@ -35,7 +35,8 @@ const {
   getGuestCartItems,
   getGuestCartContext,
   getOrCreateGuestCartContext,
-  MAX_GUEST_SESSION_RECORD_BYTES
+  MAX_GUEST_SESSION_RECORD_BYTES,
+  readGuestCartItems
 } = await import("./guest-session.js");
 
 type CookieCall = {
@@ -677,6 +678,31 @@ describe("guest session cart context", () => {
 });
 
 describe("guest cart items", () => {
+  test("distinguishes a valid empty projection from a cache miss", async () => {
+    const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
+    const { redis: hitRedis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: "[]"
+    });
+    const { redis: missRedis } = createRedisMock();
+
+    expect(await readGuestCartItems(hitRedis, cartId)).toEqual({
+      hit: true,
+      items: []
+    });
+    expect(await readGuestCartItems(missRedis, cartId)).toEqual({ hit: false });
+  });
+
+  test("treats a rejected strict projection as a cache miss", async () => {
+    const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
+    const { redis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: JSON.stringify([
+        { ...createValidDisplayItem(), stripeCheckoutSessionId: "cs_secret" }
+      ])
+    });
+
+    expect(await readGuestCartItems(redis, cartId)).toEqual({ hit: false });
+  });
+
   test("returns fresh typed guest cart display items from Redis", async () => {
     const cartId = "cart-items";
     const items = [

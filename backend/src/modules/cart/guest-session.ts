@@ -10,9 +10,9 @@ export const MAX_GUEST_SESSION_RECORD_BYTES = 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CURRENCY_PATTERN = /^[a-z]{3}$/;
-const MAX_GUEST_CART_PROJECTION_BYTES = 64 * 1024;
-const MAX_GUEST_CART_ITEMS = 100;
-const MAX_GUEST_CART_QUANTITY = 999;
+export const MAX_GUEST_CART_PROJECTION_BYTES = 64 * 1024;
+export const MAX_GUEST_CART_ITEMS = 100;
+export const MAX_GUEST_CART_QUANTITY = 999;
 const MAX_POSTGRES_INTEGER = 2_147_483_647;
 const MAX_LISTING_TEXT_LENGTH = 255;
 const MAX_CUSTOMIZATION_LINE_LENGTH = 512;
@@ -53,6 +53,10 @@ export type GuestCartContext = {
   cartId: string;
   sessionId: string;
 };
+
+export type GuestCartCacheResult =
+  | { hit: true; items: GuestCartDisplayItem[] }
+  | { hit: false };
 
 export function hashSessionId(sessionId: string) {
   return createHash("sha256").update(sessionId).digest("hex");
@@ -388,18 +392,13 @@ export async function getGuestCartContext(
   };
 }
 
-export async function getGuestCartItems(
-  redis: RedisClientType,
-  cartId: string,
-): Promise<GuestCartDisplayItem[]> {
-  const value = await redis.get(buildGuestCartItemsKey(cartId));
-
+function parseGuestCartItemsValue(value: string | null): GuestCartCacheResult {
   if (!value) {
-    return [];
+    return { hit: false };
   }
 
   if (Buffer.byteLength(value, "utf8") > MAX_GUEST_CART_PROJECTION_BYTES) {
-    return [];
+    return { hit: false };
   }
 
   let parsed: unknown;
@@ -407,11 +406,11 @@ export async function getGuestCartItems(
   try {
     parsed = JSON.parse(value) as unknown;
   } catch {
-    return [];
+    return { hit: false };
   }
 
   if (!Array.isArray(parsed) || parsed.length > MAX_GUEST_CART_ITEMS) {
-    return [];
+    return { hit: false };
   }
 
   const items: GuestCartDisplayItem[] = [];
@@ -420,11 +419,64 @@ export async function getGuestCartItems(
     const displayItem = parseGuestCartDisplayItem(item);
 
     if (!displayItem) {
-      return [];
+      return { hit: false };
     }
 
     items.push(displayItem);
   }
 
-  return items;
+  return { hit: true, items };
+}
+
+export async function readGuestCartItems(
+  redis: RedisClientType,
+  cartId: string,
+): Promise<GuestCartCacheResult> {
+  return parseGuestCartItemsValue(
+    await redis.get(buildGuestCartItemsKey(cartId)),
+  );
+}
+
+export function serializeGuestCartItems(items: GuestCartDisplayItem[]) {
+  const serialized = JSON.stringify(items);
+  const parsed = parseGuestCartItemsValue(serialized);
+
+  if (!parsed.hit) {
+    throw new RangeError("Guest cart projection exceeds its strict data contract.");
+  }
+
+  return serialized;
+}
+
+export async function writeGuestCartItems(
+  redis: RedisClientType,
+  cartId: string,
+  items: GuestCartDisplayItem[],
+  ttlSeconds: number,
+) {
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) {
+    await redis.del(buildGuestCartItemsKey(cartId));
+    return;
+  }
+
+  await redis.setEx(
+    buildGuestCartItemsKey(cartId),
+    ttlSeconds,
+    serializeGuestCartItems(items),
+  );
+}
+
+export async function deleteGuestCartItems(
+  redis: RedisClientType,
+  cartId: string,
+) {
+  await redis.del(buildGuestCartItemsKey(cartId));
+}
+
+export async function getGuestCartItems(
+  redis: RedisClientType,
+  cartId: string,
+): Promise<GuestCartDisplayItem[]> {
+  const result = await readGuestCartItems(redis, cartId);
+  return result.hit ? result.items : [];
 }
