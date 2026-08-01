@@ -725,7 +725,13 @@ export class CartClaimRepository {
           cart_id = $2,
           authenticated_user_id = $3,
           created_by_auth_subject = $4
-        where id = $1 and cart_id = $5
+        where id = $1
+          and cart_id = $5
+          and context = 'customization_image'
+          and visibility = 'private'
+          and status in ('uploaded', 'attached')
+          and (authenticated_user_id is null or authenticated_user_id = $3)
+          and (created_by_auth_subject is null or created_by_auth_subject = $4)
         returning id
       `,
       [

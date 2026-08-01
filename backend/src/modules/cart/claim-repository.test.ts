@@ -492,6 +492,11 @@ describe("CartClaimRepository", () => {
       identity.authSubject,
       ids.guestCart
     ]);
+    expect(String(assetMove?.[0])).toContain("context = 'customization_image'");
+    expect(String(assetMove?.[0])).toContain("visibility = 'private'");
+    expect(String(assetMove?.[0])).toContain("status in ('uploaded', 'attached')");
+    expect(String(assetMove?.[0])).toContain("authenticated_user_id is null");
+    expect(String(assetMove?.[0])).toContain("created_by_auth_subject is null");
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
   });
 
