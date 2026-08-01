@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { Pool } from "pg";
 import type { RedisClientType } from "redis";
 
 const envDefaults: Record<string, string> = {
@@ -31,6 +32,7 @@ const {
   buildGuestSessionCookieOptions,
   buildGuestCartItemsKey,
   getGuestCartItems,
+  getGuestCartContext,
   getOrCreateGuestCartContext
 } = await import("./guest-session.js");
 
@@ -45,7 +47,24 @@ type RedisCalls = {
   setEx: Array<{ key: string; ttl: number; value: string }>;
 };
 
+type DatabaseCall = {
+  text: string;
+  values: unknown[];
+};
+
+type DatabaseResult = {
+  rows: Array<Record<string, unknown>>;
+};
+
+type RedisMockOptions = {
+  getError?: Error;
+  operationOrder?: string[];
+  setExError?: Error;
+};
+
 const sevenDaysInSeconds = 60 * 60 * 24 * 7;
+const fixedNow = "2026-06-23T12:00:00.000Z";
+const existingCartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
 const displayIds = {
   cartItem: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
   customizationSet: "fba94989-b950-4087-bac1-8c1ad4970655",
@@ -79,7 +98,10 @@ function createValidDisplayItem(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createRedisMock(values: Record<string, string | null> = {}) {
+function createRedisMock(
+  values: Record<string, string | null> = {},
+  options: RedisMockOptions = {},
+) {
   const calls: RedisCalls = {
     get: [],
     setEx: []
@@ -88,10 +110,22 @@ function createRedisMock(values: Record<string, string | null> = {}) {
   const redis = {
     async get(key: string) {
       calls.get.push(key);
+      options.operationOrder?.push("redis:get");
+
+      if (options.getError) {
+        throw options.getError;
+      }
+
       return values[key] ?? null;
     },
     async setEx(key: string, ttl: number, value: string) {
       calls.setEx.push({ key, ttl, value });
+      options.operationOrder?.push("redis:setEx");
+
+      if (options.setExError) {
+        throw options.setExError;
+      }
+
       values[key] = value;
       return "OK";
     }
@@ -100,11 +134,34 @@ function createRedisMock(values: Record<string, string | null> = {}) {
   return { calls, redis };
 }
 
-function createReplyMock() {
+function createDatabaseMock(
+  responses: Array<DatabaseResult | Error> = [],
+  operationOrder: string[] = [],
+) {
+  const calls: DatabaseCall[] = [];
+  const database = {
+    async query(text: string, values: unknown[] = []) {
+      calls.push({ text, values });
+      operationOrder.push("database:query");
+      const response = responses.shift() ?? { rows: [] };
+
+      if (response instanceof Error) {
+        throw response;
+      }
+
+      return response;
+    }
+  } as unknown as Pool;
+
+  return { calls, database };
+}
+
+function createReplyMock(operationOrder: string[] = []) {
   const cookies: CookieCall[] = [];
   const reply = {
     setCookie(name: string, value: string, options: Record<string, unknown>) {
       cookies.push({ name, value, options });
+      operationOrder.push("cookie:set");
       return this;
     }
   } as unknown as FastifyReply;
@@ -114,31 +171,48 @@ function createReplyMock() {
 
 function createRequestMock(
   redis: RedisClientType,
+  database: Pool,
   cookies: Record<string, string | undefined> = {},
 ) {
   return {
     cookies,
+    log: {
+      error: vi.fn()
+    },
     server: {
+      pg: database,
       redis
     }
   } as unknown as FastifyRequest;
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(fixedNow));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("guest session cart context", () => {
-  test("hashes the session_id cookie into the Redis key", async () => {
+  test("hashes the cookie for Redis and durable ownership checks", async () => {
     const sessionId = "existing_session_id_abcdefghijklmnopqrstuvwxyz123456";
     const session = {
-      cartId: "cart-existing",
-      createdAt: "2026-06-23T12:00:00.000Z"
+      cartId: existingCartId,
+      createdAt: fixedNow
     };
     const hashedKey = `guest_session:${sha256(sessionId)}`;
     const { calls, redis } = createRedisMock({
       [hashedKey]: JSON.stringify(session)
     });
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      { rows: [{ id: existingCartId }] }
+    ]);
     const { cookies, reply } = createReplyMock();
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, { session_id: sessionId }),
+      createRequestMock(redis, database, { session_id: sessionId }),
       reply,
     );
 
@@ -150,23 +224,55 @@ describe("guest session cart context", () => {
     expect(calls.get[0]).not.toBe(`guest_session:${sessionId}`);
     expect(calls.get[0].includes(sessionId)).toBe(false);
     expect(calls.setEx.length).toBe(0);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].values).toEqual([
+      existingCartId,
+      sha256(sessionId)
+    ]);
+    expect(databaseCalls[0].values).not.toContain(sessionId);
+    expect(databaseCalls[0].text).toContain("status = 'active'");
+    expect(databaseCalls[0].text).toContain("expires_at > now()");
     expect(cookies.length).toBe(0);
   });
 
-  test("sets a seven-day httpOnly lax root cookie for new non-production sessions", async () => {
-    const { calls, redis } = createRedisMock();
-    const { cookies, reply } = createReplyMock();
+  test("creates PostgreSQL state before Redis and sets the cookie last", async () => {
+    const operationOrder: string[] = [];
+    const { calls, redis } = createRedisMock({}, { operationOrder });
+    const { calls: databaseCalls, database } = createDatabaseMock(
+      [{ rows: [] }],
+      operationOrder,
+    );
+    const { cookies, reply } = createReplyMock(operationOrder);
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis),
+      createRequestMock(redis, database),
       reply,
     );
 
+    expect(operationOrder).toEqual([
+      "database:query",
+      "redis:setEx",
+      "cookie:set"
+    ]);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("insert into carts");
+    expect(databaseCalls[0].text).not.toContain("on conflict");
+    expect(databaseCalls[0].values).toEqual([
+      context.cartId,
+      sha256(context.sessionId),
+      "2026-06-30T12:00:00.000Z"
+    ]);
+    expect(databaseCalls[0].values).not.toContain(context.sessionId);
     expect(calls.get.length).toBe(0);
     expect(calls.setEx.length).toBe(1);
     expect(calls.setEx[0].ttl).toBe(sevenDaysInSeconds);
     expect(calls.setEx[0].key).toMatch(/^guest_session:[a-f0-9]{64}$/);
     expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
+    expect(JSON.parse(calls.setEx[0].value)).toEqual({
+      cartId: context.cartId,
+      createdAt: fixedNow
+    });
+    expect(calls.setEx[0].value).not.toContain(context.sessionId);
 
     expect(cookies.length).toBe(1);
     expect(cookies[0].name).toBe("session_id");
@@ -184,19 +290,22 @@ describe("guest session cart context", () => {
     expect(buildGuestSessionCookieOptions("production").secure).toBe(true);
   });
 
-  test("reuses valid existing sessions without refreshing the cookie", async () => {
+  test("reuses active durable sessions without renewing any lifetime", async () => {
     const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
     const session = {
-      cartId: "cart-reused",
-      createdAt: "2026-06-23T12:00:00.000Z"
+      cartId: existingCartId,
+      createdAt: fixedNow
     };
     const { calls, redis } = createRedisMock({
       [`guest_session:${sha256(sessionId)}`]: JSON.stringify(session)
     });
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      { rows: [{ id: existingCartId }] }
+    ]);
     const { cookies, reply } = createReplyMock();
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, { session_id: sessionId }),
+      createRequestMock(redis, database, { session_id: sessionId }),
       reply,
     );
 
@@ -205,20 +314,26 @@ describe("guest session cart context", () => {
       sessionId
     });
     expect(calls.setEx.length).toBe(0);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("select id");
+    expect(databaseCalls[0].text).not.toContain("update carts");
     expect(cookies.length).toBe(0);
   });
 
   test("creates a new session when the cookie is missing", async () => {
     const { calls, redis } = createRedisMock();
+    const { calls: databaseCalls, database } = createDatabaseMock();
     const { cookies, reply } = createReplyMock();
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis),
+      createRequestMock(redis, database),
       reply,
     );
 
     expect(calls.get.length).toBe(0);
     expect(calls.setEx.length).toBe(1);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("insert into carts");
     expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
     expect(cookies[0].value).toBe(context.sessionId);
   });
@@ -226,15 +341,18 @@ describe("guest session cart context", () => {
   test("creates a new session when Redis has no session for a valid cookie", async () => {
     const sessionId = "expired_session_id_abcdefghijklmnopqrstuvwxyz123456";
     const { calls, redis } = createRedisMock();
+    const { calls: databaseCalls, database } = createDatabaseMock();
     const { cookies, reply } = createReplyMock();
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, { session_id: sessionId }),
+      createRequestMock(redis, database, { session_id: sessionId }),
       reply,
     );
 
     expect(calls.get).toEqual([`guest_session:${sha256(sessionId)}`]);
     expect(calls.setEx.length).toBe(1);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("insert into carts");
     expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
     expect(context.sessionId).not.toBe(sessionId);
     expect(cookies[0].value).toBe(context.sessionId);
@@ -242,10 +360,13 @@ describe("guest session cart context", () => {
 
   test("creates a new session when the cookie is invalid", async () => {
     const { calls, redis } = createRedisMock();
+    const { database } = createDatabaseMock();
     const { cookies, reply } = createReplyMock();
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, { session_id: "invalid cookie value!" }),
+      createRequestMock(redis, database, {
+        session_id: "invalid cookie value!"
+      }),
       reply,
     );
 
@@ -253,6 +374,200 @@ describe("guest session cart context", () => {
     expect(calls.setEx.length).toBe(1);
     expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
     expect(cookies[0].value).toBe(context.sessionId);
+  });
+
+  test("rotates Redis-only sessions instead of backfilling their cart", async () => {
+    const sessionId = "redis_only_session_abcdefghijklmnopqrstuvwxyz123456789";
+    const session = {
+      cartId: existingCartId,
+      createdAt: fixedNow
+    };
+    const { calls, redis } = createRedisMock({
+      [`guest_session:${sha256(sessionId)}`]: JSON.stringify(session)
+    });
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      { rows: [] },
+      { rows: [] }
+    ]);
+    const { cookies, reply } = createReplyMock();
+
+    const context = await getOrCreateGuestCartContext(
+      createRequestMock(redis, database, { session_id: sessionId }),
+      reply,
+    );
+
+    expect(context.cartId).not.toBe(existingCartId);
+    expect(context.sessionId).not.toBe(sessionId);
+    expect(databaseCalls).toHaveLength(2);
+    expect(databaseCalls[0].text).toContain("select id");
+    expect(databaseCalls[1].text).toContain("insert into carts");
+    expect(calls.setEx[0].key).toBe(
+      `guest_session:${sha256(context.sessionId)}`,
+    );
+    expect(cookies[0].value).toBe(context.sessionId);
+  });
+
+  test("rotates malformed Redis session records without querying their cart", async () => {
+    const sessionId = "malformed_session_abcdefghijklmnopqrstuvwxyz123456789";
+    const { redis } = createRedisMock({
+      [`guest_session:${sha256(sessionId)}`]: JSON.stringify({
+        cartId: "not-a-uuid",
+        createdAt: "not-an-iso-timestamp"
+      })
+    });
+    const { calls: databaseCalls, database } = createDatabaseMock();
+    const { reply } = createReplyMock();
+
+    const context = await getOrCreateGuestCartContext(
+      createRequestMock(redis, database, { session_id: sessionId }),
+      reply,
+    );
+
+    expect(context.sessionId).not.toBe(sessionId);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("insert into carts");
+  });
+
+  test("propagates Redis read failures without database or cookie writes", async () => {
+    const sessionId = "redis_error_session_abcdefghijklmnopqrstuvwxyz123456789";
+    const redisError = new Error("Redis read failed");
+    const { redis } = createRedisMock({}, { getError: redisError });
+    const { calls: databaseCalls, database } = createDatabaseMock();
+    const { cookies, reply } = createReplyMock();
+
+    await expect(
+      getOrCreateGuestCartContext(
+        createRequestMock(redis, database, { session_id: sessionId }),
+        reply,
+      ),
+    ).rejects.toBe(redisError);
+    expect(databaseCalls).toHaveLength(0);
+    expect(cookies).toHaveLength(0);
+  });
+
+  test("propagates durable ownership read failures without rotating", async () => {
+    const sessionId = "database_error_session_abcdefghijklmnopqrstuvwxyz123456";
+    const databaseError = new Error("PostgreSQL read failed");
+    const { calls, redis } = createRedisMock({
+      [`guest_session:${sha256(sessionId)}`]: JSON.stringify({
+        cartId: existingCartId,
+        createdAt: fixedNow
+      })
+    });
+    const { database } = createDatabaseMock([databaseError]);
+    const { cookies, reply } = createReplyMock();
+
+    await expect(
+      getOrCreateGuestCartContext(
+        createRequestMock(redis, database, { session_id: sessionId }),
+        reply,
+      ),
+    ).rejects.toBe(databaseError);
+    expect(calls.setEx).toHaveLength(0);
+    expect(cookies).toHaveLength(0);
+  });
+
+  test("does not write Redis or a cookie when durable cart creation fails", async () => {
+    const databaseError = new Error("PostgreSQL insert failed");
+    const { calls, redis } = createRedisMock();
+    const { database } = createDatabaseMock([databaseError]);
+    const { cookies, reply } = createReplyMock();
+
+    await expect(
+      getOrCreateGuestCartContext(
+        createRequestMock(redis, database),
+        reply,
+      ),
+    ).rejects.toBe(databaseError);
+    expect(calls.setEx).toHaveLength(0);
+    expect(cookies).toHaveLength(0);
+  });
+
+  test("abandons the durable cart and rethrows when the Redis write fails", async () => {
+    const operationOrder: string[] = [];
+    const redisError = new Error("Redis write failed");
+    const { calls, redis } = createRedisMock(
+      {},
+      { operationOrder, setExError: redisError },
+    );
+    const { calls: databaseCalls, database } = createDatabaseMock(
+      [{ rows: [] }, { rows: [] }],
+      operationOrder,
+    );
+    const { cookies, reply } = createReplyMock(operationOrder);
+
+    await expect(
+      getOrCreateGuestCartContext(
+        createRequestMock(redis, database),
+        reply,
+      ),
+    ).rejects.toBe(redisError);
+    expect(operationOrder).toEqual([
+      "database:query",
+      "redis:setEx",
+      "database:query"
+    ]);
+    expect(databaseCalls[1].text).toContain("set status = 'abandoned'");
+    expect(databaseCalls[1].values).toEqual([
+      JSON.parse(calls.setEx[0].value).cartId,
+      calls.setEx[0].key.replace("guest_session:", "")
+    ]);
+    expect(cookies).toHaveLength(0);
+  });
+
+  test("preserves the Redis error when best-effort abandonment also fails", async () => {
+    const redisError = new Error("Redis write failed");
+    const abandonmentError = new Error("PostgreSQL abandonment failed");
+    const { redis } = createRedisMock({}, { setExError: redisError });
+    const { database } = createDatabaseMock([
+      { rows: [] },
+      abandonmentError
+    ]);
+    const { cookies, reply } = createReplyMock();
+    const request = createRequestMock(redis, database);
+
+    await expect(getOrCreateGuestCartContext(request, reply)).rejects.toBe(
+      redisError,
+    );
+    expect(request.log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: abandonmentError }),
+      "Failed to abandon guest cart after Redis session write failure",
+    );
+    expect(cookies).toHaveLength(0);
+  });
+
+  test("non-creating lookup returns only an active durable context", async () => {
+    const sessionId = "lookup_session_id_abcdefghijklmnopqrstuvwxyz123456789";
+    const session = {
+      cartId: existingCartId,
+      createdAt: fixedNow
+    };
+    const sessionKey = `guest_session:${sha256(sessionId)}`;
+    const { redis } = createRedisMock({
+      [sessionKey]: JSON.stringify(session)
+    });
+    const { database } = createDatabaseMock([
+      { rows: [{ id: existingCartId }] }
+    ]);
+
+    await expect(
+      getGuestCartContext(
+        createRequestMock(redis, database, { session_id: sessionId }),
+      ),
+    ).resolves.toEqual({ cartId: existingCartId, sessionId });
+
+    const staleRedis = createRedisMock({
+      [sessionKey]: JSON.stringify(session)
+    }).redis;
+    const staleDatabase = createDatabaseMock([{ rows: [] }]).database;
+
+    await expect(
+      getGuestCartContext(
+        createRequestMock(staleRedis, staleDatabase, {
+          session_id: sessionId
+        }),
+      ),
+    ).resolves.toBeNull();
   });
 });
 

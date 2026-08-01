@@ -376,15 +376,6 @@ async function authorizeCustomerUpload(
 
   const guestTokenHash = hashSessionId(guestCart.sessionId);
 
-  await getDatabasePool().query(
-    `
-      insert into carts (id, guest_token_hash, status, currency)
-      values ($1, $2, 'active', 'usd')
-      on conflict (id) do nothing
-    `,
-    [guestCart.cartId, guestTokenHash],
-  );
-
   const cartResult = await getDatabasePool().query<{ id: string }>(
     `
       select id
@@ -392,6 +383,7 @@ async function authorizeCustomerUpload(
       where id = $1
         and status = 'active'
         and guest_token_hash = $2
+        and expires_at > now()
       limit 1
     `,
     [guestCart.cartId, guestTokenHash],

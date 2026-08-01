@@ -174,7 +174,6 @@ describe("assetsPlugin", () => {
           }
         ]
       })
-      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
       .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
       .mockResolvedValueOnce({ rows: [assetRow()] });
@@ -212,7 +211,9 @@ describe("assetsPlugin", () => {
       ids.cart,
       "hashed-guest-session"
     ]);
-    expect(mocks.query.mock.calls[3][1]).toEqual([
+    expect(mocks.query.mock.calls[1][0]).toContain("expires_at > now()");
+    expect(mocks.query.mock.calls[1][0]).not.toContain("insert into carts");
+    expect(mocks.query.mock.calls[2][1]).toEqual([
       ids.cart,
       ids.listing,
       ids.customizationSet
@@ -238,7 +239,6 @@ describe("assetsPlugin", () => {
           }
         ]
       })
-      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
       .mockResolvedValueOnce({ rows: [] });
 
@@ -259,7 +259,7 @@ describe("assetsPlugin", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json().message).toContain("active cart");
-    expect(mocks.query).toHaveBeenCalledTimes(4);
+    expect(mocks.query).toHaveBeenCalledTimes(3);
 
     await app.close();
   });
@@ -319,7 +319,6 @@ describe("assetsPlugin", () => {
           }
         ]
       })
-      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
       .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
       .mockResolvedValueOnce({ rows: [assetRow()] });
@@ -354,7 +353,7 @@ describe("assetsPlugin", () => {
       maximumSizeInBytes: 5242880,
       tokenPayload
     });
-    expect(mocks.query.mock.calls[4][1]).toEqual([ids.asset]);
+    expect(mocks.query.mock.calls[3][1]).toEqual([ids.asset]);
 
     await app.close();
   });

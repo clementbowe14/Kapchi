@@ -81,7 +81,7 @@ function parseGuestSession(value: string | null): GuestSession | null {
   try {
     const parsed = JSON.parse(value) as Partial<GuestSession>;
 
-    if (typeof parsed.cartId !== "string" || typeof parsed.createdAt !== "string") {
+    if (!isUuid(parsed.cartId) || !isIsoTimestamp(parsed.createdAt)) {
       return null;
     }
 
@@ -112,6 +112,15 @@ function hasExactKeys(
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const timestamp = Date.parse(value);
+  return !Number.isNaN(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
 function isBoundedString(
@@ -240,20 +249,55 @@ function setGuestSessionCookie(reply: FastifyReply, sessionId: string) {
 }
 
 async function createGuestCartContext(
-  redis: RedisClientType,
+  request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<GuestCartContext> {
   const sessionId = generateSessionId();
+  const guestTokenHash = hashSessionId(sessionId);
+  const createdAt = new Date();
+  const expiresAt = new Date(
+    createdAt.getTime() + GUEST_SESSION_TTL_SECONDS * 1000,
+  );
   const session: GuestSession = {
     cartId: randomUUID(),
-    createdAt: new Date().toISOString()
+    createdAt: createdAt.toISOString()
   };
 
-  await redis.setEx(
-    buildGuestSessionKey(sessionId),
-    GUEST_SESSION_TTL_SECONDS,
-    JSON.stringify(session),
+  await request.server.pg.query(
+    `
+      insert into carts (id, guest_token_hash, status, currency, expires_at)
+      values ($1, $2, 'active', 'usd', $3)
+    `,
+    [session.cartId, guestTokenHash, expiresAt.toISOString()],
   );
+
+  try {
+    await request.server.redis.setEx(
+      buildGuestSessionKey(sessionId),
+      GUEST_SESSION_TTL_SECONDS,
+      JSON.stringify(session),
+    );
+  } catch (error) {
+    try {
+      await request.server.pg.query(
+        `
+          update carts
+          set status = 'abandoned'
+          where id = $1
+            and guest_token_hash = $2
+            and status = 'active'
+        `,
+        [session.cartId, guestTokenHash],
+      );
+    } catch (abandonmentError) {
+      request.log.error(
+        { cartId: session.cartId, err: abandonmentError },
+        "Failed to abandon guest cart after Redis session write failure",
+      );
+    }
+
+    throw error;
+  }
 
   setGuestSessionCookie(reply, sessionId);
 
@@ -261,6 +305,27 @@ async function createGuestCartContext(
     cartId: session.cartId,
     sessionId
   };
+}
+
+async function hasActiveDurableGuestCart(
+  request: FastifyRequest,
+  sessionId: string,
+  cartId: string,
+) {
+  const result = await request.server.pg.query<{ id: string }>(
+    `
+      select id
+      from carts
+      where id = $1
+        and guest_token_hash = $2
+        and status = 'active'
+        and expires_at > now()
+      limit 1
+    `,
+    [cartId, hashSessionId(sessionId)],
+  );
+
+  return result.rows[0]?.id === cartId;
 }
 
 export async function getOrCreateGuestCartContext(
@@ -274,7 +339,10 @@ export async function getOrCreateGuestCartContext(
       await request.server.redis.get(buildGuestSessionKey(sessionId)),
     );
 
-    if (session) {
+    if (
+      session &&
+      (await hasActiveDurableGuestCart(request, sessionId, session.cartId))
+    ) {
       return {
         cartId: session.cartId,
         sessionId
@@ -282,7 +350,7 @@ export async function getOrCreateGuestCartContext(
     }
   }
 
-  return createGuestCartContext(request.server.redis, reply);
+  return createGuestCartContext(request, reply);
 }
 
 export async function getGuestCartContext(
@@ -298,7 +366,10 @@ export async function getGuestCartContext(
     await request.server.redis.get(buildGuestSessionKey(sessionId)),
   );
 
-  if (!session) {
+  if (
+    !session ||
+    !(await hasActiveDurableGuestCart(request, sessionId, session.cartId))
+  ) {
     return null;
   }
 
