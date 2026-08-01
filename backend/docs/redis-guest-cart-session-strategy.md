@@ -18,8 +18,12 @@ and audit-relevant state are persisted in PostgreSQL.
 - Redis session records are stored for seven days under
   `guest_session:<sha256(session_id)>`.
 - Guest cart item reads use `guest_cart:<cart_id>:items`.
-- The current guest cart item type is `Record<string, unknown>`, so it does not
-  yet enforce a minimum data contract.
+- Guest cart display records use the explicit `GuestCartDisplayItem` contract
+  and reject malformed, oversized, or non-exact cached values.
+- Creating a guest session inserts its durable PostgreSQL cart before writing
+  Redis and setting the browser cookie.
+- Customization asset authorization verifies the existing durable guest cart;
+  it does not create guest carts as a fallback.
 - PostgreSQL already has durable tables for `carts`, `cart_items`, `orders`,
   `order_items`, customers, customer contacts, assets, and payment state.
 - Checkout creation and guest cart claim/merge behavior are not yet fully
@@ -64,6 +68,12 @@ TTL: seven days.
 
 Purpose: authenticate the browser's guest cart context without storing raw
 tokens server-side.
+
+The serialized session record is limited to 1 KiB of UTF-8 data. The size is
+checked before JSON parsing, and the parsed object must contain exactly
+`cartId` and `createdAt`, with no unknown fields. `cartId` must be a valid UUID
+and `createdAt` must be a canonical ISO timestamp. Invalid session records are
+treated as stale and rotate to a new guest context.
 
 ### Guest Cart Display Key
 
@@ -247,11 +257,11 @@ When a guest user signs in or creates an account with an active guest cart:
 This transition must be idempotent so repeated auth callbacks or page reloads do
 not duplicate items.
 
-## Proposed Commit Plan
+## Implementation Status And Remaining Commit Plan
 
 Each commit should be independently reviewable.
 
-### Commit 1: Document Strategy And Data Contract
+### Commit 1: Document Strategy And Data Contract (Implemented)
 
 Files:
 
@@ -269,7 +279,7 @@ Tests:
 
 - No runtime tests required; docs-only.
 
-### Commit 2: Type And Validate Redis Guest Cart Data
+### Commit 2: Type And Validate Redis Guest Cart Data (Implemented)
 
 Files:
 
@@ -278,8 +288,7 @@ Files:
 
 Scope:
 
-- Replace `Record<string, unknown>` guest cart items with an explicit
-  `GuestCartDisplayItem` type.
+- Define the explicit `GuestCartDisplayItem` type and strict parser.
 - Validate parsed Redis cart display data before returning it.
 - Reject the entire projection when it is malformed, sensitive, oversized, or
   contains an unknown field.
@@ -293,20 +302,24 @@ Tests:
   reject the complete projection.
 - Invalid quantities, currencies, UUIDs, or validation statuses are rejected.
 
-### Commit 3: Create Durable Guest Cart Records With Redis Sessions
+### Commit 3: Create Durable Guest Cart Records With Redis Sessions (Implemented)
 
 Files:
 
 - `backend/src/modules/cart/guest-session.ts`
-- `backend/src/modules/cart/plugin.ts`
 - `backend/src/modules/cart/guest-session.test.ts`
+- `backend/src/modules/cart/plugin.test.ts`
+- `backend/src/modules/assets/plugin.ts`
+- `backend/src/modules/assets/plugin.test.ts`
 
 Scope:
 
-- When creating a guest session, also create or upsert a PostgreSQL `carts` row
-  with `guest_token_hash`, `status = 'active'`, and `expires_at`.
+- When creating a guest session, strictly insert a PostgreSQL `carts` row with
+  `guest_token_hash`, `status = 'active'`, and `expires_at` before writing Redis.
 - Ensure Redis session `cartId` points at an existing durable cart.
 - Keep raw session IDs out of PostgreSQL.
+- Remove the asset module's competing lazy guest-cart insert and require an
+  existing active, unexpired, correctly owned cart for customization uploads.
 
 Tests:
 

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
@@ -33,7 +34,8 @@ const {
   buildGuestCartItemsKey,
   getGuestCartItems,
   getGuestCartContext,
-  getOrCreateGuestCartContext
+  getOrCreateGuestCartContext,
+  MAX_GUEST_SESSION_RECORD_BYTES
 } = await import("./guest-session.js");
 
 type CookieCall = {
@@ -96,6 +98,35 @@ function createValidDisplayItem(overrides: Record<string, unknown> = {}) {
     validationStatus: "valid",
     ...overrides
   };
+}
+
+function createProjectionWithExactByteLength(targetBytes: number) {
+  const items = Array.from({ length: 50 }, () =>
+    createValidDisplayItem({
+      customizationSummary: {
+        line1: "",
+        line2: "",
+        imageAssetId: null
+      }
+    }),
+  );
+  let serialized = JSON.stringify(items);
+  let remainingBytes = targetBytes - Buffer.byteLength(serialized, "utf8");
+
+  for (const item of items) {
+    for (const line of ["line1", "line2"] as const) {
+      const addedCharacters = Math.min(512, remainingBytes);
+      item.customizationSummary[line] = "x".repeat(addedCharacters);
+      remainingBytes -= addedCharacters;
+
+      if (remainingBytes === 0) {
+        serialized = JSON.stringify(items);
+        return serialized;
+      }
+    }
+  }
+
+  throw new Error(`Unable to build a ${targetBytes}-byte valid projection.`);
 }
 
 function createRedisMock(
@@ -216,6 +247,9 @@ describe("guest session cart context", () => {
       reply,
     );
 
+    expect(Buffer.byteLength(JSON.stringify(session), "utf8")).toBeLessThan(
+      MAX_GUEST_SESSION_RECORD_BYTES,
+    );
     expect(context).toEqual({
       cartId: session.cartId,
       sessionId
@@ -407,25 +441,96 @@ describe("guest session cart context", () => {
     expect(cookies[0].value).toBe(context.sessionId);
   });
 
-  test("rotates malformed Redis session records without querying their cart", async () => {
-    const sessionId = "malformed_session_abcdefghijklmnopqrstuvwxyz123456789";
-    const { redis } = createRedisMock({
-      [`guest_session:${sha256(sessionId)}`]: JSON.stringify({
-        cartId: "not-a-uuid",
-        createdAt: "not-an-iso-timestamp"
-      })
+  test("rotates malformed or non-exact Redis session envelopes", async () => {
+    const invalidSessionValues = [
+      "{not-json",
+      "null",
+      "42",
+      JSON.stringify([existingCartId, fixedNow]),
+      JSON.stringify({ createdAt: fixedNow }),
+      JSON.stringify({ cartId: existingCartId }),
+      JSON.stringify({
+        cartId: existingCartId,
+        createdAt: fixedNow,
+        role: "admin"
+      }),
+      JSON.stringify({ cartId: "not-a-uuid", createdAt: fixedNow }),
+      JSON.stringify({ cartId: existingCartId, createdAt: "not-an-iso-date" }),
+      JSON.stringify({ cartId: null, createdAt: fixedNow }),
+      JSON.stringify({ cartId: existingCartId, createdAt: null })
+    ];
+
+    for (const [index, value] of invalidSessionValues.entries()) {
+      const sessionId = `malformed_session_${index}_abcdefghijklmnopqrstuvwxyz123456789`;
+      const { redis } = createRedisMock({
+        [`guest_session:${sha256(sessionId)}`]: value
+      });
+      const { calls: databaseCalls, database } = createDatabaseMock();
+      const { reply } = createReplyMock();
+
+      const context = await getOrCreateGuestCartContext(
+        createRequestMock(redis, database, { session_id: sessionId }),
+        reply,
+      );
+
+      expect(context.sessionId).not.toBe(sessionId);
+      expect(databaseCalls).toHaveLength(1);
+      expect(databaseCalls[0].text).toContain("insert into carts");
+    }
+  });
+
+  test("accepts an exact 1 KiB session and rejects one byte over before parsing", async () => {
+    const exactSessionId = "exact_size_session_abcdefghijklmnopqrstuvwxyz123456789";
+    const session = { cartId: existingCartId, createdAt: fixedNow };
+    const serializedSession = JSON.stringify(session);
+    const exactValue = serializedSession.padEnd(
+      MAX_GUEST_SESSION_RECORD_BYTES,
+      " ",
+    );
+    const { redis: exactRedis } = createRedisMock({
+      [`guest_session:${sha256(exactSessionId)}`]: exactValue
+    });
+    const { database: exactDatabase } = createDatabaseMock([
+      { rows: [{ id: existingCartId }] }
+    ]);
+    const { reply: exactReply } = createReplyMock();
+
+    await expect(
+      getOrCreateGuestCartContext(
+        createRequestMock(exactRedis, exactDatabase, {
+          session_id: exactSessionId
+        }),
+        exactReply,
+      ),
+    ).resolves.toEqual({ cartId: existingCartId, sessionId: exactSessionId });
+    expect(Buffer.byteLength(exactValue, "utf8")).toBe(1024);
+
+    const oversizedSessionId =
+      "oversized_session_abcdefghijklmnopqrstuvwxyz123456789";
+    const oversizedValue = `${exactValue} `;
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const { redis: oversizedRedis } = createRedisMock({
+      [`guest_session:${sha256(oversizedSessionId)}`]: oversizedValue
     });
     const { calls: databaseCalls, database } = createDatabaseMock();
     const { reply } = createReplyMock();
 
-    const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, database, { session_id: sessionId }),
-      reply,
-    );
+    try {
+      const context = await getOrCreateGuestCartContext(
+        createRequestMock(oversizedRedis, database, {
+          session_id: oversizedSessionId
+        }),
+        reply,
+      );
 
-    expect(context.sessionId).not.toBe(sessionId);
-    expect(databaseCalls).toHaveLength(1);
-    expect(databaseCalls[0].text).toContain("insert into carts");
+      expect(Buffer.byteLength(oversizedValue, "utf8")).toBe(1025);
+      expect(parseSpy).not.toHaveBeenCalledWith(oversizedValue);
+      expect(context.sessionId).not.toBe(oversizedSessionId);
+      expect(databaseCalls).toHaveLength(1);
+      expect(databaseCalls[0].text).toContain("insert into carts");
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   test("propagates Redis read failures without database or cookie writes", async () => {
@@ -709,7 +814,25 @@ describe("guest cart items", () => {
     }
   });
 
-  test("rejects display text beyond its field limits", async () => {
+  test("accepts exact text limits and rejects one character over", async () => {
+    const cartId = "exact-text-limits-cart";
+    const exactLimitItem = createValidDisplayItem({
+      listingSlug: "s".repeat(255),
+      title: "t".repeat(255),
+      customizationSummary: {
+        line1: "x".repeat(512),
+        line2: "y".repeat(512),
+        imageAssetId: null
+      }
+    });
+    const { redis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: JSON.stringify([exactLimitItem])
+    });
+
+    await expect(getGuestCartItems(redis, cartId)).resolves.toEqual([
+      exactLimitItem
+    ]);
+
     const invalidItems = [
       createValidDisplayItem({ listingSlug: "" }),
       createValidDisplayItem({ listingSlug: "s".repeat(256) }),
@@ -719,6 +842,13 @@ describe("guest cart items", () => {
         customizationSummary: {
           line1: "x".repeat(513),
           line2: "",
+          imageAssetId: null
+        }
+      }),
+      createValidDisplayItem({
+        customizationSummary: {
+          line1: "",
+          line2: "y".repeat(513),
           imageAssetId: null
         }
       })
@@ -734,36 +864,40 @@ describe("guest cart items", () => {
     }
   });
 
-  test("rejects projections containing more than 100 items", async () => {
-    const cartId = "too-many-items-cart";
+  test("accepts exactly 100 items and rejects 101", async () => {
+    const exactCartId = "exact-item-count-cart";
     const items = Array.from({ length: 101 }, (_, index) =>
       createValidDisplayItem({
         cartItemId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`
       }),
     );
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
+    const { redis: exactRedis } = createRedisMock({
+      [buildGuestCartItemsKey(exactCartId)]: JSON.stringify(items.slice(0, 100))
+    });
+    const overCartId = "over-item-count-cart";
+    const { redis: overRedis } = createRedisMock({
+      [buildGuestCartItemsKey(overCartId)]: JSON.stringify(items)
     });
 
-    expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+    expect(await getGuestCartItems(exactRedis, exactCartId)).toHaveLength(100);
+    expect(await getGuestCartItems(overRedis, overCartId)).toEqual([]);
   });
 
-  test("measures the 64 KiB projection limit using UTF-8 bytes", async () => {
-    const cartId = "oversized-cart";
-    const items = Array.from({ length: 40 }, (_, index) =>
-      createValidDisplayItem({
-        cartItemId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
-        customizationSummary: {
-          line1: "é".repeat(500),
-          line2: "é".repeat(500),
-          imageAssetId: null
-        }
-      }),
-    );
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
+  test("accepts exactly 64 KiB and rejects one UTF-8 byte over", async () => {
+    const exactCartId = "exact-byte-limit-cart";
+    const exactProjection = createProjectionWithExactByteLength(64 * 1024);
+    const overCartId = "over-byte-limit-cart";
+    const overProjection = createProjectionWithExactByteLength(64 * 1024 + 1);
+    const { redis: exactRedis } = createRedisMock({
+      [buildGuestCartItemsKey(exactCartId)]: exactProjection
+    });
+    const { redis: overRedis } = createRedisMock({
+      [buildGuestCartItemsKey(overCartId)]: overProjection
     });
 
-    expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+    expect(Buffer.byteLength(exactProjection, "utf8")).toBe(64 * 1024);
+    expect(await getGuestCartItems(exactRedis, exactCartId)).toHaveLength(50);
+    expect(Buffer.byteLength(overProjection, "utf8")).toBe(64 * 1024 + 1);
+    expect(await getGuestCartItems(overRedis, overCartId)).toEqual([]);
   });
 });

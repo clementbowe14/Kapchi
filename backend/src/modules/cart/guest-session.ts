@@ -6,6 +6,7 @@ import { config } from "../../config/index.js";
 
 export const GUEST_SESSION_COOKIE = "session_id";
 export const GUEST_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+export const MAX_GUEST_SESSION_RECORD_BYTES = 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CURRENCY_PATTERN = /^[a-z]{3}$/;
@@ -74,14 +75,22 @@ function isValidSessionId(sessionId: string | undefined): sessionId is string {
 }
 
 function parseGuestSession(value: string | null): GuestSession | null {
-  if (!value) {
+  if (
+    !value ||
+    Buffer.byteLength(value, "utf8") > MAX_GUEST_SESSION_RECORD_BYTES
+  ) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(value) as Partial<GuestSession>;
+    const parsed: unknown = JSON.parse(value);
 
-    if (!isUuid(parsed.cartId) || !isIsoTimestamp(parsed.createdAt)) {
+    if (
+      !isRecord(parsed) ||
+      !hasExactKeys(parsed, ["cartId", "createdAt"]) ||
+      !isUuid(parsed.cartId) ||
+      !isIsoTimestamp(parsed.createdAt)
+    ) {
       return null;
     }
 
