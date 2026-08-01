@@ -237,6 +237,71 @@ function createMutationDatabaseMock(deleting = false) {
   return { database, queries, release };
 }
 
+function createClaimDatabaseMock() {
+  const queries: Array<{ text: string; values: unknown[] }> = [];
+  const release = vi.fn();
+  const query = vi.fn(async (text: string, values: unknown[] = []) => {
+    queries.push({ text, values });
+
+    if (["begin", "commit", "rollback"].includes(text)) {
+      return { rows: [] };
+    }
+    if (text.includes("insert into users")) {
+      return {
+        rows: [
+          {
+            disabled_at: null,
+            id: "39bbb0aa-8557-4626-a228-3ed7580bf6ea"
+          }
+        ]
+      };
+    }
+    if (text.includes("select id from users")) {
+      return { rows: [{ id: "39bbb0aa-8557-4626-a228-3ed7580bf6ea" }] };
+    }
+    if (text.includes("insert into customers")) {
+      return { rows: [{ id: "1e1430a4-ab5e-4425-a2f6-3c6718ec23ef" }] };
+    }
+    if (text.includes("from customer_contacts")) {
+      return { rows: [] };
+    }
+    if (text.includes("authenticated_user_id = $1 or user_id = $2")) {
+      return {
+        rows: [
+          {
+            authenticated_user_id: "39bbb0aa-8557-4626-a228-3ed7580bf6ea",
+            currency: "usd",
+            expires_at: null,
+            id: ids.cart,
+            subtotal_cents: 0,
+            user_id: "user_123"
+          }
+        ]
+      };
+    }
+    if (text.includes("authenticated_user_id = $3")) {
+      return { rows: [{ id: ids.cart }] };
+    }
+    if (text.includes("select subtotal_cents from carts")) {
+      return { rows: [{ subtotal_cents: 0 }] };
+    }
+    if (text.includes("validation_status <> 'valid'")) {
+      return { rows: [] };
+    }
+    if (text.includes("from cart_items ci") && text.includes("join listings")) {
+      return { rows: [] };
+    }
+    return { rows: [] };
+  });
+  const client = { query, release };
+  const database = {
+    connect: vi.fn(async () => client),
+    query
+  } as unknown as Pool;
+
+  return { database, queries, release };
+}
+
 describe("cartPlugin", () => {
   beforeEach(() => {
     mocks.verifyClerkToken.mockReset();
@@ -304,12 +369,84 @@ describe("cartPlugin", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ items: [] });
-    expect(queries).toHaveLength(0);
+    expect(response.json()).toEqual({
+      items: [],
+      subtotalCents: 0,
+      warnings: []
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0].text).toContain("left join users");
     expect(gets).toHaveLength(0);
     expect(writes).toHaveLength(0);
     expect(response.headers["set-cookie"]).toBeUndefined();
     expect(mocks.verifyClerkToken).toHaveBeenCalledWith("verified-token");
+
+    await app.close();
+  });
+
+  it("requires authentication for explicit cart claims", async () => {
+    const { database, queries } = createDatabaseMock();
+    const { gets, redis, writes } = createRedisMock();
+    const app = fastify({ logger: false });
+    await app.register(cookie);
+    await app.register(authPlugin);
+    app.decorate("pg", database);
+    app.decorate("redis", redis);
+    await app.register(cartPlugin);
+
+    const response = await app.inject({ method: "POST", url: "/claim" });
+
+    expect(response.statusCode).toBe(401);
+    expect(queries).toHaveLength(0);
+    expect(gets).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+
+    await app.close();
+  });
+
+  it("returns the current authenticated cart for a repeated no-guest claim", async () => {
+    const { database, queries, release } = createClaimDatabaseMock();
+    const { deletes, gets, redis, writes } = createRedisMock();
+    const app = fastify({ logger: false });
+    mocks.verifyClerkToken.mockResolvedValue({
+      claims: {},
+      permissions: [],
+      roles: [],
+      sessionId: "authenticated-session",
+      token: "test-token",
+      userId: "user_123"
+    });
+    await app.register(cookie);
+    await app.register(authPlugin);
+    app.decorate("pg", database);
+    app.decorate("redis", redis);
+    await app.register(cartPlugin);
+
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer verified-token",
+        cookie: `session_id=${guestSessionId}`
+      },
+      method: "POST",
+      url: "/claim"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      cartId: ids.cart,
+      items: [],
+      subtotalCents: 0,
+      warnings: []
+    });
+    expect(
+      queries.some(({ text }) => text.includes("insert into cart_items")),
+    ).toBe(false);
+    expect(gets).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+    expect(deletes).toHaveLength(0);
+    expect(response.headers["set-cookie"]).toContain("session_id=;");
+    expect(response.headers["set-cookie"]).toContain("Max-Age=0");
+    expect(release).toHaveBeenCalledOnce();
 
     await app.close();
   });

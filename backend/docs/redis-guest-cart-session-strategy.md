@@ -26,8 +26,8 @@ and audit-relevant state are persisted in PostgreSQL.
   it does not create guest carts as a fallback.
 - PostgreSQL already has durable tables for `carts`, `cart_items`, `orders`,
   `order_items`, customers, customer contacts, assets, and payment state.
-- Checkout creation and guest cart claim/merge behavior are not yet fully
-  implemented.
+- Checkout materialization and explicit guest cart claim/merge behavior are
+  implemented from PostgreSQL durable state.
 
 ## Ownership And Identifier Model
 
@@ -248,18 +248,19 @@ When a guest user signs in or creates an account with an active guest cart:
    - `carts.customer_id`
    - `carts.customer_contact_id` when available
    - legacy `carts.user_id` only if needed for existing auth-subject indexes
-5. If an authenticated active cart exists, merge valid guest `cart_items` into
-   that cart with deterministic conflict rules:
-   - identical listing, price variant, fabric, and customization payload:
-     combine quantities within allowed limits
-   - conflicting customization payloads: keep separate cart items
-   - invalid or unavailable guest items: copy with `validation_status` set to
-     `invalid` or `needs_reprice`, or skip with a user-visible warning
+5. If an authenticated active cart exists, merge guest `cart_items` into that
+   cart with deterministic conflict rules:
+   - identical listing, price variant, fabric, canonical text lines, and asset
+     identity: combine quantities only when the result is at most `999`
+   - conflicting customizations or quantity overflow: keep separate cart items
+   - invalid, unavailable, or stale-price guest items: move them with their
+     validation status and a user-visible warning; never silently drop them
 6. Move guest-owned assets to the claimed/merged cart item when applicable.
-7. Mark the old guest cart as `converted` or `abandoned`, depending on whether
-   it was claimed or merged away.
-8. Delete or expire the old Redis guest display key and set/refresh the
-   authenticated cart display state.
+7. Keep an in-place claimed cart active. When merging into an existing account
+   cart, mark the merged-away guest cart `abandoned` and remove durable guest
+   authorization.
+8. After commit, delete the old Redis guest session and display keys and clear
+   the cookie. Authenticated cart reads use PostgreSQL directly, not Redis.
 
 This transition must be idempotent so repeated auth callbacks or page reloads do
 not duplicate items.
@@ -389,11 +390,14 @@ Files:
 
 Scope:
 
-- Add an idempotent service that claims or merges the active guest cart when a
-  user signs in or creates an account.
+- Add `POST /cart/claim` as the explicit, authenticated, idempotent entry point.
+- Claim or merge the active guest cart when a user signs in or creates an
+  account; `GET /cart` never claims a guest cart.
 - Attach customer/user/contact IDs to the resulting cart.
-- Move guest assets and cart items safely.
+- Move guest assets, reservations, and cart items transactionally.
 - Delete or expire stale guest Redis projection keys.
+- Read authenticated carts and checkout ownership from PostgreSQL without
+  guest Redis/session access.
 
 Tests:
 
@@ -401,7 +405,7 @@ Tests:
 - Guest cart merge when user already has an active cart.
 - Duplicate auth callbacks do not duplicate items.
 - Conflicting customizations remain separate.
-- Invalid guest items are marked or skipped according to the approved rule.
+- Invalid guest items are moved with warnings and are never silently dropped.
 
 ## Security And Edge Cases
 

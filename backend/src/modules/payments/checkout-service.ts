@@ -1,6 +1,5 @@
 import type Stripe from "stripe";
 import { config } from "../../config/index.js";
-import type { GuestCartContext } from "../cart/guest-session.js";
 import {
   CheckoutAlreadyCompleteError,
   CheckoutProviderError
@@ -8,6 +7,7 @@ import {
 import { CheckoutRepository } from "./checkout-repository.js";
 import type {
   CheckoutContact,
+  CheckoutCartOwner,
   CheckoutResult,
   PreparedCheckout
 } from "./checkout-types.js";
@@ -53,8 +53,8 @@ export class CheckoutService {
     private readonly stripe: Pick<Stripe, "checkout">,
   ) {}
 
-  async startGuestCheckout(
-    context: GuestCartContext,
+  async startCheckout(
+    context: CheckoutCartOwner,
     contact: CheckoutContact,
   ): Promise<CheckoutResult> {
     let prepared = await this.repository.prepareCheckout(context, contact);

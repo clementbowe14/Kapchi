@@ -97,7 +97,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    const result = await service.startGuestCheckout(context, contact);
+    const result = await service.startCheckout(context, contact);
 
     expect(result).toEqual({
       checkoutSessionId: "cs_test_123",
@@ -131,7 +131,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    await service.startGuestCheckout(context, contact);
+    await service.startCheckout(context, contact);
 
     expect(retrieve).toHaveBeenCalledWith("cs_test_123");
     expect(create).not.toHaveBeenCalled();
@@ -184,7 +184,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    const result = await service.startGuestCheckout(context, contact);
+    const result = await service.startCheckout(context, contact);
 
     expect(repository.retireTerminalCheckout).toHaveBeenCalledWith(
       orderId,
@@ -215,7 +215,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    await expect(service.startGuestCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutAlreadyCompleteError"
     });
 
@@ -231,7 +231,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    await expect(service.startGuestCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutProviderError"
     });
 
@@ -250,7 +250,7 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    await expect(service.startGuestCheckout(context, contact)).rejects.toEqual(
+    await expect(service.startCheckout(context, contact)).rejects.toEqual(
       expect.objectContaining({
         message: "Unable to start checkout. Please try again.",
         name: "CheckoutProviderError"
@@ -269,10 +269,10 @@ describe("CheckoutService", () => {
       checkout: { sessions: { create, retrieve } }
     } as unknown as Pick<Stripe, "checkout">);
 
-    await expect(service.startGuestCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutProviderError"
     });
-    await expect(service.startGuestCheckout(context, contact)).resolves.toMatchObject({
+    await expect(service.startCheckout(context, contact)).resolves.toMatchObject({
       orderId
     });
 

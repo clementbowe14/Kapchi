@@ -13,6 +13,7 @@ import {
   CartNotFoundError,
   CartValidationError
 } from "./errors.js";
+import type { AuthenticatedCartView, CartWarning } from "./claim-types.js";
 import type { CartItemInput, CartMutationResult, GuestCartView } from "./types.js";
 
 type CartRow = QueryResultRow & {
@@ -125,6 +126,14 @@ function validateText(input: CartItemInput, selection: SelectionRow) {
   if (selection.requires_image && !input.imageAssetId) {
     throw new CartValidationError("This customization requires an image.");
   }
+}
+
+function authenticatedWarning(status: CartWarning["status"]) {
+  return {
+    invalid: "This cart item needs customization review.",
+    needs_reprice: "This cart item needs price review.",
+    unavailable: "This cart item is currently unavailable."
+  }[status];
 }
 
 export class CartRepository {
@@ -643,5 +652,57 @@ export class CartRepository {
     }
 
     return cart;
+  }
+
+  async loadAuthenticatedView(authSubject: string): Promise<AuthenticatedCartView> {
+    const cartResult = await this.pool.query<CartRow>(
+      `
+        select c.id, c.currency, c.subtotal_cents, c.expires_at
+        from carts c
+        left join users u on u.id = c.authenticated_user_id
+        where c.status = 'active'
+          and (
+            c.user_id = $1
+            or (u.auth_provider = 'clerk' and u.auth_subject = $1)
+          )
+        order by
+          (u.auth_provider = 'clerk' and u.auth_subject = $1) desc,
+          c.created_at asc,
+          c.id asc
+        limit 1
+      `,
+      [authSubject],
+    );
+    const cart = cartResult.rows[0];
+
+    if (!cart) {
+      return { items: [], subtotalCents: 0, warnings: [] };
+    }
+
+    const warnings = await this.pool.query<{
+      id: string;
+      validation_message: string | null;
+      validation_status: CartWarning["status"];
+    }>(
+      `
+        select id, validation_status, validation_message
+        from cart_items
+        where cart_id = $1 and validation_status <> 'valid'
+        order by created_at asc, id asc
+      `,
+      [cart.id],
+    );
+
+    return {
+      cartId: cart.id,
+      items: await this.loadProjection(this.pool, cart.id),
+      subtotalCents: cart.subtotal_cents,
+      warnings: warnings.rows.map((row) => ({
+        cartItemId: row.id,
+        message:
+          row.validation_message ?? authenticatedWarning(row.validation_status),
+        status: row.validation_status
+      }))
+    };
   }
 }

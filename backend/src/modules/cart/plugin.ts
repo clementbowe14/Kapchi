@@ -1,11 +1,15 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply, RouteHandlerMethod } from "fastify";
 import Joi from "joi";
-import { authMiddleware } from "../auth/index.js";
+import { authMiddleware, requireAuth } from "../auth/index.js";
 import {
+  GUEST_SESSION_COOKIE,
+  getGuestCartClaimContext,
   getGuestCartContext,
   getOrCreateGuestCartContext
 } from "./guest-session.js";
+import { CartClaimConflictError, CartClaimForbiddenError } from "./claim-errors.js";
+import { CartClaimService } from "./claim-service.js";
 import {
   CartConflictError,
   CartItemNotFoundError,
@@ -75,12 +79,15 @@ function rejectAuthenticatedMutation(reply: FastifyReply) {
 
 const cartPlugin: FastifyPluginAsync = async (fastify) => {
   const service = new CartService(fastify.pg, fastify.redis, fastify.log);
+  const claimService = new CartClaimService(
+    fastify.pg,
+    fastify.redis,
+    fastify.log,
+  );
 
   const getCart: RouteHandlerMethod = async (request, reply) => {
     if (request.auth) {
-      return {
-        items: []
-      };
+      return service.getAuthenticatedCart(request.auth.userId);
     }
 
     const guestCart = await getOrCreateGuestCartContext(request, reply);
@@ -94,6 +101,37 @@ const cartPlugin: FastifyPluginAsync = async (fastify) => {
   };
 
   fastify.get("/", { preHandler: [authMiddleware] }, getCart);
+
+  fastify.post(
+    "/claim",
+    { preHandler: [authMiddleware, requireAuth] },
+    async (request, reply) => {
+      if (!request.auth) {
+        return;
+      }
+
+      const guestContext = await getGuestCartClaimContext(request);
+
+      try {
+        const result = await claimService.claim(request.auth, guestContext);
+
+        if (request.cookies[GUEST_SESSION_COOKIE]) {
+          reply.clearCookie(GUEST_SESSION_COOKIE, { path: "/" });
+        }
+
+        return result;
+      } catch (error) {
+        if (error instanceof CartClaimForbiddenError) {
+          return requestError(reply, 403, "FORBIDDEN", error.message);
+        }
+        if (error instanceof CartClaimConflictError) {
+          return requestError(reply, 409, "CART_CLAIM_CONFLICT", error.message);
+        }
+
+        throw error;
+      }
+    },
+  );
 
   fastify.post(
     "/items",

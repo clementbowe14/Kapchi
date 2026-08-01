@@ -1,3 +1,9 @@
+import type { GuestCartContext } from "../cart/guest-session.js";
+
+export type CheckoutCartOwner =
+  | GuestCartContext
+  | { authSubject: string };
+
 export type CheckoutContact = {
   customerEmail: string;
   customerPhone: string | null;

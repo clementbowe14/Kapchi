@@ -74,6 +74,10 @@ export class CartService {
     return view;
   }
 
+  async getAuthenticatedCart(authSubject: string) {
+    return this.repository.loadAuthenticatedView(authSubject);
+  }
+
   async addGuestItem(context: GuestCartContext, input: CartItemInput) {
     const result = await this.repository.withTransaction(async (client) => {
       const cart = await this.repository.lockGuestCart(client, durableContext(context));

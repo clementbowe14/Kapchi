@@ -98,7 +98,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     await app.close();
   });
 
-  it("rejects authenticated checkout before guest or Redis access", async () => {
+  it("resolves authenticated checkout from PostgreSQL without guest or Redis access", async () => {
     mocks.verifyClerkToken.mockResolvedValue({
       claims: {},
       permissions: [],
@@ -108,11 +108,27 @@ describe("paymentsPlugin Stripe webhooks", () => {
       userId: "user_123"
     });
     const poolQuery = vi.fn();
+    const clientQuery = vi.fn(async (sql: string) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts c")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+    const client = {
+      query: clientQuery,
+      release: vi.fn()
+    } as unknown as PoolClient;
     const redisGet = vi.fn();
     const app = fastify({ logger: false });
     await app.register(cookie);
     await app.register(authPlugin);
-    app.decorate("pg", { query: poolQuery } as unknown as Pool);
+    app.decorate(
+      "pg",
+      { connect: vi.fn(async () => client), query: poolQuery } as unknown as Pool,
+    );
     app.decorate("redis", { get: redisGet } as unknown as RedisClientType);
     await app.register(paymentsPlugin, { prefix: "/payments" });
 
@@ -123,14 +139,12 @@ describe("paymentsPlugin Stripe webhooks", () => {
       url: "/payments/checkout-sessions"
     });
 
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "CART_CLAIM_REQUIRED",
-      message: "Claim the guest cart before starting authenticated checkout.",
-      statusCode: 409
-    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toBe("CART_NOT_FOUND");
     expect(poolQuery).not.toHaveBeenCalled();
     expect(redisGet).not.toHaveBeenCalled();
+    expect(String(clientQuery.mock.calls[1][0])).toContain("left join users");
+    expect(clientQuery.mock.calls.at(-1)?.[0]).toBe("rollback");
 
     await app.close();
   });

@@ -501,6 +501,34 @@ describe("CheckoutRepository", () => {
     ).toBe(false);
   });
 
+  it("locks authenticated ownership through internal and legacy user identities", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts c")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(
+        { authSubject: "user_clerk_123" },
+        contact,
+      ),
+    ).rejects.toMatchObject({ name: "CheckoutCartNotFoundError" });
+
+    const ownerLock = query.mock.calls.find(([sql]) =>
+      String(sql).includes("from carts c"),
+    );
+    expect(String(ownerLock?.[0])).toContain("left join users");
+    expect(String(ownerLock?.[0])).toContain("c.user_id = $1");
+    expect(String(ownerLock?.[0])).toContain("for update of c");
+    expect(String(ownerLock?.[0])).not.toContain("guest_token_hash");
+    expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
+  });
+
   it("recovers the existing durable order instead of materializing a duplicate", async () => {
     const { pool, query } = createPool((sql) => {
       if (["begin", "commit", "rollback"].includes(sql)) {

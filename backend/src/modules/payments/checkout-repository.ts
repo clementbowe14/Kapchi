@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { hashSessionId, type GuestCartContext } from "../cart/guest-session.js";
+import { hashSessionId } from "../cart/guest-session.js";
 import { CheckoutCartNotFoundError, CheckoutNeedsReviewError } from "./checkout-errors.js";
-import type { CheckoutContact, CheckoutLine, PreparedCheckout } from "./checkout-types.js";
+import type {
+  CheckoutCartOwner,
+  CheckoutContact,
+  CheckoutLine,
+  PreparedCheckout
+} from "./checkout-types.js";
 
 type CartRow = QueryResultRow & {
   authenticated_user_id: string | null;
@@ -248,33 +253,11 @@ export class CheckoutRepository {
   }
 
   async prepareCheckout(
-    context: GuestCartContext,
+    owner: CheckoutCartOwner,
     contact: CheckoutContact,
   ): Promise<PreparedCheckout> {
     const prepared = await this.withTransaction(async (client) => {
-      const cartResult = await client.query<CartRow>(
-        `
-          select
-            id,
-            user_id,
-            authenticated_user_id,
-            customer_id,
-            customer_contact_id,
-            status,
-            currency,
-            subtotal_cents
-          from carts
-          where id = $1
-            and guest_token_hash = $2
-            and (
-              (status = 'active' and expires_at > now())
-              or status = 'checkout_started'
-            )
-          for update
-        `,
-        [context.cartId, hashSessionId(context.sessionId)],
-      );
-      const cart = cartResult.rows[0];
+      const cart = await this.lockCheckoutCart(client, owner);
 
       if (!cart) {
         throw new CheckoutCartNotFoundError();
@@ -550,6 +533,63 @@ export class CheckoutRepository {
         [orderId, session.sessionId, session.customerId, session.expiresAt],
       );
     });
+  }
+
+  private async lockCheckoutCart(client: Queryable, owner: CheckoutCartOwner) {
+    if ("authSubject" in owner) {
+      const result = await client.query<CartRow>(
+        `
+          select
+            c.id,
+            c.user_id,
+            c.authenticated_user_id,
+            c.customer_id,
+            c.customer_contact_id,
+            c.status,
+            c.currency,
+            c.subtotal_cents
+          from carts c
+          left join users u on u.id = c.authenticated_user_id
+          where c.status in ('active', 'checkout_started')
+            and (
+              c.user_id = $1
+              or (u.auth_provider = 'clerk' and u.auth_subject = $1)
+            )
+          order by
+            (u.auth_provider = 'clerk' and u.auth_subject = $1) desc,
+            c.created_at asc,
+            c.id asc
+          limit 1
+          for update of c
+        `,
+        [owner.authSubject],
+      );
+      return result.rows[0] ?? null;
+    }
+
+    const result = await client.query<CartRow>(
+      `
+        select
+          id,
+          user_id,
+          authenticated_user_id,
+          customer_id,
+          customer_contact_id,
+          status,
+          currency,
+          subtotal_cents
+        from carts
+        where id = $1
+          and guest_token_hash = $2
+          and (
+            (status = 'active' and expires_at > now())
+            or status = 'checkout_started'
+          )
+        for update
+      `,
+      [owner.cartId, hashSessionId(owner.sessionId)],
+    );
+    return result.rows[0] ?? null;
   }
 
   async markProviderFailure(orderId: string) {

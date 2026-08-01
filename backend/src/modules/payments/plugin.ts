@@ -60,14 +60,6 @@ const paymentsPlugin: FastifyPluginAsync = async (fastify) => {
     "/checkout-sessions",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      if (request.auth) {
-        return reply.code(409).send({
-          error: "CART_CLAIM_REQUIRED",
-          message: "Claim the guest cart before starting authenticated checkout.",
-          statusCode: 409
-        });
-      }
-
       const { error, value } = checkoutSchema.validate(
         parseJsonBody(request.body),
         {
@@ -85,8 +77,10 @@ const paymentsPlugin: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const context = await getGuestCartSessionContext(request);
-      if (!context) {
+      const owner = request.auth
+        ? { authSubject: request.auth.userId }
+        : await getGuestCartSessionContext(request);
+      if (!owner) {
         return reply.code(404).send({
           error: "CART_NOT_FOUND",
           message: "Cart not found.",
@@ -95,8 +89,8 @@ const paymentsPlugin: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
-        const result = await checkoutService.startGuestCheckout(
-          context,
+        const result = await checkoutService.startCheckout(
+          owner,
           value as CheckoutContact,
         );
         return reply.code(201).send(result);
