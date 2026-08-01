@@ -46,9 +46,37 @@ type RedisCalls = {
 };
 
 const sevenDaysInSeconds = 60 * 60 * 24 * 7;
+const displayIds = {
+  cartItem: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
+  customizationSet: "fba94989-b950-4087-bac1-8c1ad4970655",
+  fabric: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+  imageAsset: "1d66d9cc-0987-46e1-b719-c3e5a09f5013",
+  listing: "396256fa-68f9-4882-934a-5cedffbd8204"
+};
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function createValidDisplayItem(overrides: Record<string, unknown> = {}) {
+  return {
+    cartItemId: displayIds.cartItem,
+    listingId: displayIds.listing,
+    listingSlug: "graduation-stole",
+    title: "Graduation Stole",
+    quantity: 1,
+    unitAmountCents: 8500,
+    currency: "usd",
+    fabricId: displayIds.fabric,
+    customizationSetId: displayIds.customizationSet,
+    customizationSummary: {
+      line1: "Class of 2026",
+      line2: "Kapchi University",
+      imageAssetId: displayIds.imageAsset
+    },
+    validationStatus: "valid",
+    ...overrides
+  };
 }
 
 function createRedisMock(values: Record<string, string | null> = {}) {
@@ -229,11 +257,22 @@ describe("guest session cart context", () => {
 });
 
 describe("guest cart items", () => {
-  test("reads guest cart items from Redis", async () => {
+  test("returns fresh typed guest cart display items from Redis", async () => {
     const cartId = "cart-items";
     const items = [
-      { listingId: "listing-1", quantity: 2 },
-      { listingId: "listing-2", quantity: 1 }
+      createValidDisplayItem(),
+      createValidDisplayItem({
+        cartItemId: "f33d7a50-cd15-418a-96dd-46e8c6466830",
+        fabricId: null,
+        customizationSummary: {
+          line1: "",
+          line2: "",
+          imageAssetId: null
+        },
+        quantity: 999,
+        unitAmountCents: 2_147_483_647,
+        validationStatus: "needs_reprice"
+      })
     ];
     const { calls, redis } = createRedisMock({
       [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
@@ -242,6 +281,11 @@ describe("guest cart items", () => {
     const result = await getGuestCartItems(redis, cartId);
 
     expect(result).toEqual(items);
+    expect(result).not.toBe(items);
+    expect(result[0]).not.toBe(items[0]);
+    expect(result[0].customizationSummary).not.toBe(
+      items[0].customizationSummary,
+    );
     expect(calls.get).toEqual([buildGuestCartItemsKey(cartId)]);
   });
 
@@ -273,5 +317,138 @@ describe("guest cart items", () => {
     const result = await getGuestCartItems(redis, cartId);
 
     expect(result).toEqual([]);
+  });
+
+  test("rejects the entire projection when an item is missing a required field", async () => {
+    const cartId = "missing-field-cart";
+    const { title: _title, ...incompleteItem } = createValidDisplayItem();
+    const { redis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: JSON.stringify([
+        createValidDisplayItem(),
+        incompleteItem
+      ])
+    });
+
+    const result = await getGuestCartItems(redis, cartId);
+
+    expect(result).toEqual([]);
+  });
+
+  test("rejects unknown and sensitive fields instead of stripping them", async () => {
+    const sensitiveItems = [
+      createValidDisplayItem({ stripePaymentIntentId: "pi_secret" }),
+      createValidDisplayItem({ sessionToken: "raw-session-token" }),
+      createValidDisplayItem({ privateUrl: "https://private.test/asset" }),
+      createValidDisplayItem({ internalNotes: "do not expose" }),
+      createValidDisplayItem({
+        customizationSummary: {
+          line1: "Class of 2026",
+          line2: "Kapchi University",
+          imageAssetId: displayIds.imageAsset,
+          privateUrl: "https://private.test/asset"
+        }
+      })
+    ];
+
+    for (const [index, item] of sensitiveItems.entries()) {
+      const cartId = `sensitive-cart-${index}`;
+      const { redis } = createRedisMock({
+        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
+      });
+
+      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+    }
+  });
+
+  test("rejects invalid identifiers, numbers, currency, and status", async () => {
+    const invalidItems = [
+      createValidDisplayItem({ cartItemId: "not-a-uuid" }),
+      createValidDisplayItem({ listingId: "not-a-uuid" }),
+      createValidDisplayItem({ fabricId: "not-a-uuid" }),
+      createValidDisplayItem({ customizationSetId: "not-a-uuid" }),
+      createValidDisplayItem({ quantity: 0 }),
+      createValidDisplayItem({ quantity: 1000 }),
+      createValidDisplayItem({ quantity: 1.5 }),
+      createValidDisplayItem({ unitAmountCents: -1 }),
+      createValidDisplayItem({ unitAmountCents: 2_147_483_648 }),
+      createValidDisplayItem({ unitAmountCents: 1.5 }),
+      createValidDisplayItem({ currency: "USD" }),
+      createValidDisplayItem({ currency: "us" }),
+      createValidDisplayItem({ validationStatus: "pending" }),
+      createValidDisplayItem({
+        customizationSummary: {
+          line1: "Class of 2026",
+          line2: "Kapchi University",
+          imageAssetId: "not-a-uuid"
+        }
+      })
+    ];
+
+    for (const [index, item] of invalidItems.entries()) {
+      const cartId = `invalid-item-cart-${index}`;
+      const { redis } = createRedisMock({
+        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
+      });
+
+      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+    }
+  });
+
+  test("rejects display text beyond its field limits", async () => {
+    const invalidItems = [
+      createValidDisplayItem({ listingSlug: "" }),
+      createValidDisplayItem({ listingSlug: "s".repeat(256) }),
+      createValidDisplayItem({ title: "" }),
+      createValidDisplayItem({ title: "t".repeat(256) }),
+      createValidDisplayItem({
+        customizationSummary: {
+          line1: "x".repeat(513),
+          line2: "",
+          imageAssetId: null
+        }
+      })
+    ];
+
+    for (const [index, item] of invalidItems.entries()) {
+      const cartId = `invalid-text-cart-${index}`;
+      const { redis } = createRedisMock({
+        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
+      });
+
+      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+    }
+  });
+
+  test("rejects projections containing more than 100 items", async () => {
+    const cartId = "too-many-items-cart";
+    const items = Array.from({ length: 101 }, (_, index) =>
+      createValidDisplayItem({
+        cartItemId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`
+      }),
+    );
+    const { redis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
+    });
+
+    expect(await getGuestCartItems(redis, cartId)).toEqual([]);
+  });
+
+  test("measures the 64 KiB projection limit using UTF-8 bytes", async () => {
+    const cartId = "oversized-cart";
+    const items = Array.from({ length: 40 }, (_, index) =>
+      createValidDisplayItem({
+        cartItemId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+        customizationSummary: {
+          line1: "é".repeat(500),
+          line2: "é".repeat(500),
+          imageAssetId: null
+        }
+      }),
+    );
+    const { redis } = createRedisMock({
+      [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
+    });
+
+    expect(await getGuestCartItems(redis, cartId)).toEqual([]);
   });
 });
