@@ -1,7 +1,7 @@
-import { config as loadDotEnv } from "dotenv";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { loadBackendEnvironment } from "../config/load-environment.js";
 
-loadDotEnv();
+loadBackendEnvironment();
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 

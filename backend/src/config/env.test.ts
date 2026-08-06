@@ -75,4 +75,22 @@ describe("checkout redirect environment", () => {
       "https://kapchi.test/orders",
     );
   });
+
+  it("reports the resolved env file and explains missing Stripe API keys", () => {
+    const environmentWithoutStripeSecret = { ...requiredEnvironment };
+    delete environmentWithoutStripeSecret.STRIPE_SECRET_KEY;
+
+    expect(() =>
+      validateEnvironment(environmentWithoutStripeSecret, {
+        envFileLoaded: true,
+        envFilePath: "/srv/kapchi/backend/.env"
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /STRIPE_SECRET_KEY[\s\S]*\/srv\/kapchi\/backend\/\.env \(loaded\)[\s\S]*STRIPE_WEBHOOK_SECRET only verifies webhooks[\s\S]*Stripe CLI authentication is stored separately/,
+        )
+      }),
+    );
+  });
 });
