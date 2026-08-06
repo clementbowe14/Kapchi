@@ -235,6 +235,10 @@ unreachable. Current Redis-backed behavior includes:
 - seven-day guest session storage under `guest_session:<hashed-session-id>` keys
 - guest cart item reads under `guest_cart:<cart-id>:items` keys
 
+See the [Redis guest cart and session storage strategy](docs/redis-guest-cart-session-strategy.md)
+for the ownership model, cache data contract, expiration behavior, and durable
+checkout and account transitions.
+
 The parent Redis infrastructure work tracks broader use for sessions, guest
 carts, caching, and background jobs. Add any new Redis-backed feature here when
 it lands so local setup stays accurate.

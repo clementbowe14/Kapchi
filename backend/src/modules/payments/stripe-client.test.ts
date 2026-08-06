@@ -30,6 +30,10 @@ class StripeClientMock {
 function createAppConfig() {
   return {
     payments: {
+      checkout: {
+        cancelUrl: "https://kapchi.test/cart",
+        successUrl: "https://kapchi.test/orders"
+      },
       stripe: {
         apiVersion: "2026-02-25.clover",
         secretKey: "sk_test_from_config",
