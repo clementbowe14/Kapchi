@@ -638,7 +638,9 @@ describe("guest session cart context", () => {
       redisError,
     );
     expect(request.log.error).toHaveBeenCalledWith(
-      expect.objectContaining({ err: abandonmentError }),
+      expect.objectContaining({
+        databaseError: { errorType: "Error" }
+      }),
       "Failed to abandon guest cart after Redis session write failure",
     );
     expect(cookies).toHaveLength(0);

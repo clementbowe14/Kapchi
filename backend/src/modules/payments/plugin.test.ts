@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   constructEvent: vi.fn(),
+  stripeConstructor: vi.fn(),
   verifyClerkToken: vi.fn()
 }));
 
@@ -31,7 +32,9 @@ vi.mock("../../config/index.js", () => ({
 
 vi.mock("stripe", () => ({
   default: vi.fn(function Stripe() {
+    mocks.stripeConstructor();
     return {
+      checkout: { sessions: {} },
       webhooks: {
         constructEvent: mocks.constructEvent
       }
@@ -39,10 +42,14 @@ vi.mock("stripe", () => ({
   })
 }));
 
-const [{ authPlugin }, { default: paymentsPlugin }] = await Promise.all([
+const [
+  { authPlugin },
+  { createPaymentsPlugin, default: paymentsPlugin }
+] = await Promise.all([
   import("../auth/index.js"),
   import("./plugin.js")
 ]);
+const stripeClientsConstructedDuringImport = mocks.stripeConstructor.mock.calls.length;
 
 async function buildTestServer() {
   const app = fastify({ logger: false });
@@ -55,7 +62,103 @@ async function buildTestServer() {
 describe("paymentsPlugin Stripe webhooks", () => {
   beforeEach(() => {
     mocks.constructEvent.mockReset();
+    mocks.stripeConstructor.mockClear();
     mocks.verifyClerkToken.mockReset();
+  });
+
+  it("defers Stripe construction until the plugin is registered", async () => {
+    expect(stripeClientsConstructedDuringImport).toBe(0);
+
+    const app = await buildTestServer();
+
+    expect(mocks.stripeConstructor).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("composes injected payment dependencies at the request boundary", async () => {
+    mocks.verifyClerkToken.mockResolvedValue({
+      claims: {},
+      permissions: [],
+      roles: [],
+      sessionId: "sess_authenticated",
+      token: "verified-token",
+      userId: "user_123"
+    });
+    const checkoutResult = {
+      checkoutSessionId: "cs_test_injected",
+      orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+      paymentStatus: "checkout_started" as const,
+      url: "https://checkout.stripe.test/session"
+    };
+    const startCheckout = vi.fn(async () => checkoutResult);
+    const repository = {
+      finalizeCheckout: vi.fn(),
+      markProviderFailure: vi.fn(),
+      prepareCheckout: vi.fn(),
+      retireTerminalCheckout: vi.fn()
+    };
+    const provider = {
+      createSession: vi.fn(),
+      retrieveSession: vi.fn()
+    };
+    const observer = {
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn()
+    };
+    const clock = { now: () => new Date("2026-08-01T12:00:00.000Z") };
+    const checkoutServiceFactory = vi.fn(() => ({ startCheckout }));
+    const stripe = {
+      checkout: { sessions: {} },
+      webhooks: { constructEvent: mocks.constructEvent }
+    };
+    const app = fastify({ logger: false });
+    await app.register(authPlugin);
+    app.decorate("pg", {} as Pool);
+    await app.register(
+      createPaymentsPlugin({
+        checkoutProviderFactory: () => provider,
+        checkoutRepositoryFactory: () => repository,
+        checkoutServiceFactory,
+        clock,
+        observerFactory: () => observer,
+        paymentConfig: {
+          checkout: {
+            cancelUrl: "https://kapchi.test/cart",
+            successUrl: "https://kapchi.test/orders"
+          },
+          stripe: { webhookSecret: "whsec_injected" }
+        },
+        stripeClientFactory: () => stripe as never
+      }),
+      { prefix: "/payments" },
+    );
+
+    const response = await app.inject({
+      headers: { authorization: "Bearer verified-token" },
+      method: "POST",
+      payload: { customerEmail: "customer@example.com" },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual(checkoutResult);
+    expect(checkoutServiceFactory).toHaveBeenCalledWith({
+      clock,
+      observer,
+      provider,
+      redirects: {
+        cancelUrl: "https://kapchi.test/cart",
+        successUrl: "https://kapchi.test/orders"
+      },
+      repository
+    });
+    expect(startCheckout).toHaveBeenCalledWith(
+      { authSubject: "user_123" },
+      { customerEmail: "customer@example.com", customerPhone: null },
+    );
+    expect(mocks.stripeConstructor).not.toHaveBeenCalled();
+    await app.close();
   });
 
   it("returns 400 when the Stripe signature is missing", async () => {

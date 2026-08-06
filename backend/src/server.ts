@@ -1,5 +1,6 @@
 import { buildServer } from "./app.js";
 import { config } from "./config/index.js";
+import { safeErrorDetails } from "./observability/safe-error.js";
 
 const server = await buildServer();
 
@@ -17,6 +18,6 @@ try {
     "Kapchi backend listening",
   );
 } catch (error) {
-  server.log.error({ err: error }, "Failed to start Kapchi backend");
+  server.log.error(safeErrorDetails(error), "Failed to start Kapchi backend");
   process.exit(1);
 }

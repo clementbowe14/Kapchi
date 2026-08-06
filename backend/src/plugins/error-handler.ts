@@ -43,14 +43,6 @@ export function registerErrorHandler(fastify: FastifyInstance) {
   fastify.setErrorHandler((error, request, reply) => {
     const payload = formatError(error);
 
-    request.log.error(
-      {
-        err: error,
-        statusCode: payload.statusCode
-      },
-      payload.message,
-    );
-
     void reply.code(payload.statusCode).send(payload);
   });
 }

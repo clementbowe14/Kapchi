@@ -3,6 +3,7 @@ import { createClient } from "redis";
 import type { FastifyPluginAsync } from "fastify";
 import type { RedisClientType } from "redis";
 import { config } from "../config/index.js";
+import { safeErrorDetails } from "../observability/safe-error.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -16,7 +17,10 @@ const redisPlugin: FastifyPluginAsync = async (fastify) => {
   });
 
   redis.on("error", (error) => {
-    fastify.log.error({ err: error }, "Redis client error");
+    fastify.log.error(
+      { cacheError: safeErrorDetails(error) },
+      "Redis client error",
+    );
   });
 
   await redis.connect();
