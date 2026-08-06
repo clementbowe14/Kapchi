@@ -51,7 +51,6 @@ function requestFields(
   return {
     durationMs: Math.max(0, Math.round(durationMs * 1000) / 1000),
     method: request.method,
-    requestId: request.id,
     route: request.routeOptions.url ?? null,
     statusCode,
     url: safeRequestUrl(request.url)

@@ -102,6 +102,10 @@ describe("request observability", () => {
       url: "/widgets/7"
     });
     expect(completion?.requestId).toEqual(expect.any(String));
+    const completionLine = lines.find((line) =>
+      line.includes('"event":"http.request.completed"'),
+    );
+    expect(completionLine?.match(/"requestId":/g)).toHaveLength(1);
     await app.close();
   });
 
