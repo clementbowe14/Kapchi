@@ -7,6 +7,7 @@ This backend workspace currently includes:
 - security/runtime plugins
 - PostgreSQL connection pooling
 - structured error handling
+- request IDs and structured request lifecycle logging
 - Clerk JWT verification
 - reusable auth guards:
   - `authMiddleware`
@@ -23,6 +24,10 @@ This backend workspace currently includes:
 
 Some domain modules are still skeletal. Asset upload authorization and customer
 order lookup are wired.
+
+See [Backend observability](docs/observability.md) for request-ID behavior,
+structured HTTP and checkout event fields, redaction rules, and operational
+troubleshooting.
 
 ## Requirements
 

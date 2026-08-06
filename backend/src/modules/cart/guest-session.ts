@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { RedisClientType } from "redis";
 import { config } from "../../config/index.js";
+import { safeErrorDetails } from "../../observability/safe-error.js";
 
 export const GUEST_SESSION_COOKIE = "session_id";
 export const GUEST_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -304,7 +305,10 @@ async function createGuestCartContext(
       );
     } catch (abandonmentError) {
       request.log.error(
-        { cartId: session.cartId, err: abandonmentError },
+        {
+          cartId: session.cartId,
+          databaseError: safeErrorDetails(abandonmentError)
+        },
         "Failed to abandon guest cart after Redis session write failure",
       );
     }

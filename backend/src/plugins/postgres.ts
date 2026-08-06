@@ -8,24 +8,13 @@ import {
 } from "pg";
 import { config } from "../config/index.js";
 import { createDatabasePoolFromConfig } from "../database/pool-factory.js";
+import { safeErrorDetails } from "../observability/safe-error.js";
 
 declare module "fastify" {
   interface FastifyInstance {
     pg: ReturnType<typeof createDatabasePoolFromConfig>;
     withPgClient<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
   }
-}
-
-function getSafePostgresError(error: unknown) {
-  if (!(error instanceof Error)) {
-    return error;
-  }
-
-  return {
-    message: error.message,
-    name: error.name,
-    stack: error.stack
-  };
 }
 
 const postgresPlugin: FastifyPluginAsync = async (fastify) => {
@@ -35,7 +24,7 @@ const postgresPlugin: FastifyPluginAsync = async (fastify) => {
 
   pool.on("error", (error) => {
     fastify.log.error(
-      { err: getSafePostgresError(error) },
+      { databaseError: safeErrorDetails(error) },
       "PostgreSQL pool error",
     );
   });
@@ -47,7 +36,7 @@ const postgresPlugin: FastifyPluginAsync = async (fastify) => {
   } catch (error) {
     fastify.log.error(
       {
-        err: getSafePostgresError(error),
+        databaseError: safeErrorDetails(error),
         databaseMaxConnections:
           config.database.deployment.databaseMaxConnections,
         maxAppInstances: config.database.deployment.maxAppInstances,

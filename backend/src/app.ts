@@ -14,16 +14,23 @@ import ordersPlugin from "./modules/orders/plugin.js";
 import paymentsPlugin from "./modules/payments/plugin.js";
 import shippingPlugin from "./modules/shipping/plugin.js";
 import usersPlugin from "./modules/users/plugin.js";
+import { createLoggerOptions } from "./observability/logger.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
 import postgresPlugin from "./plugins/postgres.js";
 import redisPlugin from "./plugins/redis.js";
+import requestObservabilityPlugin, {
+  generateRequestId
+} from "./plugins/request-observability.js";
 
 export async function buildServer() {
   const app = fastify.fastify({
-    logger: {
-      level: config.app.logLevel
-    }
+    disableRequestLogging: true,
+    genReqId: generateRequestId,
+    logger: createLoggerOptions(config.app.logLevel),
+    requestIdLogLabel: "requestId"
   });
+
+  await app.register(requestObservabilityPlugin);
 
   await app.register(cors, {
     credentials: true,

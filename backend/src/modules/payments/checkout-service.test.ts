@@ -1,33 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type Stripe from "stripe";
-import type { CheckoutRepository } from "./checkout-repository.js";
-
-const envDefaults: Record<string, string> = {
-  CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
-  CLERK_JWT_ISSUER: "https://clerk.test",
-  CLERK_PUBLISHABLE_KEY: "test-publishable-key",
-  CLERK_SECRET_KEY: "test-secret-key",
-  CLERK_WEBHOOK_SECRET: "test-webhook-secret",
-  DATABASE_MAX_APP_INSTANCES: "3",
-  DATABASE_MAX_CONNECTIONS: "20",
-  DATABASE_POOL_MAX: "5",
-  DATABASE_RESERVED_CONNECTIONS: "5",
-  DATABASE_SSL_MODE: "disable",
-  DATABASE_STATEMENT_TIMEOUT_MS: "15000",
-  DATABASE_URL: "postgres://user:pass@localhost:5432/kapchi_test",
-  NODE_ENV: "test",
-  REDIS_URL: "redis://localhost:6379",
-  STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
-  STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders",
-  STRIPE_SECRET_KEY: "sk_test_123",
-  STRIPE_WEBHOOK_SECRET: "whsec_test"
-};
-
-for (const [key, value] of Object.entries(envDefaults)) {
-  process.env[key] = value;
-}
-
-const { CheckoutService } = await import("./checkout-service.js");
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  CheckoutProvider,
+  CheckoutProviderSession
+} from "./checkout-provider.js";
+import {
+  CheckoutService,
+  type CheckoutServiceDependencies
+} from "./checkout-service.js";
 
 const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
 const replacementOrderId = "7ad85754-c339-4214-af6e-519eabc38501";
@@ -39,63 +18,100 @@ const contact = {
   customerEmail: "customer@example.com",
   customerPhone: null
 };
+const redirects = {
+  cancelUrl: "https://kapchi.test/cart",
+  successUrl: "https://kapchi.test/orders"
+};
+const now = new Date("2026-08-01T12:00:00.000Z");
 
-function createRepository(existingStripeSessionId: string | null = null) {
+function preparedCheckout(
+  id = orderId,
+  existingStripeSessionId: string | null = null,
+) {
   return {
-    finalizeCheckout: vi.fn(),
-    markProviderFailure: vi.fn(),
-    retireTerminalCheckout: vi.fn(),
-    prepareCheckout: vi.fn(async () => ({
-      customerEmail: contact.customerEmail,
-      existingStripeSessionId,
-      lines: [
-        {
-          currency: "usd",
-          orderItemId: "5863e978-6764-41f4-96bd-ea2337d11204",
-          quantity: 2,
-          stripePriceId: "price_test_stole"
-        }
-      ],
-      orderId
-    }))
+    customerEmail: contact.customerEmail,
+    existingStripeSessionId,
+    lines: [
+      {
+        currency: "usd",
+        orderItemId: "5863e978-6764-41f4-96bd-ea2337d11204",
+        quantity: 2,
+        stripePriceId: "price_test_stole"
+      }
+    ],
+    orderId: id
   };
 }
 
-function stripeSession(overrides: Partial<Stripe.Checkout.Session> = {}) {
+function createRepository(
+  existingStripeSessionId: string | null = null,
+) {
   return {
-    id: "cs_test_123",
-    customer: "cus_test_123",
-    expires_at: Math.floor(
-      new Date("2026-08-01T13:00:00.000Z").getTime() / 1000,
+    finalizeCheckout: vi.fn(),
+    markProviderFailure: vi.fn(),
+    prepareCheckout: vi.fn(async () =>
+      preparedCheckout(orderId, existingStripeSessionId),
     ),
-    payment_status: "unpaid",
+    retireTerminalCheckout: vi.fn()
+  };
+}
+
+function providerSession(
+  overrides: Partial<CheckoutProviderSession> = {},
+): CheckoutProviderSession {
+  return {
+    customerId: "cus_test_123",
+    expiresAt: new Date("2026-08-01T13:00:00.000Z"),
+    id: "cs_test_123",
+    paymentStatus: "unpaid",
     status: "open",
     url: "https://checkout.stripe.com/c/pay/cs_test_123",
     ...overrides
-  } as Stripe.Checkout.Session;
+  };
+}
+
+function createObserver() {
+  return {
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn()
+  };
 }
 
 describe("CheckoutService", () => {
-  const create = vi.fn();
-  const retrieve = vi.fn();
+  const createSession = vi.fn();
+  const retrieveSession = vi.fn();
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-08-01T12:00:00.000Z");
-    create.mockReset();
-    retrieve.mockReset();
+    createSession.mockReset();
+    retrieveSession.mockReset();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+  function createService(
+    overrides: Partial<CheckoutServiceDependencies> = {},
+  ) {
+    const repository = overrides.repository ?? createRepository();
+    const observer = overrides.observer ?? createObserver();
+    const provider: CheckoutProvider = overrides.provider ?? {
+      createSession,
+      retrieveSession
+    };
+    const service = new CheckoutService({
+      clock: overrides.clock ?? { now: () => now },
+      observer,
+      provider,
+      redirects: overrides.redirects ?? redirects,
+      repository
+    });
 
-  it("uses durable order identity for Stripe idempotency and finalization", async () => {
+    return { observer, provider, repository, service };
+  }
+
+  it("uses injected redirects and durable identity for provider creation", async () => {
     const repository = createRepository();
-    create.mockResolvedValue(stripeSession());
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+    const observer = createObserver();
+    createSession.mockResolvedValue(providerSession());
+    const { service } = createService({ observer, repository });
 
     const result = await service.startCheckout(context, contact);
 
@@ -105,84 +121,70 @@ describe("CheckoutService", () => {
       paymentStatus: "checkout_started",
       url: "https://checkout.stripe.com/c/pay/cs_test_123"
     });
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cancel_url: "https://kapchi.test/cart",
-        customer_email: "customer@example.com",
-        line_items: [{ price: "price_test_stole", quantity: 2 }],
-        metadata: { order_id: orderId },
-        success_url: "https://kapchi.test/orders"
-      }),
-      { idempotencyKey: `cart-checkout:${orderId}` },
+    expect(createSession).toHaveBeenCalledWith(
+      {
+        cancelUrl: "https://kapchi.test/cart",
+        customerEmail: "customer@example.com",
+        lines: [
+          expect.objectContaining({
+            quantity: 2,
+            stripePriceId: "price_test_stole"
+          })
+        ],
+        orderId,
+        successUrl: "https://kapchi.test/orders"
+      },
+      `cart-checkout:${orderId}`,
     );
-    expect(repository.finalizeCheckout).toHaveBeenCalledWith(
+    expect(repository.finalizeCheckout).toHaveBeenCalledWith(orderId, {
+      customerId: "cus_test_123",
+      expiresAt: new Date("2026-08-01T13:00:00.000Z"),
+      sessionId: "cs_test_123"
+    });
+    expect(observer.info).toHaveBeenCalledWith("checkout.succeeded", {
       orderId,
-      expect.objectContaining({
-        customerId: "cus_test_123",
-        sessionId: "cs_test_123"
-      }),
-    );
+      providerSessionId: "cs_test_123"
+    });
   });
 
-  it("retrieves an existing provider session instead of creating another", async () => {
+  it("retrieves and observes a reusable existing provider session", async () => {
     const repository = createRepository("cs_test_123");
-    retrieve.mockResolvedValue(stripeSession());
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+    const observer = createObserver();
+    retrieveSession.mockResolvedValue(providerSession());
+    const { service } = createService({ observer, repository });
 
     await service.startCheckout(context, contact);
 
-    expect(retrieve).toHaveBeenCalledWith("cs_test_123");
-    expect(create).not.toHaveBeenCalled();
-    expect(repository.retireTerminalCheckout).not.toHaveBeenCalled();
+    expect(retrieveSession).toHaveBeenCalledWith("cs_test_123");
+    expect(createSession).not.toHaveBeenCalled();
+    expect(observer.info).toHaveBeenCalledWith(
+      "checkout.provider.session_reused",
+      {
+        disposition: "reusable",
+        orderId,
+        providerSessionId: "cs_test_123"
+      },
+    );
   });
 
-  it("retires an expired session and creates a fresh durable attempt", async () => {
+  it("uses the injected clock to retire an expired session and replace it", async () => {
     const repository = createRepository("cs_test_expired");
     repository.prepareCheckout
-      .mockResolvedValueOnce({
-        customerEmail: contact.customerEmail,
-        existingStripeSessionId: "cs_test_expired",
-        lines: [
-          {
-            currency: "usd",
-            orderItemId: "5863e978-6764-41f4-96bd-ea2337d11204",
-            quantity: 2,
-            stripePriceId: "price_test_stole"
-          }
-        ],
-        orderId
-      })
-      .mockResolvedValueOnce({
-        customerEmail: contact.customerEmail,
-        existingStripeSessionId: null,
-        lines: [
-          {
-            currency: "usd",
-            orderItemId: "a427a61f-868a-4fa8-91f7-e7d312601b41",
-            quantity: 2,
-            stripePriceId: "price_test_stole"
-          }
-        ],
-        orderId: replacementOrderId
-      });
-    retrieve.mockResolvedValue(
-      stripeSession({
-        expires_at: Math.floor(
-          new Date("2026-08-01T11:00:00.000Z").getTime() / 1000,
-        ),
-        id: "cs_test_expired",
-        status: "expired",
-        url: null
+      .mockResolvedValueOnce(preparedCheckout(orderId, "cs_test_expired"))
+      .mockResolvedValueOnce(preparedCheckout(replacementOrderId));
+    retrieveSession.mockResolvedValue(
+      providerSession({
+        expiresAt: new Date("2026-08-01T12:30:00.000Z"),
+        id: "cs_test_expired"
       }),
     );
-    create.mockResolvedValue(
-      stripeSession({ id: "cs_test_replacement" }),
+    createSession.mockResolvedValue(
+      providerSession({ id: "cs_test_replacement" }),
     );
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+    const { service } = createService({
+      clock: { now: () => new Date("2026-08-01T12:45:00.000Z") },
+      repository
+    });
 
     const result = await service.startCheckout(context, contact);
 
@@ -191,50 +193,41 @@ describe("CheckoutService", () => {
       expect.objectContaining({ sessionId: "cs_test_expired" }),
       "provider_session_expired",
     );
-    expect(create.mock.calls[0][1]).toEqual({
-      idempotencyKey: `cart-checkout:${replacementOrderId}`
-    });
-    expect(result.orderId).toBe(replacementOrderId);
-    expect(repository.finalizeCheckout).toHaveBeenCalledWith(
-      replacementOrderId,
-      expect.objectContaining({ sessionId: "cs_test_replacement" }),
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: replacementOrderId }),
+      `cart-checkout:${replacementOrderId}`,
     );
+    expect(result.orderId).toBe(replacementOrderId);
   });
 
   it("does not replace a complete or paid provider session", async () => {
     const repository = createRepository("cs_test_complete");
-    retrieve.mockResolvedValue(
-      stripeSession({
+    retrieveSession.mockResolvedValue(
+      providerSession({
         id: "cs_test_complete",
-        payment_status: "paid",
+        paymentStatus: "paid",
         status: "complete",
         url: null
       }),
     );
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+    const { service } = createService({ repository });
 
     await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutAlreadyCompleteError"
     });
-
     expect(repository.retireTerminalCheckout).not.toHaveBeenCalled();
     expect(repository.markProviderFailure).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("retires a newly created session that has no reusable URL", async () => {
     const repository = createRepository();
-    create.mockResolvedValue(stripeSession({ url: null }));
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+    createSession.mockResolvedValue(providerSession({ url: null }));
+    const { service } = createService({ repository });
 
     await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutProviderError"
     });
-
     expect(repository.retireTerminalCheckout).toHaveBeenCalledWith(
       orderId,
       expect.objectContaining({ sessionId: "cs_test_123" }),
@@ -243,31 +236,85 @@ describe("CheckoutService", () => {
     expect(repository.markProviderFailure).not.toHaveBeenCalled();
   });
 
-  it("marks a retryable failure without exposing the Stripe error", async () => {
+  it("marks provider failure and observes only safe error details", async () => {
     const repository = createRepository();
-    create.mockRejectedValue(new Error("sk_test_secret provider outage"));
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
-
-    await expect(service.startCheckout(context, contact)).rejects.toEqual(
-      expect.objectContaining({
-        message: "Unable to start checkout. Please try again.",
-        name: "CheckoutProviderError"
-      }),
+    const observer = createObserver();
+    createSession.mockRejectedValue(
+      new Error("sk_test_secret provider outage for customer@example.com"),
     );
+    const { service } = createService({ observer, repository });
+
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+      message: "Unable to start checkout. Please try again.",
+      name: "CheckoutProviderError"
+    });
     expect(repository.markProviderFailure).toHaveBeenCalledWith(orderId);
-    expect(repository.finalizeCheckout).not.toHaveBeenCalled();
+    expect(observer.error).toHaveBeenCalledWith("checkout.provider.failed", {
+      errorType: "Error",
+      orderId,
+      providerOperation: "create"
+    });
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain("sk_test_secret");
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain(
+      "customer@example.com",
+    );
   });
 
-  it("retries provider timeouts with the same durable idempotency identity", async () => {
+  it("reports persistence failure while recording provider recovery", async () => {
     const repository = createRepository();
-    create
+    const observer = createObserver();
+    createSession.mockRejectedValue(new Error("provider timeout"));
+    repository.markProviderFailure.mockRejectedValue(
+      Object.assign(new Error("postgres://private-host"), {
+        code: "ECONNRESET"
+      }),
+    );
+    const { service } = createService({ observer, repository });
+
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+      code: "ECONNRESET"
+    });
+    expect(observer.error).toHaveBeenCalledWith("checkout.persistence.failed", {
+      errorCode: "ECONNRESET",
+      errorType: "Error",
+      operation: "mark_provider_failure",
+      orderId
+    });
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain("private-host");
+  });
+
+  it("reports finalization failures without logging database messages", async () => {
+    const repository = createRepository();
+    const observer = createObserver();
+    const databaseError = Object.assign(
+      new Error("database password private-value"),
+      { code: "40001" },
+    );
+    repository.finalizeCheckout.mockRejectedValue(databaseError);
+    createSession.mockResolvedValue(providerSession());
+    const { service } = createService({ observer, repository });
+
+    await expect(service.startCheckout(context, contact)).rejects.toBe(
+      databaseError,
+    );
+    expect(observer.error).toHaveBeenCalledWith("checkout.persistence.failed", {
+      errorCode: "40001",
+      errorType: "Error",
+      operation: "finalize",
+      orderId,
+      providerSessionId: "cs_test_123"
+    });
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain(
+      "private-value",
+    );
+  });
+
+  it("retries provider timeouts with the same idempotency identity", async () => {
+    const repository = createRepository();
+    createSession
       .mockRejectedValueOnce(new Error("provider timeout"))
-      .mockResolvedValueOnce(stripeSession());
-    const service = new CheckoutService(repository as unknown as CheckoutRepository, {
-      checkout: { sessions: { create, retrieve } }
-    } as unknown as Pick<Stripe, "checkout">);
+      .mockResolvedValueOnce(providerSession());
+    const { service } = createService({ repository });
 
     await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
       name: "CheckoutProviderError"
@@ -275,12 +322,7 @@ describe("CheckoutService", () => {
     await expect(service.startCheckout(context, contact)).resolves.toMatchObject({
       orderId
     });
-
-    expect(create.mock.calls[0][1]).toEqual({
-      idempotencyKey: `cart-checkout:${orderId}`
-    });
-    expect(create.mock.calls[1][1]).toEqual({
-      idempotencyKey: `cart-checkout:${orderId}`
-    });
+    expect(createSession.mock.calls[0][1]).toBe(`cart-checkout:${orderId}`);
+    expect(createSession.mock.calls[1][1]).toBe(`cart-checkout:${orderId}`);
   });
 });
