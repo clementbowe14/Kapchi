@@ -24,10 +24,47 @@ type SeedListing = {
   title: string;
 };
 
-const localHostnames = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
-const seededAt = new Date("2026-01-01T00:00:00.000Z");
+type SeedFabric = {
+  colorHex: string;
+  colorName: string;
+  material: string;
+  name: string;
+  quantityOnHand: number;
+  quantityReserved: number;
+  quantitySold: number;
+  sku: string;
+  status: "active" | "archived";
+};
 
-const seedListings: SeedListing[] = [
+const localHostnames = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const seededAtIso = "2026-01-01T00:00:00.000Z";
+const seededAt = new Date(seededAtIso);
+
+export const localSeedFixtures = {
+  asset: {
+    id: "00000000-0000-4000-8000-000000000061",
+    objectKey: "local-seed/uploads/class-of-2026.png",
+    url: "https://example.test/kapchi-local-seed/uploads/class-of-2026.png"
+  },
+  cart: {
+    id: "00000000-0000-4000-8000-000000000053",
+    itemId: "00000000-0000-4000-8000-000000000253",
+    userId: "user_local_seed_demo"
+  },
+  contact: {
+    email: "local-demo@example.test",
+    name: "Local Seed Customer",
+    phone: "+1555010053"
+  },
+  order: {
+    id: "00000000-0000-4000-8000-000000000153",
+    itemId: "00000000-0000-4000-8000-000000000353",
+    publicOrderNumber: "LOCAL-SEED-1001"
+  },
+  seededAtIso
+} as const;
+
+export const seedListings: SeedListing[] = [
   {
     basePriceCents: 4500,
     description:
@@ -78,6 +115,31 @@ const seedListings: SeedListing[] = [
   }
 ];
 
+export const seedFabrics: SeedFabric[] = [
+  {
+    colorHex: "#12335B",
+    colorName: "Navy",
+    material: "Satin",
+    name: "Local Seed Navy Satin",
+    quantityOnHand: 40,
+    quantityReserved: 1,
+    quantitySold: 3,
+    sku: "LOCAL-SEED-NAVY-SATIN",
+    status: "active"
+  },
+  {
+    colorHex: "#D4AF37",
+    colorName: "Gold",
+    material: "Satin",
+    name: "Local Seed Gold Satin",
+    quantityOnHand: 30,
+    quantityReserved: 0,
+    quantitySold: 2,
+    sku: "LOCAL-SEED-GOLD-SATIN",
+    status: "active"
+  }
+];
+
 export function assertSafeLocalSeedTarget(
   databaseUrl = process.env.DATABASE_URL,
   nodeEnv = process.env.NODE_ENV ?? "development",
@@ -104,6 +166,14 @@ export function assertSafeLocalSeedTarget(
   if (!localHostnames.has(parsedUrl.hostname)) {
     throw new Error(
       `Refusing to seed non-local database host "${parsedUrl.hostname}". Use a localhost PostgreSQL database for db:seed:local.`,
+    );
+  }
+
+  const databaseName = decodeURIComponent(parsedUrl.pathname.replace(/^\//, ""));
+
+  if (!/(?:^|_)(dev|test|local)(?:_|$)/i.test(databaseName)) {
+    throw new Error(
+      `Refusing to seed database "${databaseName}". Local seed databases must include dev, test, or local in the database name.`,
     );
   }
 }
@@ -155,7 +225,7 @@ async function seedTrims(db: Queryable) {
   );
 }
 
-async function seedFabrics(db: Queryable) {
+async function seedFabricInventory(db: Queryable) {
   await db.query(
     `
       insert into fabrics (
@@ -169,8 +239,8 @@ async function seedFabrics(db: Queryable) {
         quantity_reserved,
         quantity_sold
       ) values
-        ('LOCAL-SEED-NAVY-SATIN', 'Local Seed Navy Satin', 'Navy', '#12335B', 'Satin', 'active', 40, 1, 3),
-        ('LOCAL-SEED-GOLD-SATIN', 'Local Seed Gold Satin', 'Gold', '#D4AF37', 'Satin', 'active', 30, 0, 2)
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9),
+        ($10, $11, $12, $13, $14, $15, $16, $17, $18)
       on conflict (sku) do update set
         name = excluded.name,
         color_name = excluded.color_name,
@@ -181,6 +251,17 @@ async function seedFabrics(db: Queryable) {
         quantity_reserved = excluded.quantity_reserved,
         quantity_sold = excluded.quantity_sold
     `,
+    seedFabrics.flatMap((fabric) => [
+      fabric.sku,
+      fabric.name,
+      fabric.colorName,
+      fabric.colorHex,
+      fabric.material,
+      fabric.status,
+      fabric.quantityOnHand,
+      fabric.quantityReserved,
+      fabric.quantitySold
+    ]),
   );
 }
 
@@ -367,11 +448,11 @@ async function seedListing(db: Queryable, listing: SeedListing) {
 }
 
 async function seedCartAndOrder(db: Queryable) {
-  const cartId = "00000000-0000-4000-8000-000000000053";
-  const orderId = "00000000-0000-4000-8000-000000000153";
-  const assetId = "00000000-0000-4000-8000-000000000061";
-  const cartItemId = "00000000-0000-4000-8000-000000000253";
-  const orderItemId = "00000000-0000-4000-8000-000000000353";
+  const cartId = localSeedFixtures.cart.id;
+  const orderId = localSeedFixtures.order.id;
+  const assetId = localSeedFixtures.asset.id;
+  const cartItemId = localSeedFixtures.cart.itemId;
+  const orderItemId = localSeedFixtures.order.itemId;
 
   const listingRow = await queryOne<{
     customization_set_id: string;
@@ -418,7 +499,7 @@ async function seedCartAndOrder(db: Queryable) {
         subtotal_cents,
         converted_order_id,
         expires_at
-      ) values ($1, 'user_local_seed_demo', null, 'converted', 'usd', $2, null, $3)
+      ) values ($1, $4, null, 'converted', 'usd', $2, null, $3)
       on conflict (id) do update set
         user_id = excluded.user_id,
         guest_token_hash = excluded.guest_token_hash,
@@ -427,7 +508,7 @@ async function seedCartAndOrder(db: Queryable) {
         subtotal_cents = excluded.subtotal_cents,
         expires_at = excluded.expires_at
     `,
-    [cartId, listingRow.unit_amount_cents, seededAt],
+    [cartId, listingRow.unit_amount_cents, seededAt, localSeedFixtures.cart.userId],
   );
 
   await db.query(
@@ -449,8 +530,8 @@ async function seedCartAndOrder(db: Queryable) {
       ) values (
         $1,
         'vercel_blob',
-        'local-seed/uploads/class-of-2026.png',
-        'https://example.test/kapchi-local-seed/uploads/class-of-2026.png',
+        $4,
+        $5,
         'image/png',
         2048,
         'local-seed-checksum',
@@ -459,7 +540,7 @@ async function seedCartAndOrder(db: Queryable) {
         'attached',
         $2,
         $3,
-        $4
+        $6
       )
       on conflict (id) do update set
         provider = excluded.provider,
@@ -479,6 +560,8 @@ async function seedCartAndOrder(db: Queryable) {
       assetId,
       cartId,
       listingRow.listing_id,
+      localSeedFixtures.asset.objectKey,
+      localSeedFixtures.asset.url,
       JSON.stringify({
         originalFilename: "class-of-2026.png",
         source: "db:seed:local"
@@ -550,16 +633,16 @@ async function seedCartAndOrder(db: Queryable) {
         paid_at
       ) values (
         $1,
-        'LOCAL-SEED-1001',
-        'user_local_seed_demo',
+        $7,
+        $8,
         $2,
         'paid',
         'paid',
         'queued',
-        'local-demo@example.test',
-        '+1555010053',
+        $9,
+        $10,
         'email',
-        'Local Seed Customer',
+        $11,
         $3,
         $4,
         895,
@@ -610,7 +693,12 @@ async function seedCartAndOrder(db: Queryable) {
       }),
       listingRow.unit_amount_cents,
       listingRow.unit_amount_cents + 895,
-      seededAt
+      seededAt,
+      localSeedFixtures.order.publicOrderNumber,
+      localSeedFixtures.cart.userId,
+      localSeedFixtures.contact.email,
+      localSeedFixtures.contact.phone,
+      localSeedFixtures.contact.name
     ],
   );
 
@@ -734,7 +822,7 @@ async function seedCartAndOrder(db: Queryable) {
         'email',
         'outbound',
         'sent',
-        'local-demo@example.test',
+        $4,
         'support@example.test',
         'Local seed order confirmation',
         'This is fake local seed data for development only.',
@@ -749,7 +837,7 @@ async function seedCartAndOrder(db: Queryable) {
         body = excluded.body,
         sent_at = excluded.sent_at
     `,
-    [orderId, `local-seed-${orderId}`, seededAt],
+    [orderId, `local-seed-${orderId}`, seededAt, localSeedFixtures.contact.email],
   );
 }
 
@@ -760,7 +848,7 @@ export async function seedLocalDatabase(pool: Pool) {
     await client.query("begin");
     await seedFonts(client);
     await seedTrims(client);
-    await seedFabrics(client);
+    await seedFabricInventory(client);
 
     for (const listing of seedListings) {
       await seedListing(client, listing);
