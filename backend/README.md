@@ -45,6 +45,16 @@ The example file uses placeholder values only. Replace third-party service and
 database placeholders in `backend/.env` when you need those integrations, but do
 not commit real secrets.
 
+Backend commands resolve this file relative to the backend package, so `dev`,
+`start`, database migration, and seed commands read the same `backend/.env`
+regardless of the directory where the command was launched. Runtime environment
+variables take precedence over values in the file.
+
+Stripe requires the exact `STRIPE_SECRET_KEY` variable name for its application
+API key. `STRIPE_WEBHOOK_SECRET` is only for webhook signature verification, and
+credentials created by `stripe login` belong to the Stripe CLI rather than the
+backend process.
+
 ## Local PostgreSQL Setup
 
 The backend expects a PostgreSQL database available through `DATABASE_URL`. The

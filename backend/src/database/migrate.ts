@@ -1,11 +1,11 @@
-import { config as loadDotEnv } from "dotenv";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { loadBackendEnvironment } from "../config/load-environment.js";
 
-loadDotEnv();
+loadBackendEnvironment();
 
 type AppliedMigration = {
   applied_at: Date;

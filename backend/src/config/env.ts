@@ -1,7 +1,10 @@
-import { config as loadDotEnv } from "dotenv";
 import Joi from "joi";
+import {
+  loadBackendEnvironment,
+  type BackendEnvironmentSource
+} from "./load-environment.js";
 
-loadDotEnv();
+const environmentSource = loadBackendEnvironment();
 
 const environmentSchema = Joi.object({
   NODE_ENV: Joi.string()
@@ -108,8 +111,30 @@ function buildErrorMessage(error: Joi.ValidationError) {
     .join("\n");
 }
 
+function buildEnvironmentSourceMessage(source: BackendEnvironmentSource) {
+  const fileState = source.envFileLoaded ? "loaded" : "not found";
+
+  return `Environment inputs: process variables plus ${source.envFilePath} (${fileState}).`;
+}
+
+function buildEnvironmentGuidance(error: Joi.ValidationError) {
+  const stripeSecretKeyInvalid = error.details.some(
+    (detail) => detail.path.join(".") === "STRIPE_SECRET_KEY",
+  );
+
+  if (!stripeSecretKeyInvalid) {
+    return "";
+  }
+
+  return (
+    "\nStripe credentials: STRIPE_SECRET_KEY must be an application API key. " +
+    "STRIPE_WEBHOOK_SECRET only verifies webhooks, and Stripe CLI authentication is stored separately."
+  );
+}
+
 export function validateEnvironment(
   environmentInput: NodeJS.ProcessEnv = process.env,
+  source: BackendEnvironmentSource = environmentSource,
 ): ValidatedEnvironmentShape {
   const { error, value } = environmentSchema.validate(environmentInput, {
     abortEarly: false,
@@ -119,7 +144,11 @@ export function validateEnvironment(
 
   if (error) {
     throw new Error(
-      `Invalid backend environment configuration:\n${buildErrorMessage(error)}`,
+      [
+        "Invalid backend environment configuration:",
+        buildErrorMessage(error),
+        buildEnvironmentSourceMessage(source) + buildEnvironmentGuidance(error)
+      ].join("\n"),
     );
   }
 
@@ -153,7 +182,7 @@ export function validateEnvironment(
   };
 }
 
-const environment = validateEnvironment();
+const environment = validateEnvironment(process.env, environmentSource);
 
 export const config = Object.freeze({
   app: {
