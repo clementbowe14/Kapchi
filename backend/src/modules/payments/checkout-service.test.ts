@@ -16,7 +16,8 @@ const context = {
 };
 const contact = {
   customerEmail: "customer@example.com",
-  customerPhone: null
+  customerPhone: null,
+  preferredContactMethod: "email" as const
 };
 const redirects = {
   cancelUrl: "https://kapchi.test/cart",
@@ -39,7 +40,8 @@ function preparedCheckout(
         stripePriceId: "price_test_stole"
       }
     ],
-    orderId: id
+    orderId: id,
+    publicOrderNumber: `KAP-${id.replace(/-/g, "").slice(0, 12).toUpperCase()}`
   };
 }
 
@@ -48,6 +50,7 @@ function createRepository(
 ) {
   return {
     finalizeCheckout: vi.fn(),
+    getCheckoutStatus: vi.fn(),
     markProviderFailure: vi.fn(),
     prepareCheckout: vi.fn(async () =>
       preparedCheckout(orderId, existingStripeSessionId),
@@ -119,6 +122,7 @@ describe("CheckoutService", () => {
       checkoutSessionId: "cs_test_123",
       orderId,
       paymentStatus: "checkout_started",
+      publicOrderNumber: "KAP-2DB9F8E1D0F0",
       url: "https://checkout.stripe.com/c/pay/cs_test_123"
     });
     expect(createSession).toHaveBeenCalledWith(
@@ -132,7 +136,8 @@ describe("CheckoutService", () => {
           })
         ],
         orderId,
-        successUrl: "https://kapchi.test/orders"
+        successUrl:
+          "https://kapchi.test/orders?checkout_session_id={CHECKOUT_SESSION_ID}"
       },
       `cart-checkout:${orderId}`,
     );
@@ -153,10 +158,11 @@ describe("CheckoutService", () => {
     retrieveSession.mockResolvedValue(providerSession());
     const { service } = createService({ observer, repository });
 
-    await service.startCheckout(context, contact);
+    const result = await service.startCheckout(context, contact);
 
     expect(retrieveSession).toHaveBeenCalledWith("cs_test_123");
     expect(createSession).not.toHaveBeenCalled();
+    expect(result.publicOrderNumber).toBe("KAP-2DB9F8E1D0F0");
     expect(observer.info).toHaveBeenCalledWith(
       "checkout.provider.session_reused",
       {
@@ -213,7 +219,10 @@ describe("CheckoutService", () => {
     const { service } = createService({ repository });
 
     await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
-      name: "CheckoutAlreadyCompleteError"
+      checkoutSessionId: "cs_test_complete",
+      name: "CheckoutAlreadyCompleteError",
+      orderId,
+      publicOrderNumber: "KAP-2DB9F8E1D0F0"
     });
     expect(repository.retireTerminalCheckout).not.toHaveBeenCalled();
     expect(repository.markProviderFailure).not.toHaveBeenCalled();

@@ -1,3 +1,5 @@
+import type { CheckoutReviewIssue } from "./checkout-types.js";
+
 export class CheckoutCartNotFoundError extends Error {
   constructor() {
     super("Cart not found.");
@@ -6,9 +8,12 @@ export class CheckoutCartNotFoundError extends Error {
 }
 
 export class CheckoutNeedsReviewError extends Error {
-  constructor(message: string) {
+  readonly issues: CheckoutReviewIssue[];
+
+  constructor(message: string, issues: CheckoutReviewIssue[] = []) {
     super(message);
     this.name = "CheckoutNeedsReviewError";
+    this.issues = issues;
   }
 }
 
@@ -20,8 +25,19 @@ export class CheckoutProviderError extends Error {
 }
 
 export class CheckoutAlreadyCompleteError extends Error {
-  constructor() {
+  readonly checkoutSessionId: string;
+  readonly orderId: string;
+  readonly publicOrderNumber: string;
+
+  constructor(recovery: {
+    checkoutSessionId: string;
+    orderId: string;
+    publicOrderNumber: string;
+  }) {
     super("This checkout has already completed.");
     this.name = "CheckoutAlreadyCompleteError";
+    this.checkoutSessionId = recovery.checkoutSessionId;
+    this.orderId = recovery.orderId;
+    this.publicOrderNumber = recovery.publicOrderNumber;
   }
 }

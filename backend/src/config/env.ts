@@ -30,7 +30,7 @@ const environmentSchema = Joi.object({
     then: Joi.string().uri({ scheme: ["https"] }).required(),
     otherwise: Joi.string()
       .uri({ scheme: ["http", "https"] })
-      .default("http://localhost:3000/orders")
+      .default("http://localhost:3000/checkout/confirmation")
   }),
   STRIPE_CHECKOUT_CANCEL_URL: Joi.when("NODE_ENV", {
     is: "production",

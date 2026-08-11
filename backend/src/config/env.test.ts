@@ -33,7 +33,7 @@ describe("checkout redirect environment", () => {
     });
 
     expect(environment.STRIPE_CHECKOUT_SUCCESS_URL).toBe(
-      "http://localhost:3000/orders",
+      "http://localhost:3000/checkout/confirmation",
     );
     expect(environment.STRIPE_CHECKOUT_CANCEL_URL).toBe(
       "http://localhost:3000/cart",

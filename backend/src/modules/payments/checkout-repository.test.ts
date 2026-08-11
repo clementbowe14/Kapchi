@@ -45,7 +45,8 @@ const context = {
 };
 const contact = {
   customerEmail: "customer@example.com",
-  customerPhone: null
+  customerPhone: null,
+  preferredContactMethod: "email" as const
 };
 
 function cartRow() {
@@ -199,6 +200,13 @@ describe("CheckoutRepository", () => {
     const repository = new CheckoutRepository(pool);
 
     await expect(repository.prepareCheckout(context, contact)).rejects.toMatchObject({
+      issues: [
+        {
+          cartItemId: ids.cartItem,
+          message: "The cart price changed and must be reviewed.",
+          status: "needs_reprice"
+        }
+      ],
       name: "CheckoutNeedsReviewError"
     });
 
@@ -347,7 +355,11 @@ describe("CheckoutRepository", () => {
     });
     const repository = new CheckoutRepository(pool);
 
-    const result = await repository.prepareCheckout(context, contact);
+    const result = await repository.prepareCheckout(context, {
+      ...contact,
+      customerPhone: "+15550101010",
+      preferredContactMethod: "phone"
+    });
 
     expect(result.lines).toEqual([
       expect.objectContaining({
@@ -360,6 +372,9 @@ describe("CheckoutRepository", () => {
       String(sql).includes("insert into orders"),
     );
     expect(orderInsert?.[1]?.[1]).toMatch(/^KAP-[A-F0-9]{12}$/);
+    expect(orderInsert?.[1]?.[8]).toBe("+15550101010");
+    expect(orderInsert?.[1]?.[9]).toBe("phone");
+    expect(result.publicOrderNumber).toBe(orderInsert?.[1]?.[1]);
     const itemInsert = query.mock.calls.find(([sql]) =>
       String(sql).includes("insert into order_items"),
     );
@@ -543,6 +558,7 @@ describe("CheckoutRepository", () => {
             {
               customer_email: "original@example.com",
               id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+              public_order_number: "KAP-ORIGINAL1001",
               stripe_checkout_session_id: "cs_test_existing"
             }
           ]
@@ -568,12 +584,64 @@ describe("CheckoutRepository", () => {
     expect(result).toMatchObject({
       customerEmail: "original@example.com",
       existingStripeSessionId: "cs_test_existing",
-      orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8"
+      orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+      publicOrderNumber: "KAP-ORIGINAL1001"
     });
     expect(
       query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
     ).toBe(false);
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
+
+  it("loads status only through authenticated Clerk ownership", async () => {
+    const query = vi.fn(async (_sql: string, _values: unknown[] = []) => ({
+      rows: [{
+        id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+        payment_status: "paid",
+        public_order_number: "KAP-2DB9F8E1D0F0"
+      }]
+    }));
+    const pool = { connect: vi.fn(), query } as unknown as Pool;
+
+    const status = await new CheckoutRepository(pool).getCheckoutStatus(
+      { authSubject: "user_clerk_123" },
+      "cs_test_owned",
+    );
+
+    expect(status).toEqual({
+      orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+      paymentStatus: "paid",
+      publicOrderNumber: "KAP-2DB9F8E1D0F0"
+    });
+    expect(String(query.mock.calls[0][0])).toContain("u.auth_subject = $2");
+    expect(String(query.mock.calls[0][0])).toContain(
+      "o.stripe_checkout_session_id = $1",
+    );
+    expect(query.mock.calls[0][1]).toEqual([
+      "cs_test_owned",
+      "user_clerk_123"
+    ]);
+  });
+
+  it("loads guest status only through the cart and hashed cookie", async () => {
+    const query = vi.fn(async (_sql: string, _values: unknown[] = []) => ({
+      rows: []
+    }));
+    const pool = { connect: vi.fn(), query } as unknown as Pool;
+
+    const status = await new CheckoutRepository(pool).getCheckoutStatus(
+      context,
+      "cs_test_guest",
+    );
+
+    expect(status).toBeNull();
+    expect(String(query.mock.calls[0][0])).toContain("c.guest_token_hash = $3");
+    expect(query.mock.calls[0][1]?.slice(0, 2)).toEqual([
+      "cs_test_guest",
+      ids.cart
+    ]);
+    expect(query.mock.calls[0][1]?.[2]).not.toBe(context.sessionId);
+    expect(String(query.mock.calls[0][1]?.[2])).toHaveLength(64);
   });
 
   it("retires a terminal provider session and reactivates its eligible cart", async () => {

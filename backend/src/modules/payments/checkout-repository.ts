@@ -6,6 +6,8 @@ import type {
   CheckoutCartOwner,
   CheckoutContact,
   CheckoutLine,
+  CheckoutReviewIssue,
+  CheckoutStatus,
   PreparedCheckout
 } from "./checkout-types.js";
 
@@ -80,7 +82,14 @@ type CartItemLockRow = QueryResultRow & {
 type ExistingOrderRow = QueryResultRow & {
   customer_email: string | null;
   id: string;
+  public_order_number: string;
   stripe_checkout_session_id: string | null;
+};
+
+type CheckoutStatusRow = QueryResultRow & {
+  id: string;
+  payment_status: string;
+  public_order_number: string;
 };
 
 type RetiredOrderRow = QueryResultRow & {
@@ -269,7 +278,8 @@ export class CheckoutRepository {
           customerEmail: existing.customer_email ?? contact.customerEmail,
           existingStripeSessionId: existing.stripe_checkout_session_id,
           lines: await this.loadOrderLines(client, existing.id),
-          orderId: existing.id
+          orderId: existing.id,
+          publicOrderNumber: existing.public_order_number
         };
       }
 
@@ -299,6 +309,11 @@ export class CheckoutRepository {
         }
 
         return {
+          issues: failures.map(({ failure, item }) => ({
+            cartItemId: item.cart_item_id,
+            message: failure!.message,
+            status: failure!.status
+          })) satisfies CheckoutReviewIssue[],
           reviewMessage: failures.some(
             ({ failure }) => failure?.status === "needs_reprice",
           )
@@ -338,7 +353,7 @@ export class CheckoutRepository {
           ) values (
             $1, $2, $3, $4, $5, $6, $7,
             'pending_payment', 'unpaid', 'not_started',
-            $8, $9, 'email', $10, $10, $11
+            $8, $9, $10, $11, $11, $12
           )
         `,
         [
@@ -351,6 +366,7 @@ export class CheckoutRepository {
           cart.id,
           contact.customerEmail,
           contact.customerPhone,
+          contact.preferredContactMethod,
           subtotal,
           cart.currency
         ],
@@ -476,7 +492,8 @@ export class CheckoutRepository {
         customerEmail: contact.customerEmail,
         existingStripeSessionId: null,
         lines,
-        orderId
+        orderId,
+        publicOrderNumber: orderNumber(orderId)
       };
     });
 
@@ -484,10 +501,55 @@ export class CheckoutRepository {
       "reviewMessage" in prepared &&
       typeof prepared.reviewMessage === "string"
     ) {
-      throw new CheckoutNeedsReviewError(prepared.reviewMessage);
+      throw new CheckoutNeedsReviewError(
+        prepared.reviewMessage,
+        "issues" in prepared ? prepared.issues : [],
+      );
     }
 
     return prepared;
+  }
+
+  async getCheckoutStatus(
+    owner: CheckoutCartOwner,
+    checkoutSessionId: string,
+  ): Promise<CheckoutStatus | null> {
+    const result = "authSubject" in owner
+      ? await this.pool.query<CheckoutStatusRow>(
+          `
+            select o.id, o.public_order_number, o.payment_status
+            from orders o
+            left join users u on u.id = o.authenticated_user_id
+            where o.stripe_checkout_session_id = $1
+              and (
+                o.user_id = $2
+                or (u.auth_provider = 'clerk' and u.auth_subject = $2)
+              )
+            limit 1
+          `,
+          [checkoutSessionId, owner.authSubject],
+        )
+      : await this.pool.query<CheckoutStatusRow>(
+          `
+            select o.id, o.public_order_number, o.payment_status
+            from orders o
+            join carts c on c.id = o.cart_id
+            where o.stripe_checkout_session_id = $1
+              and c.id = $2
+              and c.guest_token_hash = $3
+            limit 1
+          `,
+          [checkoutSessionId, owner.cartId, hashSessionId(owner.sessionId)],
+        );
+    const order = result.rows[0];
+
+    return order
+      ? {
+          orderId: order.id,
+          paymentStatus: order.payment_status,
+          publicOrderNumber: order.public_order_number
+        }
+      : null;
   }
 
   async finalizeCheckout(
@@ -720,7 +782,7 @@ export class CheckoutRepository {
   private async findExistingOrder(client: Queryable, cartId: string) {
     const result = await client.query<ExistingOrderRow>(
       `
-        select id, customer_email, stripe_checkout_session_id
+        select id, public_order_number, customer_email, stripe_checkout_session_id
         from orders
         where cart_id = $1
           and status = 'pending_payment'
