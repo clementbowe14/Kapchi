@@ -16,6 +16,7 @@ import type {
   CheckoutContact,
   CheckoutCartOwner,
   CheckoutResult,
+  CheckoutStatus,
   PreparedCheckout
 } from "./checkout-types.js";
 
@@ -29,6 +30,10 @@ export interface CheckoutRepositoryPort {
     },
   ): Promise<void>;
   markProviderFailure(orderId: string): Promise<void>;
+  getCheckoutStatus(
+    context: CheckoutCartOwner,
+    checkoutSessionId: string,
+  ): Promise<CheckoutStatus | null>;
   prepareCheckout(
     context: CheckoutCartOwner,
     contact: CheckoutContact,
@@ -81,6 +86,25 @@ function sessionDisposition(session: CheckoutProviderSession, now: Date) {
   return "unusable" as const;
 }
 
+function successUrlWithSessionId(successUrl: string) {
+  if (successUrl.includes("{CHECKOUT_SESSION_ID}")) {
+    return successUrl;
+  }
+
+  const fragmentIndex = successUrl.indexOf("#");
+  const base = fragmentIndex === -1
+    ? successUrl
+    : successUrl.slice(0, fragmentIndex);
+  const fragment = fragmentIndex === -1 ? "" : successUrl.slice(fragmentIndex);
+  const separator = base.includes("?")
+    ? base.endsWith("?") || base.endsWith("&")
+      ? ""
+      : "&"
+    : "?";
+
+  return `${base}${separator}checkout_session_id={CHECKOUT_SESSION_ID}${fragment}`;
+}
+
 export class CheckoutService {
   private readonly clock: Clock;
   private readonly observer: CheckoutObserver;
@@ -121,7 +145,11 @@ export class CheckoutService {
         orderId: prepared.orderId,
         providerSessionId: session.id
       });
-      throw new CheckoutAlreadyCompleteError();
+      throw new CheckoutAlreadyCompleteError({
+        checkoutSessionId: session.id,
+        orderId: prepared.orderId,
+        publicOrderNumber: prepared.publicOrderNumber
+      });
     }
 
     if (disposition === "expired" || disposition === "unusable") {
@@ -142,7 +170,11 @@ export class CheckoutService {
           orderId: prepared.orderId,
           providerSessionId: session.id
         });
-        throw new CheckoutAlreadyCompleteError();
+        throw new CheckoutAlreadyCompleteError({
+          checkoutSessionId: session.id,
+          orderId: prepared.orderId,
+          publicOrderNumber: prepared.publicOrderNumber
+        });
       }
       if (disposition !== "reusable") {
         await this.retire(prepared.orderId, session, disposition);
@@ -160,6 +192,7 @@ export class CheckoutService {
       checkoutSessionId: session.id,
       orderId: prepared.orderId,
       paymentStatus: "checkout_started",
+      publicOrderNumber: prepared.publicOrderNumber,
       url: session.url!
     };
   }
@@ -206,7 +239,7 @@ export class CheckoutService {
               customerEmail: prepared.customerEmail,
               lines: prepared.lines,
               orderId: prepared.orderId,
-              successUrl: this.redirects.successUrl
+              successUrl: successUrlWithSessionId(this.redirects.successUrl)
             },
             `cart-checkout:${prepared.orderId}`,
           );

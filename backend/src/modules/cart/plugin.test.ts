@@ -307,6 +307,26 @@ describe("cartPlugin", () => {
     mocks.verifyClerkToken.mockReset();
   });
 
+  it.each(["/cart", "/cart/"])(
+    "serves the cart root at %s after proxy path normalization",
+    async (url) => {
+      const { database } = createDatabaseMock();
+      const { redis } = createRedisMock();
+      const app = fastify({ logger: false });
+      await app.register(cookie);
+      await app.register(authPlugin);
+      app.decorate("pg", database);
+      app.decorate("redis", redis);
+      await app.register(cartPlugin, { prefix: "/cart" });
+
+      const response = await app.inject({ method: "GET", url });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ items: [], subtotalCents: 0 });
+      await app.close();
+    },
+  );
+
   it("creates a durable guest cart before returning its empty projection", async () => {
     const { database, queries } = createDatabaseMock();
     const { gets, redis, writes } = createRedisMock();

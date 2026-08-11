@@ -1,6 +1,8 @@
 import type { FastifyBaseLogger } from "fastify";
 
 export type CheckoutEventName =
+  | "checkout.contact.accepted"
+  | "checkout.contact.rejected"
   | "checkout.preparation.started"
   | "checkout.preparation.succeeded"
   | "checkout.preparation.failed"
@@ -10,9 +12,17 @@ export type CheckoutEventName =
   | "checkout.provider.session_reused"
   | "checkout.session.terminal"
   | "checkout.persistence.failed"
-  | "checkout.succeeded";
+  | "checkout.review.required"
+  | "checkout.status.denied"
+  | "checkout.status.read"
+  | "checkout.succeeded"
+  | "stripe.webhook.failed"
+  | "stripe.webhook.ignored"
+  | "stripe.webhook.processed"
+  | "stripe.webhook.verified";
 
 export type CheckoutEventFields = {
+  authMode?: "authenticated" | "guest";
   disposition?: "complete" | "expired" | "reusable" | "unusable";
   errorCode?: string;
   errorType?: string;
@@ -22,6 +32,11 @@ export type CheckoutEventFields = {
   orderId?: string;
   providerOperation?: "create" | "retrieve";
   providerSessionId?: string;
+  resultCode?: string;
+  reviewIssueCount?: number;
+  webhookEventId?: string;
+  webhookEventType?: string;
+  webhookOutcome?: "already_paid" | "terminal_state" | "unknown_order" | "updated";
 };
 
 export interface CheckoutObserver {

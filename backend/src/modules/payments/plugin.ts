@@ -2,11 +2,14 @@ import fp from "fastify-plugin";
 import type {
   FastifyBaseLogger,
   FastifyPluginAsync,
-  FastifyReply
+  FastifyReply,
+  FastifyRequest
 } from "fastify";
 import Joi from "joi";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import type Stripe from "stripe";
 import { config } from "../../config/index.js";
+import { safeErrorDetails } from "../../observability/safe-error.js";
 import { authMiddleware } from "../auth/index.js";
 import { getGuestCartSessionContext } from "../cart/guest-session.js";
 import {
@@ -31,6 +34,10 @@ import {
   type CheckoutServiceDependencies,
   type Clock
 } from "./checkout-service.js";
+import {
+  handleCheckoutSessionCompleted,
+  handlePaymentIntentSucceeded
+} from "./success-state.js";
 import type {
   CheckoutCartOwner,
   CheckoutContact,
@@ -46,10 +53,75 @@ function badRequest(reply: FastifyReply, message: string) {
   });
 }
 
+const preferredContactMethods = ["email", "phone", "sms"] as const;
+
+function normalizedPhone(value: string) {
+  if (!/^[+0-9().\-\s]+$/.test(value)) {
+    return null;
+  }
+
+  const plusCount = Array.from(value).filter((character) => character === "+").length;
+  if (plusCount > 1 || (plusCount === 1 && !value.startsWith("+"))) {
+    return null;
+  }
+
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) {
+    return null;
+  }
+
+  return value.startsWith("+") ? `+${digits}` : digits;
+}
+
 const checkoutSchema = Joi.object<CheckoutContact>({
   customerEmail: Joi.string().trim().lowercase().email().required(),
-  customerPhone: Joi.string().trim().min(3).max(64).allow(null).default(null)
+  customerPhone: Joi.string()
+    .trim()
+    .max(64)
+    .custom((value: string, helpers) =>
+      normalizedPhone(value) ?? helpers.error("string.pattern.base"),
+    )
+    .allow(null)
+    .default(null),
+  preferredContactMethod: Joi.string()
+    .valid(...preferredContactMethods)
+    .required()
 }).required();
+
+function validateCheckoutContact(
+  body: unknown,
+  authenticated: boolean,
+): { error?: Joi.ValidationError; value: CheckoutContact } {
+  const result = checkoutSchema.validate(parseJsonBody(body), {
+    abortEarly: false,
+    allowUnknown: false,
+    stripUnknown: false
+  });
+
+  if (result.error) {
+    return {
+      error: result.error,
+      value: result.value as CheckoutContact
+    };
+  }
+
+  const contact = result.value as CheckoutContact;
+  const phoneRequired =
+    !authenticated || contact.preferredContactMethod !== "email";
+
+  if (phoneRequired && !contact.customerPhone) {
+    return {
+      error: new Joi.ValidationError(
+        "Customer phone is required for this checkout.",
+        [],
+        contact,
+      ),
+      value: contact
+    };
+  }
+
+  return { error: undefined, value: contact };
+}
 
 function parseJsonBody(body: unknown) {
   if (typeof body !== "string") {
@@ -78,6 +150,60 @@ export interface CheckoutStarter {
     context: CheckoutCartOwner,
     contact: CheckoutContact,
   ): Promise<CheckoutResult>;
+}
+
+function observeSafely(
+  observer: CheckoutObserver,
+  level: "error" | "info" | "warn",
+  event: Parameters<CheckoutObserver["info"]>[0],
+  fields?: Parameters<CheckoutObserver["info"]>[1],
+) {
+  try {
+    observer[level](event, fields);
+  } catch {
+    // Diagnostics must never change payment behavior.
+  }
+}
+
+function checkoutNotFound(reply: FastifyReply) {
+  return reply.code(404).send({
+    error: "CHECKOUT_NOT_FOUND",
+    message: "Checkout not found.",
+    statusCode: 404
+  });
+}
+
+const checkoutSessionParamsSchema = Joi.object({
+  checkoutSessionId: Joi.string()
+    .trim()
+    .pattern(/^cs_[A-Za-z0-9_]{3,252}$/)
+    .required()
+}).required();
+
+async function resolveCheckoutOwner(request: FastifyRequest) {
+  return request.auth
+    ? { authSubject: request.auth.userId }
+    : await getGuestCartSessionContext(request);
+}
+
+async function withPoolClient<T>(
+  pool: Pick<Pool, "connect">,
+  callback: (client: PoolClient) => Promise<T>,
+) {
+  const client = await pool.connect();
+
+  try {
+    return await callback(client);
+  } finally {
+    client.release();
+  }
+}
+
+function isPaidCheckoutSession(session: Stripe.Checkout.Session) {
+  return (
+    session.payment_status === "paid" ||
+    session.payment_status === "no_payment_required"
+  );
 }
 
 export type PaymentsPluginDependencies = {
@@ -140,16 +266,18 @@ export function createPaymentsPlugin(
       "/checkout-sessions",
       { preHandler: [authMiddleware] },
       async (request, reply) => {
-        const { error, value } = checkoutSchema.validate(
-          parseJsonBody(request.body),
-          {
-            abortEarly: false,
-            allowUnknown: false,
-            stripUnknown: false
-          },
+        const observer = observerFactory(request.log);
+        const authMode = request.auth ? "authenticated" : "guest";
+        const { error, value } = validateCheckoutContact(
+          request.body,
+          Boolean(request.auth),
         );
 
         if (error) {
+          observeSafely(observer, "warn", "checkout.contact.rejected", {
+            authMode,
+            resultCode: "VALIDATION_ERROR"
+          });
           return reply.code(400).send({
             error: "VALIDATION_ERROR",
             message: error.message,
@@ -157,9 +285,12 @@ export function createPaymentsPlugin(
           });
         }
 
-        const owner = request.auth
-          ? { authSubject: request.auth.userId }
-          : await getGuestCartSessionContext(request);
+        observeSafely(observer, "info", "checkout.contact.accepted", {
+          authMode,
+          resultCode: "VALID"
+        });
+
+        const owner = await resolveCheckoutOwner(request);
         if (!owner) {
           return reply.code(404).send({
             error: "CART_NOT_FOUND",
@@ -183,8 +314,14 @@ export function createPaymentsPlugin(
             });
           }
           if (checkoutError instanceof CheckoutNeedsReviewError) {
+            observeSafely(observer, "warn", "checkout.review.required", {
+              authMode,
+              resultCode: "CART_NEEDS_REVIEW",
+              reviewIssueCount: checkoutError.issues.length
+            });
             return reply.code(409).send({
               error: "CART_NEEDS_REVIEW",
+              issues: checkoutError.issues,
               message: checkoutError.message,
               statusCode: 409
             });
@@ -198,14 +335,65 @@ export function createPaymentsPlugin(
           }
           if (checkoutError instanceof CheckoutAlreadyCompleteError) {
             return reply.code(409).send({
+              checkoutSessionId: checkoutError.checkoutSessionId,
               error: "CHECKOUT_ALREADY_COMPLETE",
               message: checkoutError.message,
+              orderId: checkoutError.orderId,
+              publicOrderNumber: checkoutError.publicOrderNumber,
               statusCode: 409
             });
           }
 
           throw checkoutError;
         }
+      },
+    );
+
+    fastify.get<{ Params: { checkoutSessionId: string } }>(
+      "/checkout-sessions/:checkoutSessionId/status",
+      { preHandler: [authMiddleware] },
+      async (request, reply) => {
+        const observer = observerFactory(request.log);
+        const authMode = request.auth ? "authenticated" : "guest";
+        const { error, value } = checkoutSessionParamsSchema.validate(
+          request.params,
+          { allowUnknown: false, stripUnknown: false },
+        );
+
+        if (error) {
+          return reply.code(400).send({
+            error: "VALIDATION_ERROR",
+            message: error.message,
+            statusCode: 400
+          });
+        }
+
+        const owner = await resolveCheckoutOwner(request);
+        if (!owner) {
+          observeSafely(observer, "warn", "checkout.status.denied", {
+            authMode,
+            resultCode: "OWNER_NOT_FOUND"
+          });
+          return checkoutNotFound(reply);
+        }
+
+        const status = await repository.getCheckoutStatus(
+          owner,
+          (value as { checkoutSessionId: string }).checkoutSessionId,
+        );
+        if (!status) {
+          observeSafely(observer, "warn", "checkout.status.denied", {
+            authMode,
+            resultCode: "OWNERSHIP_MISMATCH"
+          });
+          return checkoutNotFound(reply);
+        }
+
+        observeSafely(observer, "info", "checkout.status.read", {
+          authMode,
+          resultCode: "FOUND"
+        });
+        return reply.send(status);
       },
     );
 
@@ -220,19 +408,66 @@ export function createPaymentsPlugin(
         return badRequest(reply, "Invalid Stripe webhook payload.");
       }
 
+      let event: Stripe.Event;
       try {
-        const event = stripe.webhooks.constructEvent(
+        event = stripe.webhooks.constructEvent(
           request.body,
           signature,
           paymentConfig.stripe.webhookSecret,
         );
+      } catch {
+        return badRequest(reply, "Invalid Stripe webhook signature or payload.");
+      }
+
+      const observer = observerFactory(request.log);
+      const eventFields = {
+        webhookEventId: event.id,
+        webhookEventType: event.type
+      };
+      observeSafely(observer, "info", "stripe.webhook.verified", eventFields);
+
+      try {
+        let outcome:
+          | Awaited<ReturnType<typeof handleCheckoutSessionCompleted>>
+          | null = null;
+
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object as Stripe.Checkout.Session;
+          if (isPaidCheckoutSession(session)) {
+            outcome = await withPoolClient(fastify.pg, (client) =>
+              handleCheckoutSessionCompleted(client, session),
+            );
+          }
+        } else if (event.type === "payment_intent.succeeded") {
+          const paymentIntent = event.data.object as Stripe.PaymentIntent;
+          outcome = await withPoolClient(fastify.pg, (client) =>
+            handlePaymentIntentSucceeded(client, paymentIntent),
+          );
+        }
+
+        if (outcome) {
+          observeSafely(observer, "info", "stripe.webhook.processed", {
+            ...eventFields,
+            webhookOutcome: outcome.outcome
+          });
+        } else {
+          observeSafely(observer, "info", "stripe.webhook.ignored", eventFields);
+        }
 
         return reply.send({
           event_type: event.type,
           received: true
         });
-      } catch {
-        return badRequest(reply, "Invalid Stripe webhook signature or payload.");
+      } catch (processingError) {
+        observeSafely(observer, "error", "stripe.webhook.failed", {
+          ...eventFields,
+          ...safeErrorDetails(processingError)
+        });
+        return reply.code(503).send({
+          error: "WEBHOOK_PROCESSING_ERROR",
+          message: "Unable to process webhook event.",
+          statusCode: 503
+        });
       }
     });
   };

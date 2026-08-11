@@ -234,5 +234,6 @@ const cartPlugin: FastifyPluginAsync = async (fastify) => {
 };
 
 export default fp(cartPlugin, {
+  encapsulate: true,
   name: "cart-module"
 });
