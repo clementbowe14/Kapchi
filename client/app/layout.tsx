@@ -16,8 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kapchi",
-  description: "Kapchi authentication flow powered by Clerk.",
+  title: "Kapchi | Andean Graduation Stoles",
+  description:
+    "Graduation stoles designed to honor Indigenous heritage, achievement, and the stories graduates carry forward.",
   icons: {
     icon: "/kapchi_logo.png",
     apple: "/kapchi_logo.png",
