@@ -27,6 +27,8 @@ type SeedListing = {
 type SeedFabric = {
   colorHex: string;
   colorName: string;
+  imageAlt: string;
+  imageUrl: string;
   material: string;
   name: string;
   quantityOnHand: number;
@@ -70,7 +72,7 @@ export const seedListings: SeedListing[] = [
     description:
       "Local seed graduation stole with editable text, image, trim, and fabric options.",
     imageAlt: "Local seed navy graduation stole preview",
-    imageUrl: "https://example.test/kapchi-local-seed/navy-stole.png",
+    imageUrl: "/images/hero/personalized-woven-stole.webp",
     listingType: "graduation_stole",
     priceVariants: [
       {
@@ -78,6 +80,24 @@ export const seedListings: SeedListing[] = [
         stripePriceId: "price_local_seed_stole_blank",
         unitAmountCents: 4500,
         variantKey: "blank"
+      },
+      {
+        customizationKind: "text_short",
+        stripePriceId: "price_local_seed_stole_text_short",
+        unitAmountCents: 5000,
+        variantKey: "text-short"
+      },
+      {
+        customizationKind: "text_long",
+        stripePriceId: "price_local_seed_stole_text_long",
+        unitAmountCents: 5500,
+        variantKey: "text-long"
+      },
+      {
+        customizationKind: "text_image",
+        stripePriceId: "price_local_seed_stole_text_image",
+        unitAmountCents: 6000,
+        variantKey: "text-long-image"
       },
       {
         customizationKind: "text_image_trim",
@@ -119,6 +139,8 @@ export const seedFabrics: SeedFabric[] = [
   {
     colorHex: "#12335B",
     colorName: "Navy",
+    imageAlt: "Woven blue fabric detail on a graduation stole",
+    imageUrl: "/images/hero/woven-stole-detail.webp",
     material: "Satin",
     name: "Local Seed Navy Satin",
     quantityOnHand: 40,
@@ -130,6 +152,8 @@ export const seedFabrics: SeedFabric[] = [
   {
     colorHex: "#D4AF37",
     colorName: "Gold",
+    imageAlt: "Gold-trimmed woven fabric samples beside a graduation stole",
+    imageUrl: "/images/hero/personalized-woven-stole.webp",
     material: "Satin",
     name: "Local Seed Gold Satin",
     quantityOnHand: 30,
@@ -263,9 +287,64 @@ async function seedFabricInventory(db: Queryable) {
       fabric.quantitySold
     ]),
   );
+
+  for (const fabric of seedFabrics) {
+    await db.query(
+      `
+        insert into assets (
+          provider,
+          storage_key,
+          url,
+          content_type,
+          byte_size,
+          visibility,
+          context,
+          status,
+          fabric_id,
+          metadata
+        )
+        select
+          'local_public',
+          'local-seed/fabrics/' || lower(replace(f.sku, '_', '-')) || '.webp',
+          $2,
+          'image/webp',
+          1,
+          'public_catalog',
+          'fabric_image',
+          'uploaded',
+          f.id,
+          $3::jsonb
+        from fabrics f
+        where f.sku = $1
+        on conflict (provider, storage_key) where storage_key is not null
+        do update set
+          url = excluded.url,
+          content_type = excluded.content_type,
+          byte_size = excluded.byte_size,
+          visibility = excluded.visibility,
+          context = excluded.context,
+          status = excluded.status,
+          fabric_id = excluded.fabric_id,
+          metadata = excluded.metadata
+      `,
+      [
+        fabric.sku,
+        fabric.imageUrl,
+        JSON.stringify({
+          alt: fabric.imageAlt,
+          sortOrder: 0,
+          source: "db:seed:local"
+        })
+      ],
+    );
+  }
 }
 
 async function seedListing(db: Queryable, listing: SeedListing) {
+  const catalogImageContentType = listing.imageUrl.endsWith(".webp")
+    ? "image/webp"
+    : "image/png";
+  const catalogImageExtension = catalogImageContentType.split("/")[1];
   const listingRow = await queryOne<{ id: string }>(
     db,
     `
@@ -318,8 +397,63 @@ async function seedListing(db: Queryable, listing: SeedListing) {
     `
       insert into listing_images (listing_id, image_url, alt_text, sort_order, is_primary)
       values ($1, $2, $3, 0, true)
+      on conflict (listing_id) where is_primary
+      do update set
+        image_url = excluded.image_url,
+        alt_text = excluded.alt_text,
+        sort_order = excluded.sort_order
     `,
     [listingRow.id, listing.imageUrl, listing.imageAlt],
+  );
+
+  await db.query(
+    `
+      insert into assets (
+        provider,
+        storage_key,
+        url,
+        content_type,
+        byte_size,
+        visibility,
+        context,
+        status,
+        listing_id,
+        metadata
+      ) values (
+        'local_public',
+        $2,
+        $3,
+        $5,
+        1,
+        'public_catalog',
+        'catalog_listing_image',
+        'uploaded',
+        $1,
+        $4::jsonb
+      )
+      on conflict (provider, storage_key) where storage_key is not null
+      do update set
+        url = excluded.url,
+        content_type = excluded.content_type,
+        byte_size = excluded.byte_size,
+        visibility = excluded.visibility,
+        context = excluded.context,
+        status = excluded.status,
+        listing_id = excluded.listing_id,
+        metadata = excluded.metadata
+    `,
+    [
+      listingRow.id,
+      `local-seed/listings/${listing.slug}.${catalogImageExtension}`,
+      listing.imageUrl,
+      JSON.stringify({
+        alt: listing.imageAlt,
+        isPrimary: true,
+        sortOrder: 0,
+        source: "db:seed:local"
+      }),
+      catalogImageContentType
+    ],
   );
 
   if (listing.requiresFabric) {
@@ -340,6 +474,17 @@ async function seedListing(db: Queryable, listing: SeedListing) {
       [listingRow.id],
     );
   }
+
+  await db.query(
+    "update listing_customization_sets set enabled = false where listing_id = $1",
+    [listingRow.id],
+  );
+  await db.query(
+    `update listing_price_variants
+     set active = false, replaced_at = coalesce(replaced_at, now())
+     where listing_id = $1 and active = true`,
+    [listingRow.id],
+  );
 
   for (const variant of listing.priceVariants) {
     const customizationRow = await queryOne<{ id: string }>(
@@ -413,6 +558,30 @@ async function seedListing(db: Queryable, listing: SeedListing) {
 
     await db.query(
       `
+        update listing_price_variants
+        set
+          listing_customization_set_id = $2,
+          trim_option_id = null,
+          unit_amount_cents = $4,
+          currency = 'usd',
+          stripe_product_id = $5,
+          stripe_price_id = $6,
+          active = true,
+          replaced_at = null
+        where listing_id = $1 and variant_key = $3 and active = true
+      `,
+      [
+        listingRow.id,
+        customizationRow.id,
+        variant.variantKey,
+        variant.unitAmountCents,
+        listing.stripeProductId,
+        variant.stripePriceId
+      ],
+    );
+
+    await db.query(
+      `
         insert into listing_price_variants (
           listing_id,
           listing_customization_set_id,
@@ -423,7 +592,13 @@ async function seedListing(db: Queryable, listing: SeedListing) {
           stripe_product_id,
           stripe_price_id,
           active
-        ) values ($1, $2, null, $3, $4, 'usd', $5, $6, true)
+        )
+        select $1, $2, null, $3, $4, 'usd', $5, $6, true
+        where not exists (
+          select 1
+          from listing_price_variants
+          where listing_id = $1 and variant_key = $3 and active = true
+        )
         on conflict (stripe_price_id) do update set
           listing_id = excluded.listing_id,
           listing_customization_set_id = excluded.listing_customization_set_id,
@@ -596,10 +771,11 @@ async function seedCartAndOrder(db: Queryable) {
       listingRow.fabric_id,
       listingRow.unit_amount_cents,
       JSON.stringify({
+        fontOptionId: null,
         imageAssetId: assetId,
         line1: "Class of 2026",
         line2: "Kapchi Demo",
-        trim: "Local Gold Trim"
+        trimOptionId: null
       }),
       assetId
     ],

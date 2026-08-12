@@ -52,6 +52,7 @@ describe("CustomizationImageUpload", () => {
       contentDisposition: "attachment",
       contentType: "image/png",
       downloadUrl: "https://blob.example/stole.png?download=1",
+      etag: "blob-etag",
       pathname: "kapchi/customization_image/asset-123/stole.png",
       url: "https://blob.example/stole.png"
     });
@@ -102,7 +103,7 @@ describe("CustomizationImageUpload", () => {
     });
     await user.click(screen.getByRole("button", { name: "Upload image" }));
 
-    expect(screen.getByText("Use a JPEG, PNG, or WebP image.")).toBeInTheDocument();
+    expect(screen.getByText("Choose an accepted image format.")).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(uploadMock).not.toHaveBeenCalled();
   });

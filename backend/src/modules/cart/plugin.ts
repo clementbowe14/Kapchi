@@ -21,13 +21,15 @@ import type { CartItemInput } from "./types.js";
 
 const cartItemSchema = Joi.object<CartItemInput>({
   fabricId: Joi.string().guid().allow(null).default(null),
+  fontOptionId: Joi.string().guid().allow(null).default(null),
   imageAssetId: Joi.string().guid().allow(null).default(null),
   line1: Joi.string().allow("").max(512).default(""),
   line2: Joi.string().allow("").max(512).default(""),
   listingCustomizationSetId: Joi.string().guid().required(),
   listingId: Joi.string().guid().required(),
   listingPriceVariantId: Joi.string().guid().required(),
-  quantity: Joi.number().integer().min(1).max(999).required()
+  quantity: Joi.number().integer().min(1).max(999).required(),
+  trimOptionId: Joi.string().guid().allow(null).default(null)
 }).required();
 
 const cartItemParamsSchema = Joi.object({

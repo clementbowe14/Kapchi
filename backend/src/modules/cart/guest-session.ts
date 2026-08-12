@@ -31,9 +31,11 @@ export type GuestCartValidationStatus =
   | "unavailable";
 
 export type GuestCartCustomizationSummary = {
+  fontOptionId: string | null;
   line1: string;
   line2: string;
   imageAssetId: string | null;
+  trimOptionId: string | null;
 };
 
 export type GuestCartDisplayItem = {
@@ -46,6 +48,7 @@ export type GuestCartDisplayItem = {
   currency: string;
   fabricId: string | null;
   customizationSetId: string;
+  listingPriceVariantId: string;
   customizationSummary: GuestCartCustomizationSummary;
   validationStatus: GuestCartValidationStatus;
 };
@@ -168,18 +171,28 @@ function parseGuestCartCustomizationSummary(
 ): GuestCartCustomizationSummary | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["line1", "line2", "imageAssetId"]) ||
+    !hasExactKeys(value, [
+      "fontOptionId",
+      "line1",
+      "line2",
+      "imageAssetId",
+      "trimOptionId"
+    ]) ||
+    !(value.fontOptionId === null || isUuid(value.fontOptionId)) ||
     !isBoundedString(value.line1, 0, MAX_CUSTOMIZATION_LINE_LENGTH) ||
     !isBoundedString(value.line2, 0, MAX_CUSTOMIZATION_LINE_LENGTH) ||
-    !(value.imageAssetId === null || isUuid(value.imageAssetId))
+    !(value.imageAssetId === null || isUuid(value.imageAssetId)) ||
+    !(value.trimOptionId === null || isUuid(value.trimOptionId))
   ) {
     return null;
   }
 
   return {
+    fontOptionId: value.fontOptionId,
     line1: value.line1,
     line2: value.line2,
-    imageAssetId: value.imageAssetId
+    imageAssetId: value.imageAssetId,
+    trimOptionId: value.trimOptionId
   };
 }
 
@@ -196,6 +209,7 @@ function parseGuestCartDisplayItem(value: unknown): GuestCartDisplayItem | null 
       "currency",
       "fabricId",
       "customizationSetId",
+      "listingPriceVariantId",
       "customizationSummary",
       "validationStatus"
     ]) ||
@@ -209,6 +223,7 @@ function parseGuestCartDisplayItem(value: unknown): GuestCartDisplayItem | null 
     !CURRENCY_PATTERN.test(value.currency) ||
     !(value.fabricId === null || isUuid(value.fabricId)) ||
     !isUuid(value.customizationSetId) ||
+    !isUuid(value.listingPriceVariantId) ||
     !(
       value.validationStatus === "valid" ||
       value.validationStatus === "invalid" ||
@@ -237,6 +252,7 @@ function parseGuestCartDisplayItem(value: unknown): GuestCartDisplayItem | null 
     currency: value.currency,
     fabricId: value.fabricId,
     customizationSetId: value.customizationSetId,
+    listingPriceVariantId: value.listingPriceVariantId,
     customizationSummary,
     validationStatus: value.validationStatus
   };

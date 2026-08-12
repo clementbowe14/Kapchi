@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth, useUser } from "@clerk/nextjs";
+import { Minus, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import {
   FormEvent,
@@ -13,6 +14,7 @@ import {
 import { buildApiUrl } from "@/lib/api";
 import {
   cartNeedsReview,
+  buildCartItemMutation,
   checkoutErrorMessage,
   CheckoutApiError,
   type CartLine,
@@ -138,15 +140,21 @@ function CartLineCard({
   isGuest,
   line,
   onRemove,
+  onQuantityChange,
   removeError,
   removing,
+  updateError,
+  updating,
 }: {
   cart: CartView;
   isGuest: boolean;
   line: CartLine;
   onRemove: (cartItemId: string) => void;
+  onQuantityChange: (line: CartLine, quantity: number) => void;
   removeError: string;
   removing: boolean;
+  updateError: string;
+  updating: boolean;
 }) {
   const issue = getCartLineIssue(cart, line);
   const customization = [
@@ -173,7 +181,6 @@ function CartLineCard({
             <StatusBadge status={line.validationStatus} />
           </div>
           <p className="text-sm text-slate-500">
-            Quantity {line.quantity} at{" "}
             {formatCheckoutMoney(line.unitAmountCents, line.currency)} each
           </p>
         </div>
@@ -221,17 +228,50 @@ function CartLineCard({
 
       {isGuest ? (
         <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div
+            aria-label={`Quantity for ${line.title}`}
+            className="grid h-11 grid-cols-[2.75rem_3rem_2.75rem] border border-slate-300 bg-white"
+            role="group"
+          >
+            <button
+              aria-label={`Decrease ${line.title} quantity`}
+              className="grid place-items-center text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={line.quantity <= 1 || removing || updating}
+              onClick={() => onQuantityChange(line, line.quantity - 1)}
+              title="Decrease quantity"
+              type="button"
+            >
+              <Minus aria-hidden="true" className="h-4 w-4" />
+            </button>
+            <output
+              aria-live="polite"
+              className="grid place-items-center border-x border-slate-300 text-sm font-semibold text-slate-950"
+            >
+              {line.quantity}
+            </output>
+            <button
+              aria-label={`Increase ${line.title} quantity`}
+              className="grid place-items-center text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={line.quantity >= 999 || removing || updating}
+              onClick={() => onQuantityChange(line, line.quantity + 1)}
+              title="Increase quantity"
+              type="button"
+            >
+              <Plus aria-hidden="true" className="h-4 w-4" />
+            </button>
+          </div>
           <button
-            className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
-            disabled={removing}
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
+            disabled={removing || updating}
             onClick={() => onRemove(line.cartItemId)}
             type="button"
           >
+            <Trash2 aria-hidden="true" className="h-4 w-4" />
             {removing ? "Removing" : "Remove item"}
           </button>
-          {removeError ? (
+          {removeError || updateError ? (
             <p className="text-sm text-rose-700" role="alert">
-              {removeError}
+              {removeError || updateError}
             </p>
           ) : null}
         </div>
@@ -254,6 +294,11 @@ export function CartCheckoutClient({
   const [claimNotice, setClaimNotice] = useState("");
   const [removingId, setRemovingId] = useState("");
   const [removeError, setRemoveError] = useState<{
+    cartItemId: string;
+    message: string;
+  } | null>(null);
+  const [updatingId, setUpdatingId] = useState("");
+  const [updateError, setUpdateError] = useState<{
     cartItemId: string;
     message: string;
   } | null>(null);
@@ -293,6 +338,7 @@ export function CartCheckoutClient({
     setLoadError("");
     setClaimNotice("");
     setRemoveError(null);
+    setUpdateError(null);
 
     try {
       let headers: HeadersInit | undefined;
@@ -358,6 +404,16 @@ export function CartCheckoutClient({
 
       setCart(loadedCart);
       setCartPhase(cartPhaseFor(loadedCart));
+      window.dispatchEvent(
+        new CustomEvent("kapchi:cart-updated", {
+          detail: {
+            count: loadedCart.items.reduce(
+              (total, item) => total + item.quantity,
+              0,
+            ),
+          },
+        }),
+      );
     } catch (error) {
       if (sequence !== loadSequence.current) {
         return;
@@ -393,7 +449,7 @@ export function CartCheckoutClient({
   );
 
   async function removeItem(cartItemId: string) {
-    if (signedIn || removingId) {
+    if (signedIn || removingId || updatingId) {
       return;
     }
 
@@ -417,6 +473,16 @@ export function CartCheckoutClient({
       const updatedCart = parseCartView(await response.json());
       setCart(updatedCart);
       setCartPhase(cartPhaseFor(updatedCart));
+      window.dispatchEvent(
+        new CustomEvent("kapchi:cart-updated", {
+          detail: {
+            count: updatedCart.items.reduce(
+              (total, item) => total + item.quantity,
+              0,
+            ),
+          },
+        }),
+      );
     } catch (error) {
       if (error instanceof CheckoutApiError && error.code === "CART_NOT_FOUND") {
         setCart(EMPTY_CART);
@@ -429,6 +495,58 @@ export function CartCheckoutClient({
       }
     } finally {
       setRemovingId("");
+    }
+  }
+
+  async function updateItemQuantity(line: CartLine, quantity: number) {
+    if (signedIn || removingId || updatingId) {
+      return;
+    }
+
+    setUpdatingId(line.cartItemId);
+    setUpdateError(null);
+
+    try {
+      const response = await fetchWithTimeout(
+        buildApiUrl(`/cart/items/${encodeURIComponent(line.cartItemId)}`),
+        {
+          body: JSON.stringify(buildCartItemMutation(line, quantity)),
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          method: "PATCH",
+        },
+        requestTimeoutMs,
+      );
+
+      if (!response.ok) {
+        throw await readCheckoutApiError(response);
+      }
+
+      const updatedCart = parseCartView(await response.json());
+      setCart(updatedCart);
+      setCartPhase(cartPhaseFor(updatedCart));
+      window.dispatchEvent(
+        new CustomEvent("kapchi:cart-updated", {
+          detail: {
+            count: updatedCart.items.reduce(
+              (total, item) => total + item.quantity,
+              0,
+            ),
+          },
+        }),
+      );
+    } catch (error) {
+      if (error instanceof CheckoutApiError && error.code === "CART_NOT_FOUND") {
+        setCart(EMPTY_CART);
+        setCartPhase("empty");
+      } else {
+        setUpdateError({
+          cartItemId: line.cartItemId,
+          message: "We could not update this quantity. Try again.",
+        });
+      }
+    } finally {
+      setUpdatingId("");
     }
   }
 
@@ -681,12 +799,21 @@ export function CartCheckoutClient({
                   key={line.cartItemId}
                   line={line}
                   onRemove={(cartItemId) => void removeItem(cartItemId)}
+                  onQuantityChange={(cartLine, quantity) =>
+                    void updateItemQuantity(cartLine, quantity)
+                  }
                   removeError={
                     removeError?.cartItemId === line.cartItemId
                       ? removeError.message
                       : ""
                   }
                   removing={removingId === line.cartItemId}
+                  updateError={
+                    updateError?.cartItemId === line.cartItemId
+                      ? updateError.message
+                      : ""
+                  }
+                  updating={updatingId === line.cartItemId}
                 />
               ))}
             </div>

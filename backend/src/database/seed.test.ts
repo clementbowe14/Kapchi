@@ -58,11 +58,20 @@ describe("local seed fixtures", () => {
     ]);
     expect(
       seedListings[0].priceVariants.map((variant) => variant.variantKey),
-    ).toEqual(["blank", "text-image-trim"]);
+    ).toEqual([
+      "blank",
+      "text-short",
+      "text-long",
+      "text-long-image",
+      "text-image-trim"
+    ]);
     expect(seedFabrics.map((fabric) => fabric.sku)).toEqual([
       "LOCAL-SEED-NAVY-SATIN",
       "LOCAL-SEED-GOLD-SATIN"
     ]);
+    expect(seedFabrics.every((fabric) => fabric.imageUrl.startsWith("/images/"))).toBe(
+      true,
+    );
   });
 
   it("uses deterministic fake order and customer-safe contact data", () => {

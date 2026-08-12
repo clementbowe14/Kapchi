@@ -26,6 +26,8 @@ type CartRow = QueryResultRow & {
 type SelectionRow = QueryResultRow & {
   currency: string;
   customization_enabled: boolean;
+  font_allowed: boolean;
+  has_trim_specific_prices: boolean;
   listing_status: string;
   max_chars: number | null;
   min_chars: number;
@@ -33,7 +35,10 @@ type SelectionRow = QueryResultRow & {
   requires_fabric: boolean;
   requires_image: boolean;
   requires_text: boolean;
+  requires_trim: boolean;
+  trim_allowed: boolean;
   unit_amount_cents: number;
+  variant_trim_option_id: string | null;
 };
 
 type FabricRow = QueryResultRow & {
@@ -63,6 +68,7 @@ type ProjectionRow = QueryResultRow & {
   customization_asset_id: string | null;
   customization_payload: unknown;
   customization_set_id: string;
+  listing_price_variant_id: string;
   fabric_id: string | null;
   listing_id: string;
   listing_slug: string;
@@ -76,13 +82,20 @@ type Queryable = Pick<PoolClient, "query">;
 
 function payloadLines(payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { line1: "", line2: "" };
+    return {
+      fontOptionId: null,
+      line1: "",
+      line2: "",
+      trimOptionId: null
+    };
   }
 
   const value = payload as Record<string, unknown>;
   return {
+    fontOptionId: typeof value.fontOptionId === "string" ? value.fontOptionId : null,
     line1: typeof value.line1 === "string" ? value.line1 : "",
-    line2: typeof value.line2 === "string" ? value.line2 : ""
+    line2: typeof value.line2 === "string" ? value.line2 : "",
+    trimOptionId: typeof value.trimOptionId === "string" ? value.trimOptionId : null
   };
 }
 
@@ -100,10 +113,13 @@ function mapProjection(rows: ProjectionRow[]): GuestCartDisplayItem[] {
       currency: row.currency,
       fabricId: row.fabric_id,
       customizationSetId: row.customization_set_id,
+      listingPriceVariantId: row.listing_price_variant_id,
       customizationSummary: {
+        fontOptionId: lines.fontOptionId,
         line1: lines.line1,
         line2: lines.line2,
-        imageAssetId: row.customization_asset_id
+        imageAssetId: row.customization_asset_id,
+        trimOptionId: lines.trimOptionId
       },
       validationStatus: row.validation_status
     };
@@ -125,6 +141,33 @@ function validateText(input: CartItemInput, selection: SelectionRow) {
 
   if (selection.requires_image && !input.imageAssetId) {
     throw new CartValidationError("This customization requires an image.");
+  }
+
+  if (!selection.requires_text && (textLength > 0 || input.fontOptionId)) {
+    throw new CartValidationError("The selected package does not include text.");
+  }
+  if (!selection.requires_image && input.imageAssetId) {
+    throw new CartValidationError("The selected package does not include an image.");
+  }
+  if (selection.requires_trim && !input.trimOptionId) {
+    throw new CartValidationError("This customization requires trim.");
+  }
+  if (!selection.requires_trim && input.trimOptionId) {
+    throw new CartValidationError("The selected package does not include trim.");
+  }
+  if (input.fontOptionId && !selection.font_allowed) {
+    throw new CartValidationError("The selected font is unavailable.");
+  }
+  if (input.trimOptionId && !selection.trim_allowed) {
+    throw new CartValidationError("The selected trim is unavailable.");
+  }
+  if (
+    input.trimOptionId &&
+    ((selection.variant_trim_option_id &&
+      selection.variant_trim_option_id !== input.trimOptionId) ||
+      (!selection.variant_trim_option_id && selection.has_trim_specific_prices))
+  ) {
+    throw new CartValidationError("The selected price does not match the trim.");
   }
 }
 
@@ -193,9 +236,34 @@ export class CartRepository {
           lcs.max_chars,
           cs.requires_text,
           cs.requires_image,
+          cs.requires_trim,
           lpv.active as price_variant_active,
+          lpv.trim_option_id as variant_trim_option_id,
           lpv.unit_amount_cents,
-          lpv.currency
+          lpv.currency,
+          ($4::uuid is null or exists (
+            select 1
+            from listing_customization_fonts lcf
+            join font_options fo on fo.id = lcf.font_option_id and fo.active = true
+            where lcf.listing_customization_set_id = lcs.id
+              and lcf.font_option_id = $4
+          )) as font_allowed,
+          ($5::uuid is null or exists (
+            select 1
+            from listing_customization_trims lct
+            join trim_options tr on tr.id = lct.trim_option_id and tr.active = true
+            where lct.listing_customization_set_id = lcs.id
+              and lct.trim_option_id = $5
+          )) as trim_allowed,
+          exists (
+            select 1
+            from listing_price_variants priced_trim
+            where priced_trim.listing_id = l.id
+              and priced_trim.listing_customization_set_id = lcs.id
+              and priced_trim.trim_option_id is not null
+              and priced_trim.active = true
+              and priced_trim.replaced_at is null
+          ) as has_trim_specific_prices
         from listings l
         join listing_customization_sets lcs
           on lcs.id = $2 and lcs.listing_id = l.id
@@ -207,7 +275,13 @@ export class CartRepository {
         where l.id = $1
         limit 1
       `,
-      [input.listingId, input.listingCustomizationSetId, input.listingPriceVariantId],
+      [
+        input.listingId,
+        input.listingCustomizationSetId,
+        input.listingPriceVariantId,
+        input.fontOptionId,
+        input.trimOptionId
+      ],
     );
     const selection = result.rows[0];
 
@@ -368,9 +442,11 @@ export class CartRepository {
         unitAmountCents,
         cart.currency,
         JSON.stringify({
+          fontOptionId: input.fontOptionId,
           imageAssetId: input.imageAssetId,
           line1: input.line1,
-          line2: input.line2
+          line2: input.line2,
+          trimOptionId: input.trimOptionId
         }),
         input.imageAssetId
       ],
@@ -413,9 +489,11 @@ export class CartRepository {
         unitAmountCents,
         cart.currency,
         JSON.stringify({
+          fontOptionId: input.fontOptionId,
           imageAssetId: input.imageAssetId,
           line1: input.line1,
-          line2: input.line2
+          line2: input.line2,
+          trimOptionId: input.trimOptionId
         }),
         input.imageAssetId
       ],
@@ -608,6 +686,7 @@ export class CartRepository {
           ci.currency,
           ci.fabric_id,
           ci.listing_customization_set_id as customization_set_id,
+          ci.listing_price_variant_id,
           ci.customization_payload,
           ci.customization_asset_id,
           ci.validation_status

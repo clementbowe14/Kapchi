@@ -31,13 +31,17 @@ function cartResponse(
       {
         cartItemId: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
         currency: "usd",
+        customizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
         customizationSummary: {
+          fontOptionId: null,
           imageAssetId: null,
           line1: "Class of 2027",
           line2: "Kapchi University",
+          trimOptionId: null,
         },
         fabricId: null,
         listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
+        listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
         listingSlug: "graduation-stole",
         quantity: 1,
         title: "Graduation Stole",
@@ -214,6 +218,74 @@ describe("CartCheckoutClient", () => {
     ).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Remove item" }));
     expect(await screen.findByText("Your cart is empty")).toBeInTheDocument();
+  });
+
+  it("updates a complete customized line and then deletes it", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    const customized = cartResponse({
+      items: [
+        {
+          ...cartResponse().items[0],
+          customizationSummary: {
+            fontOptionId: "font-1",
+            imageAssetId: "asset-1",
+            line1: "Class of 2027",
+            line2: "Kapchi University",
+            trimOptionId: "trim-1",
+          },
+          fabricId: "fabric-1",
+        },
+      ],
+    });
+    const updated = cartResponse({
+      items: [{ ...customized.items[0], quantity: 2 }],
+      subtotalCents: 17000,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(customized))
+      .mockResolvedValueOnce(jsonResponse(updated))
+      .mockResolvedValueOnce(
+        jsonResponse({ cartId: customized.cartId, items: [], subtotalCents: 0 }),
+      );
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    await user.click(
+      screen.getByRole("button", {
+        name: "Increase Graduation Stole quantity",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("group", { name: "Quantity for Graduation Stole" }),
+      ).toHaveTextContent("2"),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        url === "/api/cart/items/0f82fc95-66a6-41b9-9ed5-05a5a20e6f61" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      fabricId: "fabric-1",
+      fontOptionId: "font-1",
+      imageAssetId: "asset-1",
+      line1: "Class of 2027",
+      line2: "Kapchi University",
+      listingCustomizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
+      listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
+      listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+      quantity: 2,
+      trimOptionId: "trim-1",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove item" }));
+    expect(await screen.findByText("Your cart is empty")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/cart/items/0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("retains contact data and safely retries a provider failure", async () => {

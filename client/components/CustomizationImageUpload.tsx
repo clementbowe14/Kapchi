@@ -14,10 +14,12 @@ export type CustomizationImageAsset = {
 };
 
 export type CustomizationImageUploadProps = {
+  acceptedContentTypes?: string[];
   authorizationToken?: string | null;
   cartId: string;
   customizationSetId: string;
   listingId: string;
+  maxBytes?: number | null;
   onUploaded?: (asset: CustomizationImageAsset) => void;
 };
 
@@ -82,10 +84,12 @@ async function createUploadIntent({
 }
 
 export function CustomizationImageUpload({
+  acceptedContentTypes = acceptedImageTypes,
   authorizationToken,
   cartId,
   customizationSetId,
   listingId,
+  maxBytes,
   onUploaded,
 }: CustomizationImageUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -103,8 +107,14 @@ export function CustomizationImageUpload({
       return;
     }
 
-    if (!acceptedImageTypes.includes(file.type)) {
-      setError("Use a JPEG, PNG, or WebP image.");
+    if (!acceptedContentTypes.includes(file.type)) {
+      setError("Choose an accepted image format.");
+      setState("error");
+      return;
+    }
+
+    if (maxBytes !== null && maxBytes !== undefined && file.size > maxBytes) {
+      setError(`Choose an image smaller than ${Math.ceil(maxBytes / 1_000_000)} MB.`);
       setState("error");
       return;
     }
@@ -157,15 +167,15 @@ export function CustomizationImageUpload({
         Custom image
         <input
           ref={inputRef}
-          accept={acceptedImageTypes.join(",")}
-          className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 file:mr-4 file:rounded-full file:border-0 file:bg-[#b49872] file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
+          accept={acceptedContentTypes.join(",")}
+          className="mt-2 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 file:mr-4 file:rounded-md file:border-0 file:bg-[#b49872] file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
           name="customization-image"
           type="file"
         />
       </label>
 
       <button
-        className="inline-flex min-h-11 items-center justify-center rounded-full bg-[#b49872] px-5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(143,115,79,0.20)] transition hover:bg-[#a1845f] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
+        className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[#b49872] px-5 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(143,115,79,0.20)] transition hover:bg-[#a1845f] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
         disabled={state === "loading"}
         type="submit"
       >
