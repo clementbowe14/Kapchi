@@ -132,8 +132,25 @@ function CartLink({
 
 export function Navbar({ cartCount = 0 }: NavbarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [visibleCartCount, setVisibleCartCount] = useState(cartCount);
   const pathname = usePathname();
   const menuId = useId();
+
+  useEffect(() => {
+    const updateCartCount = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
+      if (
+        typeof detail?.count === "number" &&
+        Number.isInteger(detail.count) &&
+        detail.count >= 0
+      ) {
+        setVisibleCartCount(detail.count);
+      }
+    };
+
+    window.addEventListener("kapchi:cart-updated", updateCartCount);
+    return () => window.removeEventListener("kapchi:cart-updated", updateCartCount);
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) {
@@ -167,7 +184,7 @@ export function Navbar({ cartCount = 0 }: NavbarProps) {
 
             <div className="flex items-center gap-3">
               <nav aria-label="Primary" className="flex items-center gap-1">
-                <CartLink active={pathname === "/cart"} cartCount={cartCount} />
+                <CartLink active={pathname === "/cart"} cartCount={visibleCartCount} />
                 {NAV_ITEMS.map((item) => (
                   <DesktopNavLink
                     key={item.href}
@@ -201,7 +218,7 @@ export function Navbar({ cartCount = 0 }: NavbarProps) {
         onClose={() => setMenuOpen(false)}
         menuId={menuId}
         pathname={pathname}
-        cartCount={cartCount}
+        cartCount={visibleCartCount}
       />
     </>
   );

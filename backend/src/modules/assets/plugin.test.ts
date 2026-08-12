@@ -175,7 +175,6 @@ describe("assetsPlugin", () => {
         ]
       })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
-      .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
       .mockResolvedValueOnce({ rows: [assetRow()] });
 
     const app = await buildTestServer();
@@ -213,16 +212,12 @@ describe("assetsPlugin", () => {
     ]);
     expect(mocks.query.mock.calls[1][0]).toContain("expires_at > now()");
     expect(mocks.query.mock.calls[1][0]).not.toContain("insert into carts");
-    expect(mocks.query.mock.calls[2][1]).toEqual([
-      ids.cart,
-      ids.listing,
-      ids.customizationSet
-    ]);
+    expect(mocks.query).toHaveBeenCalledTimes(3);
 
     await app.close();
   });
 
-  it("rejects customer uploads when the customization is not in the active cart", async () => {
+  it("rejects customer uploads when the requested cart is not owned and active", async () => {
     mocks.guestCart = {
       cartId: ids.cart,
       sessionId: "guest-session"
@@ -239,7 +234,6 @@ describe("assetsPlugin", () => {
           }
         ]
       })
-      .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
       .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildTestServer();
@@ -258,8 +252,8 @@ describe("assetsPlugin", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json().message).toContain("active cart");
-    expect(mocks.query).toHaveBeenCalledTimes(3);
+    expect(response.json().message).toContain("requested guest cart");
+    expect(mocks.query).toHaveBeenCalledTimes(2);
 
     await app.close();
   });
@@ -320,7 +314,6 @@ describe("assetsPlugin", () => {
         ]
       })
       .mockResolvedValueOnce({ rows: [{ id: ids.cart }] })
-      .mockResolvedValueOnce({ rows: [{ id: "cart-item-id" }] })
       .mockResolvedValueOnce({ rows: [assetRow()] });
     const tokenPayload = JSON.stringify({
       assetId: ids.asset,
@@ -353,7 +346,7 @@ describe("assetsPlugin", () => {
       maximumSizeInBytes: 5242880,
       tokenPayload
     });
-    expect(mocks.query.mock.calls[3][1]).toEqual([ids.asset]);
+    expect(mocks.query.mock.calls[2][1]).toEqual([ids.asset]);
 
     await app.close();
   });

@@ -271,27 +271,6 @@ async function validateImageCustomization(listingId: string, customizationSetId:
   return null;
 }
 
-async function validateCartContainsCustomization(
-  cartId: string,
-  listingId: string,
-  customizationSetId: string,
-) {
-  const result = await getDatabasePool().query<{ id: string }>(
-    `
-      select id
-      from cart_items
-      where cart_id = $1
-        and listing_id = $2
-        and listing_customization_set_id = $3
-        and validation_status = 'valid'
-      limit 1
-    `,
-    [cartId, listingId, customizationSetId],
-  );
-
-  return Boolean(result.rows[0]);
-}
-
 async function authorizeCustomerUpload(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -341,21 +320,6 @@ async function authorizeCustomerUpload(
       );
     }
 
-    if (
-      !(await validateCartContainsCustomization(
-        body.cartId,
-        body.listingId,
-        body.customizationSetId,
-      ))
-    ) {
-      return requestError(
-        reply,
-        403,
-        "FORBIDDEN",
-        "Customization image uploads require the selected stole customization to be in the active cart.",
-      );
-    }
-
     return {
       authenticatedUserId: internalUserId,
       cartId: body.cartId,
@@ -395,21 +359,6 @@ async function authorizeCustomerUpload(
       403,
       "FORBIDDEN",
       "The requested guest cart is not available for this session.",
-    );
-  }
-
-  if (
-    !(await validateCartContainsCustomization(
-      body.cartId,
-      body.listingId,
-      body.customizationSetId,
-    ))
-  ) {
-    return requestError(
-      reply,
-      403,
-      "FORBIDDEN",
-      "Customization image uploads require the selected stole customization to be in the active cart.",
     );
   }
 

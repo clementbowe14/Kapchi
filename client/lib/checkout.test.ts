@@ -74,9 +74,11 @@ describe("checkout helpers", () => {
         {
           cartItemId: "item-1",
           currency: "usd",
+          customizationSetId: "customization-1",
           customizationSummary: {},
           fabricId: null,
           listingId: "listing-1",
+          listingPriceVariantId: "variant-1",
           listingSlug: "stole",
           quantity: 1,
           title: "Graduation Stole",

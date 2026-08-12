@@ -7,17 +7,21 @@ export type CartValidationStatus =
   | "unavailable";
 
 export type CartCustomizationSummary = {
-  imageAssetId?: string | null;
-  line1?: string;
-  line2?: string;
+  fontOptionId: string | null;
+  imageAssetId: string | null;
+  line1: string;
+  line2: string;
+  trimOptionId: string | null;
 };
 
 export type CartLine = {
   cartItemId: string;
   currency: string;
+  customizationSetId: string;
   customizationSummary: CartCustomizationSummary;
   fabricId: string | null;
   listingId: string;
+  listingPriceVariantId: string;
   listingSlug: string;
   quantity: number;
   title: string;
@@ -130,21 +134,40 @@ function parseCartLine(value: unknown): CartLine {
   const customizationSummary = isRecord(value.customizationSummary)
     ? value.customizationSummary
     : {};
+  const customizationSetId = stringValue(value.customizationSetId);
+  const listingId = stringValue(value.listingId);
+  const listingPriceVariantId = stringValue(value.listingPriceVariantId);
+
+  if (!customizationSetId || !listingId || !listingPriceVariantId) {
+    throw new Error("Invalid cart response.");
+  }
 
   return {
     cartItemId,
     currency: stringValue(value.currency, "USD"),
+    customizationSetId,
     customizationSummary: {
+      fontOptionId:
+        typeof customizationSummary.fontOptionId === "string" ||
+        customizationSummary.fontOptionId === null
+          ? customizationSummary.fontOptionId
+          : null,
       imageAssetId:
         typeof customizationSummary.imageAssetId === "string" ||
         customizationSummary.imageAssetId === null
           ? customizationSummary.imageAssetId
-          : undefined,
+          : null,
       line1: stringValue(customizationSummary.line1),
       line2: stringValue(customizationSummary.line2),
+      trimOptionId:
+        typeof customizationSummary.trimOptionId === "string" ||
+        customizationSummary.trimOptionId === null
+          ? customizationSummary.trimOptionId
+          : null,
     },
     fabricId: typeof value.fabricId === "string" ? value.fabricId : null,
-    listingId: stringValue(value.listingId),
+    listingId,
+    listingPriceVariantId,
     listingSlug: stringValue(value.listingSlug),
     quantity,
     title: stringValue(value.title, "Kapchi item"),
@@ -152,6 +175,25 @@ function parseCartLine(value: unknown): CartLine {
     validationMessage:
       typeof value.validationMessage === "string" ? value.validationMessage : null,
     validationStatus,
+  };
+}
+
+export function buildCartItemMutation(line: CartLine, quantity: number) {
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+    throw new RangeError("Cart item quantity must be between 1 and 999.");
+  }
+
+  return {
+    fabricId: line.fabricId,
+    fontOptionId: line.customizationSummary.fontOptionId,
+    imageAssetId: line.customizationSummary.imageAssetId,
+    line1: line.customizationSummary.line1,
+    line2: line.customizationSummary.line2,
+    listingCustomizationSetId: line.customizationSetId,
+    listingId: line.listingId,
+    listingPriceVariantId: line.listingPriceVariantId,
+    quantity,
+    trimOptionId: line.customizationSummary.trimOptionId,
   };
 }
 

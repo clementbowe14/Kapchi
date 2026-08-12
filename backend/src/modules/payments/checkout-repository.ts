@@ -103,13 +103,15 @@ type Queryable = Pick<PoolClient, "query">;
 
 function customizationLines(payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { line1: "", line2: "" };
+    return { fontOptionId: null, line1: "", line2: "", trimOptionId: null };
   }
 
   const value = payload as Record<string, unknown>;
   return {
+    fontOptionId: typeof value.fontOptionId === "string" ? value.fontOptionId : null,
     line1: typeof value.line1 === "string" ? value.line1 : "",
-    line2: typeof value.line2 === "string" ? value.line2 : ""
+    line2: typeof value.line2 === "string" ? value.line2 : "",
+    trimOptionId: typeof value.trimOptionId === "string" ? value.trimOptionId : null
   };
 }
 
@@ -121,18 +123,29 @@ function parseV1Customization(payload: unknown) {
   const value = payload as Record<string, unknown>;
   const keys = Object.keys(value).sort();
   if (
-    JSON.stringify(keys) !== JSON.stringify(["imageAssetId", "line1", "line2"]) ||
+    JSON.stringify(keys) !==
+      JSON.stringify([
+        "fontOptionId",
+        "imageAssetId",
+        "line1",
+        "line2",
+        "trimOptionId"
+      ]) ||
+    !(value.fontOptionId === null || typeof value.fontOptionId === "string") ||
     typeof value.line1 !== "string" ||
     typeof value.line2 !== "string" ||
-    !(value.imageAssetId === null || typeof value.imageAssetId === "string")
+    !(value.imageAssetId === null || typeof value.imageAssetId === "string") ||
+    !(value.trimOptionId === null || typeof value.trimOptionId === "string")
   ) {
     return null;
   }
 
   return {
+    fontOptionId: value.fontOptionId,
     imageAssetId: value.imageAssetId,
     line1: value.line1,
-    line2: value.line2
+    line2: value.line2,
+    trimOptionId: value.trimOptionId
   };
 }
 
@@ -428,9 +441,11 @@ export class CheckoutRepository {
             }),
             JSON.stringify(fabricSnapshot),
             JSON.stringify({
+              fontOptionId: customization.fontOptionId,
               imageAssetId: item.customization_asset_id,
               line1: customization.line1,
-              line2: customization.line2
+              line2: customization.line2,
+              trimOptionId: customization.trimOptionId
             }),
             item.customization_asset_id
           ],

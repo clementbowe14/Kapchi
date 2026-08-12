@@ -75,7 +75,8 @@ const displayIds = {
   customizationSet: "fba94989-b950-4087-bac1-8c1ad4970655",
   fabric: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
   imageAsset: "1d66d9cc-0987-46e1-b719-c3e5a09f5013",
-  listing: "396256fa-68f9-4882-934a-5cedffbd8204"
+  listing: "396256fa-68f9-4882-934a-5cedffbd8204",
+  variant: "9a990125-7cf1-4f7d-813a-b418093aade0"
 };
 
 function sha256(value: string) {
@@ -93,10 +94,13 @@ function createValidDisplayItem(overrides: Record<string, unknown> = {}) {
     currency: "usd",
     fabricId: displayIds.fabric,
     customizationSetId: displayIds.customizationSet,
+    listingPriceVariantId: displayIds.variant,
     customizationSummary: {
+      fontOptionId: null,
       line1: "Class of 2026",
       line2: "Kapchi University",
-      imageAssetId: displayIds.imageAsset
+      imageAssetId: displayIds.imageAsset,
+      trimOptionId: null
     },
     validationStatus: "valid",
     ...overrides
@@ -107,9 +111,11 @@ function createProjectionWithExactByteLength(targetBytes: number) {
   const items = Array.from({ length: 50 }, () =>
     createValidDisplayItem({
       customizationSummary: {
+        fontOptionId: null,
         line1: "",
         line2: "",
-        imageAssetId: null
+        imageAssetId: null,
+        trimOptionId: null
       }
     }),
   );
@@ -752,9 +758,11 @@ describe("guest cart items", () => {
         cartItemId: "f33d7a50-cd15-418a-96dd-46e8c6466830",
         fabricId: null,
         customizationSummary: {
+          fontOptionId: null,
           line1: "",
           line2: "",
-          imageAssetId: null
+          imageAssetId: null,
+          trimOptionId: null
         },
         quantity: 999,
         unitAmountCents: 2_147_483_647,
@@ -829,9 +837,11 @@ describe("guest cart items", () => {
       createValidDisplayItem({ internalNotes: "do not expose" }),
       createValidDisplayItem({
         customizationSummary: {
+          fontOptionId: null,
           line1: "Class of 2026",
           line2: "Kapchi University",
           imageAssetId: displayIds.imageAsset,
+          trimOptionId: null,
           privateUrl: "https://private.test/asset"
         }
       })
@@ -864,9 +874,11 @@ describe("guest cart items", () => {
       createValidDisplayItem({ validationStatus: "pending" }),
       createValidDisplayItem({
         customizationSummary: {
+          fontOptionId: null,
           line1: "Class of 2026",
           line2: "Kapchi University",
-          imageAssetId: "not-a-uuid"
+          imageAssetId: "not-a-uuid",
+          trimOptionId: null
         }
       })
     ];
@@ -887,9 +899,11 @@ describe("guest cart items", () => {
       listingSlug: "s".repeat(255),
       title: "t".repeat(255),
       customizationSummary: {
+        fontOptionId: null,
         line1: "x".repeat(512),
         line2: "y".repeat(512),
-        imageAssetId: null
+        imageAssetId: null,
+        trimOptionId: null
       }
     });
     const { redis } = createRedisMock({
@@ -907,16 +921,20 @@ describe("guest cart items", () => {
       createValidDisplayItem({ title: "t".repeat(256) }),
       createValidDisplayItem({
         customizationSummary: {
+          fontOptionId: null,
           line1: "x".repeat(513),
           line2: "",
-          imageAssetId: null
+          imageAssetId: null,
+          trimOptionId: null
         }
       }),
       createValidDisplayItem({
         customizationSummary: {
+          fontOptionId: null,
           line1: "",
           line2: "y".repeat(513),
-          imageAssetId: null
+          imageAssetId: null,
+          trimOptionId: null
         }
       })
     ];

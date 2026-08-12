@@ -59,13 +59,15 @@ type IdentityIds = {
 
 function canonicalLines(payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { line1: "", line2: "" };
+    return { fontOptionId: null, line1: "", line2: "", trimOptionId: null };
   }
 
   const value = payload as Record<string, unknown>;
   return {
+    fontOptionId: typeof value.fontOptionId === "string" ? value.fontOptionId : null,
     line1: typeof value.line1 === "string" ? value.line1 : "",
-    line2: typeof value.line2 === "string" ? value.line2 : ""
+    line2: typeof value.line2 === "string" ? value.line2 : "",
+    trimOptionId: typeof value.trimOptionId === "string" ? value.trimOptionId : null
   };
 }
 
@@ -80,6 +82,8 @@ function linesMatch(left: MergeLineRow, right: MergeLineRow) {
     left.fabric_id === right.fabric_id &&
     leftLines.line1 === rightLines.line1 &&
     leftLines.line2 === rightLines.line2 &&
+    leftLines.fontOptionId === rightLines.fontOptionId &&
+    leftLines.trimOptionId === rightLines.trimOptionId &&
     left.customization_asset_id === right.customization_asset_id
   );
 }

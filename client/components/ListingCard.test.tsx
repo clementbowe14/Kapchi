@@ -28,7 +28,7 @@ vi.mock("next/image", () => ({
   ),
 }));
 
-type MockLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+type MockLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & {
   children: ReactNode;
   href: string | { pathname?: string };
 };

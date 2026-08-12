@@ -39,13 +39,15 @@ const ids = {
 
 const input = {
   fabricId: null,
+  fontOptionId: null,
   imageAssetId: ids.asset,
   line1: "Class of 2027",
   line2: "Kapchi University",
   listingCustomizationSetId: ids.customizationSet,
   listingId: ids.listing,
   listingPriceVariantId: ids.variant,
-  quantity: 1
+  quantity: 1,
+  trimOptionId: null
 };
 
 const cart = {

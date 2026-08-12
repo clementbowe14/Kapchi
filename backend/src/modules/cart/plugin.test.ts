@@ -57,13 +57,15 @@ const expiresAt = "2027-08-01T12:00:00.000Z";
 function cartItemPayload() {
   return {
     fabricId: null,
+    fontOptionId: null,
     imageAssetId: null,
     line1: "Class of 2027",
     line2: "Kapchi University",
     listingCustomizationSetId: ids.customizationSet,
     listingId: ids.listing,
     listingPriceVariantId: ids.variant,
-    quantity: 1
+    quantity: 1,
+    trimOptionId: null
   };
 }
 
@@ -218,6 +220,7 @@ function createMutationDatabaseMock(deleting = false) {
                 currency: "usd",
                 fabric_id: null,
                 customization_set_id: ids.customizationSet,
+                listing_price_variant_id: ids.variant,
                 customization_payload: cartItemPayload(),
                 customization_asset_id: null,
                 validation_status: "valid"

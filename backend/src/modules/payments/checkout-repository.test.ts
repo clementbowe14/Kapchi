@@ -79,9 +79,11 @@ function itemRow(overrides: Record<string, unknown> = {}) {
     customization_enabled: true,
     customization_listing_id: ids.listing,
     customization_payload: {
+      fontOptionId: null,
       imageAssetId: null,
       line1: "Class of 2027",
-      line2: "Kapchi University"
+      line2: "Kapchi University",
+      trimOptionId: null
     },
     fabric_color_name: null,
     fabric_id: null,
@@ -237,9 +239,11 @@ describe("CheckoutRepository", () => {
         asset_visibility: "private",
         customization_asset_id: ids.asset,
         customization_payload: {
+          fontOptionId: null,
           imageAssetId: ids.asset,
           line1: "Class of 2027",
-          line2: "Kapchi University"
+          line2: "Kapchi University",
+          trimOptionId: null
         }
       },
       "invalid"
@@ -255,9 +259,11 @@ describe("CheckoutRepository", () => {
         asset_visibility: "private",
         customization_asset_id: ids.asset,
         customization_payload: {
+          fontOptionId: null,
           imageAssetId: ids.asset,
           line1: "Class of 2027",
-          line2: "Kapchi University"
+          line2: "Kapchi University",
+          trimOptionId: null
         }
       },
       "invalid"
