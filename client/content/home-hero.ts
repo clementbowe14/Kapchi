@@ -96,6 +96,10 @@ export const homeHeroContent = {
   supportingCopy:
     "Handcrafted graduation stoles designed to honor heritage, achievement, and the story you carry forward.",
   slides,
+  primaryAction: {
+    href: "/#graduation-stoles",
+    label: "Shop graduation stoles",
+  },
   secondaryAction: {
     href: "/about",
     label: "Our story",

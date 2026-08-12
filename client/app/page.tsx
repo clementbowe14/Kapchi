@@ -1,3 +1,8 @@
+import { Suspense } from "react";
+import {
+  GraduationStoleCatalog,
+  GraduationStoleCatalogSkeleton,
+} from "@/components/GraduationStoleCatalog";
 import { HeroCarousel } from "@/components/HeroCarousel";
 import { homeHeroContent } from "@/content/home-hero";
 
@@ -5,6 +10,10 @@ export default function Home() {
   return (
     <main className="bg-white">
       <HeroCarousel {...homeHeroContent} />
+
+      <Suspense fallback={<GraduationStoleCatalogSkeleton />}>
+        <GraduationStoleCatalog />
+      </Suspense>
 
       <section
         aria-labelledby="craftsmanship-heading"

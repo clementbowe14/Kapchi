@@ -45,6 +45,7 @@ function createListing(
   overrides: Partial<ListingCardListing> = {},
 ): ListingCardListing {
   return {
+    availabilityStatus: "available",
     basePriceCents: 18000,
     currency: "USD",
     customizable: false,
@@ -61,9 +62,31 @@ function createListing(
 }
 
 describe("ListingCard", () => {
-  it("renders image, title, description, and base/from price labels", () => {
+  it("uses one accessible detail link as the card's only focus target", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ListingCard
+        detailsHref="/shop/ivory-graduation-stole"
+        listing={createListing()}
+      />,
+    );
+
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAccessibleName("Ivory Graduation Stole");
+    expect(links[0]).toHaveAttribute("href", "/shop/ivory-graduation-stole");
+    expect(links[0]).toHaveClass("after:absolute", "after:inset-0");
+
+    await user.tab();
+    expect(links[0]).toHaveFocus();
+    await user.tab();
+    expect(links[0]).not.toHaveFocus();
+  });
+
+  it("renders the image, alt text, description, and base price", () => {
     const listing = createListing();
-    const { rerender } = render(<ListingCard listing={listing} />);
+    render(<ListingCard listing={listing} />);
 
     expect(
       screen.getByRole("img", {
@@ -79,8 +102,10 @@ describe("ListingCard", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("$180.00")).toBeInTheDocument();
+  });
 
-    rerender(
+  it("uses the minimum price only when it differs from the base price", () => {
+    const { rerender } = render(
       <ListingCard
         listing={createListing({
           basePriceCents: 22000,
@@ -90,98 +115,124 @@ describe("ListingCard", () => {
     );
 
     expect(screen.getByText("From $160.00")).toBeInTheDocument();
-  });
 
-  it("shows customization and fabric availability states", () => {
-    render(
+    rerender(
       <ListingCard
         listing={createListing({
-          customizable: true,
-          fabricAvailability: {
-            availableQuantity: 3,
-            label: "Ivory satin fabric",
-          },
-          listingType: "graduation_stole",
-          lowStockThreshold: 4,
+          basePriceCents: 22000,
+          minPriceCents: 22000,
         })}
       />,
     );
 
-    expect(screen.getByText("Customizable")).toBeInTheDocument();
-    expect(screen.getByText("Low stock")).toBeInTheDocument();
-    expect(screen.getByText("Ivory satin fabric")).toBeInTheDocument();
-    expect(screen.getByText("3 available")).toBeInTheDocument();
+    expect(screen.getByText("$220.00")).toBeInTheDocument();
+    expect(screen.queryByText(/From/)).not.toBeInTheDocument();
   });
 
   it.each([
-    { buttonName: "Unavailable", status: "unavailable" as const },
-    { buttonName: "Archived", status: "archived" as const },
+    { availabilityStatus: "available" as const, expectedLabel: null },
+    { availabilityStatus: "low_stock" as const, expectedLabel: "Low stock" },
+    {
+      availabilityStatus: "unavailable" as const,
+      expectedLabel: "Unavailable",
+    },
+    { availabilityStatus: "unknown" as const, expectedLabel: null },
   ])(
-    "disables add-to-cart for $status listings",
-    async ({ buttonName, status }) => {
-      const user = userEvent.setup();
-      const handleAddToCart = vi.fn();
+    "renders semantic $availabilityStatus availability without quantities",
+    ({ availabilityStatus, expectedLabel }) => {
+      const listingWithLegacyInventory = {
+        ...createListing({ availabilityStatus }),
+        availableQuantity: 3,
+        fabricAvailability: {
+          availableQuantity: 3,
+          label: "Ivory satin fabric",
+        },
+      };
 
-      render(
-        <ListingCard
-          listing={createListing({ status })}
-          onAddToCart={handleAddToCart}
-        />,
-      );
+      render(<ListingCard listing={listingWithLegacyInventory} />);
 
-      const addButton = screen.getByRole("button", { name: buttonName });
+      if (expectedLabel) {
+        expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+      } else {
+        expect(screen.queryByText("Low stock")).not.toBeInTheDocument();
+        expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+      }
 
-      expect(addButton).toBeDisabled();
-      await user.click(addButton);
-      expect(handleAddToCart).not.toHaveBeenCalled();
-      expect(
-        screen.getByText(`${buttonName} items cannot be added to cart.`),
-      ).toBeInTheDocument();
+      expect(screen.queryByText("3 available")).not.toBeInTheDocument();
+      expect(screen.queryByText("Ivory satin fabric")).not.toBeInTheDocument();
     },
   );
 
-  it("calls add-to-cart and exposes accessible detail links when enabled", async () => {
-    const user = userEvent.setup();
-    const listing = createListing();
-    const handleAddToCart = vi.fn();
-
+  it("styles unavailable listings without adding another interaction", () => {
     render(
       <ListingCard
-        addToCartLabel="Add graduation stole"
-        detailsHref="/shop/ivory-graduation-stole"
-        listing={listing}
-        onAddToCart={handleAddToCart}
+        listing={createListing({ availabilityStatus: "unavailable" })}
       />,
     );
 
-    const imageLink = screen.getByRole("link", {
-      name: "View details for Ivory Graduation Stole",
-    });
-    const addButton = screen.getByRole("button", {
-      name: "Add graduation stole",
-    });
-    const detailsLink = screen.getByRole("link", { name: "View details" });
-
-    expect(imageLink).toHaveAttribute("href", "/shop/ivory-graduation-stole");
-    expect(detailsLink).toHaveAttribute("href", "/shop/ivory-graduation-stole");
-
-    await user.tab();
-    expect(imageLink).toHaveFocus();
-    await user.tab();
-    expect(addButton).toHaveFocus();
-    await user.tab();
-    expect(detailsLink).toHaveFocus();
-
-    await user.click(addButton);
-    expect(handleAddToCart).toHaveBeenCalledTimes(1);
-    expect(handleAddToCart).toHaveBeenCalledWith(listing);
+    expect(screen.getByRole("img")).toHaveClass("opacity-55", "grayscale");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
-  it.todo(
-    "calls a customize action handler when the listing component exposes one",
-  );
+  it("keeps compact customization and admin lifecycle signals", () => {
+    const { rerender } = render(
+      <ListingCard
+        isAdminView
+        listing={createListing({ customizable: true, status: "draft" })}
+      />,
+    );
 
-  it.todo(
-    "calls a view-details action handler when the listing component exposes one",
-  );
+    expect(screen.getByText("Customizable")).toBeInTheDocument();
+    expect(screen.getByText("Draft")).toBeInTheDocument();
+
+    rerender(
+      <ListingCard
+        isAdminView
+        listing={createListing({ status: "archived" })}
+      />,
+    );
+
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getByRole("img")).toHaveClass("opacity-55", "grayscale");
+  });
+
+  it("uses a compact body while preserving the image aspect ratio", () => {
+    const { container } = render(<ListingCard listing={createListing()} />);
+    const article = container.querySelector("article");
+    const imageRegion = screen.getByRole("img").parentElement;
+
+    expect(article).toHaveClass("rounded-lg", "focus-within:ring-2");
+    expect(article).not.toHaveClass("min-h-[31rem]");
+    expect(imageRegion).toHaveClass("aspect-[4/3]");
+    expect(screen.getByRole("heading")).toHaveClass("line-clamp-2");
+    expect(
+      screen.getByText(/An heirloom graduation stole/),
+    ).toHaveClass("line-clamp-2");
+  });
+
+  it("does not render listing action controls or action copy", () => {
+    render(<ListingCard listing={createListing()} />);
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add to cart")).not.toBeInTheDocument();
+    expect(screen.queryByText("View details")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the listing title for image alt text and to Kapchi art", () => {
+    const { rerender } = render(
+      <ListingCard listing={createListing({ imageAlt: null })} />,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "Ivory Graduation Stole" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <ListingCard listing={createListing({ imageAlt: null, imageUrl: null })} />,
+    );
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByText("Kapchi")).toBeInTheDocument();
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
 });
