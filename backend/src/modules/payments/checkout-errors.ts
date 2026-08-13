@@ -24,6 +24,17 @@ export class CheckoutProviderError extends Error {
   }
 }
 
+export class CheckoutCatalogUnavailableError extends Error {
+  readonly code = "CHECKOUT_CATALOG_UNAVAILABLE";
+
+  constructor() {
+    super(
+      "Checkout is unavailable for one or more items. Please contact Kapchi support.",
+    );
+    this.name = "CheckoutCatalogUnavailableError";
+  }
+}
+
 export class CheckoutAlreadyCompleteError extends Error {
   readonly checkoutSessionId: string;
   readonly orderId: string;

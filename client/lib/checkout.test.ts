@@ -5,6 +5,7 @@ import {
   CheckoutApiError,
   checkoutErrorMessage,
   getSafeHostedCheckoutUrl,
+  isRetryableCheckoutError,
   parseCartView,
   validateCheckoutContact,
 } from "./checkout";
@@ -105,5 +106,21 @@ describe("checkout helpers", () => {
 
     expect(checkoutErrorMessage(error)).toContain("temporarily unavailable");
     expect(checkoutErrorMessage(error)).not.toContain("private provider detail");
+    expect(isRetryableCheckoutError(error)).toBe(true);
+  });
+
+  it("maps catalog failures to safe non-retryable guidance", () => {
+    const error = new CheckoutApiError(
+      "CHECKOUT_CATALOG_UNAVAILABLE",
+      503,
+      "resource_missing line_items[0][price] price_private_value",
+    );
+
+    expect(checkoutErrorMessage(error)).toBe(
+      "Secure checkout is unavailable for one or more items. Please contact Kapchi support.",
+    );
+    expect(checkoutErrorMessage(error)).not.toContain("resource_missing");
+    expect(checkoutErrorMessage(error)).not.toContain("price_private_value");
+    expect(isRetryableCheckoutError(error)).toBe(false);
   });
 });

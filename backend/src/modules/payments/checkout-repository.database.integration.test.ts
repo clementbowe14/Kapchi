@@ -1,0 +1,111 @@
+import { randomUUID } from "node:crypto";
+import type { Pool } from "pg";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { loadBackendEnvironment } from "../../config/load-environment.js";
+import { CheckoutRepository } from "./checkout-repository.js";
+
+loadBackendEnvironment();
+
+const integrationDescribe =
+  process.env.RUN_DATABASE_INTEGRATION_TESTS === "true" ? describe : describe.skip;
+
+integrationDescribe("CheckoutRepository catalog failure marker", () => {
+  let cartId: string | null = null;
+  let orderId: string | null = null;
+  let pool: Pool;
+
+  beforeAll(async () => {
+    const { createDatabasePool } = await import("../../database/client.js");
+    pool = createDatabasePool();
+  });
+
+  afterEach(async () => {
+    if (orderId) {
+      await pool.query("delete from orders where id = $1", [orderId]);
+    }
+    if (cartId) {
+      await pool.query("delete from carts where id = $1", [cartId]);
+    }
+    cartId = null;
+    orderId = null;
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+  });
+
+  it("persists one event for concurrent deterministic failures", async () => {
+    cartId = randomUUID();
+    orderId = randomUUID();
+    const userId = `catalog-failure-integration-${cartId}`;
+
+    await pool.query(
+      `
+        insert into carts (
+          id, user_id, status, currency, subtotal_cents, expires_at
+        ) values ($1, $2, 'checkout_started', 'usd', 4500, now() + interval '1 hour')
+      `,
+      [cartId, userId],
+    );
+    await pool.query(
+      `
+        insert into orders (
+          id, public_order_number, user_id, cart_id, status, payment_status,
+          subtotal_cents, total_cents, currency
+        ) values (
+          $1, $2, $3, $4, 'pending_payment', 'checkout_started',
+          4500, 4500, 'usd'
+        )
+      `,
+      [orderId, `CATALOG-${orderId}`, userId, cartId],
+    );
+
+    const repository = new CheckoutRepository(pool);
+    await Promise.all([
+      repository.markCatalogUnavailable(orderId),
+      repository.markCatalogUnavailable(orderId)
+    ]);
+
+    const order = await pool.query<{
+      payment_status: string;
+      status: string;
+      stripe_checkout_session_id: string | null;
+    }>(
+      `select status, payment_status, stripe_checkout_session_id
+       from orders where id = $1`,
+      [orderId],
+    );
+    expect(order.rows).toEqual([{
+      payment_status: "failed",
+      status: "pending_payment",
+      stripe_checkout_session_id: null
+    }]);
+
+    const events = await pool.query<{
+      actor_type: string;
+      event_type: string;
+      metadata: Record<string, unknown>;
+      to_value: string | null;
+    }>(
+      `select actor_type, event_type, to_value, metadata
+       from order_events
+       where order_id = $1 and event_type = 'checkout.catalog_unavailable'`,
+      [orderId],
+    );
+    expect(events.rows).toEqual([{
+      actor_type: "system",
+      event_type: "checkout.catalog_unavailable",
+      metadata: {
+        reason: "missing_checkout_line_item_price",
+        source: "stripe_checkout_session"
+      },
+      to_value: "failed"
+    }]);
+
+    const cart = await pool.query<{ status: string }>(
+      "select status from carts where id = $1",
+      [cartId],
+    );
+    expect(cart.rows).toEqual([{ status: "checkout_started" }]);
+  });
+});
