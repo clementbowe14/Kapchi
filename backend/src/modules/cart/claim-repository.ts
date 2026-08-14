@@ -22,6 +22,7 @@ type CartRow = QueryResultRow & {
   currency: string;
   expires_at: Date | string | null;
   id: string;
+  revision: number;
   subtotal_cents: number;
   user_id: string | null;
 };
@@ -151,7 +152,14 @@ export class CartClaimRepository {
 
       if (!guestCart) {
         if (!accountCart) {
-          return { items: [], subtotalCents: 0, warnings: [] };
+          return {
+            items: [],
+            lineItemCount: 0,
+            revision: 0,
+            subtotalCents: 0,
+            totalQuantity: 0,
+            warnings: []
+          };
         }
 
         await this.assignAuthenticatedOwner(client, accountCart.id, identity, ids);
@@ -332,7 +340,8 @@ export class CartClaimRepository {
     const result = await client.query<CartRow>(
       `
         select
-          id, user_id, authenticated_user_id, currency, subtotal_cents, expires_at
+          id, user_id, authenticated_user_id, currency, subtotal_cents, expires_at,
+          revision
         from carts
         where status = 'active'
           and (authenticated_user_id = $1 or user_id = $2)
@@ -358,7 +367,8 @@ export class CartClaimRepository {
     const result = await client.query<CartRow>(
       `
         select
-          id, user_id, authenticated_user_id, currency, subtotal_cents, expires_at
+          id, user_id, authenticated_user_id, currency, subtotal_cents, expires_at,
+          revision
         from carts
         where id = $1
           and guest_token_hash = $2
@@ -775,7 +785,7 @@ export class CartClaimRepository {
     const updated = await client.query<{ id: string }>(
       `
         update carts
-        set subtotal_cents = $2
+        set subtotal_cents = $2, revision = revision + 1
         where id = $1 and status = 'active'
         returning id
       `,
@@ -790,8 +800,8 @@ export class CartClaimRepository {
     client: Queryable,
     cartId: string,
   ): Promise<AuthenticatedCartView> {
-    const cartResult = await client.query<{ subtotal_cents: number }>(
-      "select subtotal_cents from carts where id = $1 and status = 'active'",
+    const cartResult = await client.query<{ revision: number; subtotal_cents: number }>(
+      "select subtotal_cents, revision from carts where id = $1 and status = 'active'",
       [cartId],
     );
     const warningResult = await client.query<{
@@ -808,10 +818,15 @@ export class CartClaimRepository {
       [cartId],
     );
 
+    const items = await this.cartRepository.loadProjection(client, cartId);
+
     return {
       cartId,
-      items: await this.cartRepository.loadProjection(client, cartId),
+      items,
+      lineItemCount: items.length,
+      revision: cartResult.rows[0]?.revision ?? 0,
       subtotalCents: cartResult.rows[0]?.subtotal_cents ?? 0,
+      totalQuantity: items.reduce((total, item) => total + item.quantity, 0),
       warnings: warningResult.rows.map((row) => ({
         cartItemId: row.id,
         message: row.validation_message ?? genericWarning(row.validation_status),

@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import { buildApiUrl } from "@/lib/api";
+import { publishCartInvalidation } from "@/lib/cart-state";
 import {
   cartNeedsReview,
   buildCartItemMutation,
@@ -53,7 +54,10 @@ type CartCheckoutClientProps = {
 
 const EMPTY_CART: CartView = {
   items: [],
+  lineItemCount: 0,
+  revision: 0,
   subtotalCents: 0,
+  totalQuantity: 0,
   warnings: [],
 };
 
@@ -93,7 +97,7 @@ function recoveryToken(body: Record<string, unknown>) {
 }
 
 function cartPhaseFor(cart: CartView): CartPhase {
-  if (cart.items.length === 0) {
+  if (cart.totalQuantity === 0) {
     return "empty";
   }
 
@@ -285,7 +289,7 @@ export function CartCheckoutClient({
   redirectToConfirmation = defaultRedirect,
   requestTimeoutMs = 15_000,
 }: CartCheckoutClientProps) {
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { getToken, isLoaded: authLoaded, isSignedIn, userId } = useAuth();
   const { user } = useUser();
   const signedIn = Boolean(isSignedIn);
   const [cart, setCart] = useState<CartView | null>(null);
@@ -315,12 +319,38 @@ export function CartCheckoutClient({
   const [checkoutNotice, setCheckoutNotice] =
     useState<CheckoutNotice | null>(null);
   const loadSequence = useRef(0);
+  const cartGeneration = useRef(0);
+  const cartOwner = useRef<string | null>(null);
+  const cartRevision = useRef(-1);
   const submitGuard = useRef(false);
   const emailInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const checkoutNoticeRef = useRef<HTMLDivElement>(null);
 
   const accountEmail = user?.primaryEmailAddress?.emailAddress?.trim() ?? "";
+
+  const commitCart = useCallback((nextCart: CartView, generation: number) => {
+    if (
+      generation !== cartGeneration.current ||
+      nextCart.revision < cartRevision.current
+    ) {
+      return false;
+    }
+
+    cartRevision.current = nextCart.revision;
+    setCart(nextCart);
+    setCartPhase(cartPhaseFor(nextCart));
+    return true;
+  }, []);
+
+  const clearMissingCart = useCallback(() => {
+    loadSequence.current += 1;
+    cartGeneration.current += 1;
+    cartRevision.current = 0;
+    setCart(EMPTY_CART);
+    setCartPhase("empty");
+    publishCartInvalidation();
+  }, []);
 
   useEffect(() => {
     if (signedIn && accountEmail) {
@@ -334,7 +364,16 @@ export function CartCheckoutClient({
       return;
     }
 
+    const ownerKey = signedIn ? `account:${userId ?? "unknown"}` : "guest";
+    if (cartOwner.current !== ownerKey) {
+      cartOwner.current = ownerKey;
+      cartGeneration.current += 1;
+      cartRevision.current = -1;
+      setCart(null);
+    }
+
     const sequence = ++loadSequence.current;
+    const generation = cartGeneration.current;
     setLoadError("");
     setClaimNotice("");
     setRemoveError(null);
@@ -342,6 +381,7 @@ export function CartCheckoutClient({
 
     try {
       let headers: HeadersInit | undefined;
+      let loadedCart: CartView | null = null;
 
       if (signedIn) {
         setCartPhase("claiming_cart");
@@ -359,7 +399,7 @@ export function CartCheckoutClient({
           const claimResponse = await fetchWithTimeout(
             buildApiUrl("/cart/claim"),
             {
-              credentials: "same-origin",
+              credentials: "include",
               headers,
               method: "POST",
             },
@@ -375,6 +415,9 @@ export function CartCheckoutClient({
                   : "We could not merge a guest cart into your account. Your account cart is shown below.",
               );
             }
+          } else {
+            loadedCart = parseCartView(await claimResponse.json());
+            publishCartInvalidation();
           }
         } catch {
           setClaimNotice(
@@ -383,39 +426,37 @@ export function CartCheckoutClient({
         }
       }
 
-      setCartPhase("loading_cart");
-      const response = await fetchWithTimeout(
-        buildApiUrl("/cart/"),
-        {
-          credentials: "same-origin",
-          headers,
-        },
-        requestTimeoutMs,
-      );
+      if (!loadedCart) {
+        setCartPhase("loading_cart");
+        const response = await fetchWithTimeout(
+          buildApiUrl("/cart/"),
+          {
+            cache: "no-store",
+            credentials: "include",
+            headers,
+          },
+          requestTimeoutMs,
+        );
 
-      if (!response.ok) {
-        throw await readCheckoutApiError(response);
+        if (!response.ok) {
+          throw await readCheckoutApiError(response);
+        }
+
+        loadedCart = parseCartView(await response.json());
       }
 
-      const loadedCart = parseCartView(await response.json());
       if (sequence !== loadSequence.current) {
         return;
       }
 
-      setCart(loadedCart);
-      setCartPhase(cartPhaseFor(loadedCart));
-      window.dispatchEvent(
-        new CustomEvent("kapchi:cart-updated", {
-          detail: {
-            count: loadedCart.items.reduce(
-              (total, item) => total + item.quantity,
-              0,
-            ),
-          },
-        }),
-      );
+      commitCart(loadedCart, generation);
     } catch (error) {
       if (sequence !== loadSequence.current) {
+        return;
+      }
+
+      if (error instanceof CheckoutApiError && error.code === "CART_NOT_FOUND") {
+        clearMissingCart();
         return;
       }
 
@@ -427,7 +468,15 @@ export function CartCheckoutClient({
           : "We could not load your cart. Check your connection and try again.",
       );
     }
-  }, [authLoaded, getToken, requestTimeoutMs, signedIn]);
+  }, [
+    authLoaded,
+    clearMissingCart,
+    commitCart,
+    getToken,
+    requestTimeoutMs,
+    signedIn,
+    userId,
+  ]);
 
   useEffect(() => {
     void loadCart();
@@ -455,39 +504,34 @@ export function CartCheckoutClient({
 
     setRemovingId(cartItemId);
     setRemoveError(null);
+    const generation = cartGeneration.current;
+    let receivedResponse = false;
 
     try {
       const response = await fetchWithTimeout(
         buildApiUrl(`/cart/items/${encodeURIComponent(cartItemId)}`),
         {
-          credentials: "same-origin",
+          credentials: "include",
           method: "DELETE",
         },
         requestTimeoutMs,
       );
+      receivedResponse = true;
 
       if (!response.ok) {
         throw await readCheckoutApiError(response);
       }
 
       const updatedCart = parseCartView(await response.json());
-      setCart(updatedCart);
-      setCartPhase(cartPhaseFor(updatedCart));
-      window.dispatchEvent(
-        new CustomEvent("kapchi:cart-updated", {
-          detail: {
-            count: updatedCart.items.reduce(
-              (total, item) => total + item.quantity,
-              0,
-            ),
-          },
-        }),
-      );
+      commitCart(updatedCart, generation);
+      publishCartInvalidation();
     } catch (error) {
       if (error instanceof CheckoutApiError && error.code === "CART_NOT_FOUND") {
-        setCart(EMPTY_CART);
-        setCartPhase("empty");
+        clearMissingCart();
       } else {
+        if (!receivedResponse) {
+          publishCartInvalidation();
+        }
         setRemoveError({
           cartItemId,
           message: "We could not remove this item. Try again.",
@@ -505,41 +549,36 @@ export function CartCheckoutClient({
 
     setUpdatingId(line.cartItemId);
     setUpdateError(null);
+    const generation = cartGeneration.current;
+    let receivedResponse = false;
 
     try {
       const response = await fetchWithTimeout(
         buildApiUrl(`/cart/items/${encodeURIComponent(line.cartItemId)}`),
         {
           body: JSON.stringify(buildCartItemMutation(line, quantity)),
-          credentials: "same-origin",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           method: "PATCH",
         },
         requestTimeoutMs,
       );
+      receivedResponse = true;
 
       if (!response.ok) {
         throw await readCheckoutApiError(response);
       }
 
       const updatedCart = parseCartView(await response.json());
-      setCart(updatedCart);
-      setCartPhase(cartPhaseFor(updatedCart));
-      window.dispatchEvent(
-        new CustomEvent("kapchi:cart-updated", {
-          detail: {
-            count: updatedCart.items.reduce(
-              (total, item) => total + item.quantity,
-              0,
-            ),
-          },
-        }),
-      );
+      commitCart(updatedCart, generation);
+      publishCartInvalidation();
     } catch (error) {
       if (error instanceof CheckoutApiError && error.code === "CART_NOT_FOUND") {
-        setCart(EMPTY_CART);
-        setCartPhase("empty");
+        clearMissingCart();
       } else {
+        if (!receivedResponse) {
+          publishCartInvalidation();
+        }
         setUpdateError({
           cartItemId: line.cartItemId,
           message: "We could not update this quantity. Try again.",
@@ -553,7 +592,14 @@ export function CartCheckoutClient({
   async function handleCheckout(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (submitGuard.current || !cart || cart.items.length === 0 || needsReview) {
+    if (
+      submitGuard.current ||
+      !cart ||
+      cart.totalQuantity === 0 ||
+      needsReview ||
+      Boolean(removingId) ||
+      Boolean(updatingId)
+    ) {
       return;
     }
 
@@ -609,7 +655,7 @@ export function CartCheckoutClient({
             customerPhone: phone.trim() || null,
             preferredContactMethod,
           }),
-          credentials: "same-origin",
+          credentials: "include",
           headers,
           method: "POST",
         },
@@ -645,8 +691,7 @@ export function CartCheckoutClient({
         error instanceof CheckoutApiError &&
         error.code === "CART_NOT_FOUND"
       ) {
-        setCart(EMPTY_CART);
-        setCartPhase("empty");
+        clearMissingCart();
       }
 
       if (
@@ -767,7 +812,8 @@ export function CartCheckoutClient({
                   Your items
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  {cart.items.length} {cart.items.length === 1 ? "item" : "items"}
+                  {cart.totalQuantity}{" "}
+                  {cart.totalQuantity === 1 ? "item" : "items"}
                 </p>
               </div>
               <button
@@ -959,6 +1005,7 @@ export function CartCheckoutClient({
                   {checkoutNotice.retryable ? (
                     <button
                       className="mt-2 min-h-10 font-semibold underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                      disabled={Boolean(removingId) || Boolean(updatingId)}
                       type="submit"
                     >
                       Try checkout again
@@ -969,7 +1016,12 @@ export function CartCheckoutClient({
 
               <button
                 className="flex min-h-12 w-full items-center justify-center rounded-lg bg-[#b49872] px-5 text-base font-semibold text-white transition hover:bg-[#a1845f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300"
-                disabled={needsReview || checkoutPhase !== "idle"}
+                disabled={
+                  needsReview ||
+                  checkoutPhase !== "idle" ||
+                  Boolean(removingId) ||
+                  Boolean(updatingId)
+                }
                 type="submit"
               >
                 {checkoutPhase === "submitting"

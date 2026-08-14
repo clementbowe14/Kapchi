@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import type { RedisClientType } from "redis";
 
 const envDefaults: Record<string, string> = {
   CLERK_JWKS_URL: "https://clerk.test/.well-known/jwks.json",
@@ -26,7 +25,7 @@ for (const [key, value] of Object.entries(envDefaults)) {
   process.env[key] = value;
 }
 
-const { CartService } = await import("./service.js");
+const { CartService, fingerprintCartItemInput } = await import("./service.js");
 
 const ids = {
   asset: "1d66d9cc-0987-46e1-b719-c3e5a09f5013",
@@ -39,6 +38,7 @@ const ids = {
   variant: "661f833a-41c5-4ec9-8232-e1883f6be7ed"
 };
 const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
+const idempotencyKey = "add-graduation-stole-1";
 const expiresAt = "2027-08-01T12:00:00.000Z";
 
 function input() {
@@ -105,8 +105,17 @@ function displayItem() {
 
 function createPool({
   authorized = true,
-  cartExpiresAt = expiresAt
-}: { authorized?: boolean; cartExpiresAt?: string } = {}) {
+  cartExpiresAt = expiresAt,
+  idempotencyFingerprint = null,
+  revision = 0,
+  subtotalCents = 0
+}: {
+  authorized?: boolean;
+  cartExpiresAt?: string;
+  idempotencyFingerprint?: string | null;
+  revision?: number;
+  subtotalCents?: number;
+} = {}) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
   const release = vi.fn();
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
@@ -123,7 +132,20 @@ function createPool({
                 id: ids.cart,
                 currency: "usd",
                 expires_at: cartExpiresAt,
-                subtotal_cents: 0
+                revision,
+                subtotal_cents: subtotalCents
+              }
+            ]
+          : []
+      };
+    }
+    if (sql.includes("from cart_add_idempotency_keys")) {
+      return {
+        rows: idempotencyFingerprint
+          ? [
+              {
+                cart_item_id: ids.cartItem,
+                request_fingerprint: idempotencyFingerprint
               }
             ]
           : []
@@ -157,10 +179,13 @@ function createPool({
       return { rows: [{ subtotal_cents: "17000" }] };
     }
     if (sql.includes("update carts")) {
-      return { rows: [{ subtotal_cents: 17000 }] };
+      return { rows: [{ revision: 1, subtotal_cents: 17000 }] };
     }
     if (sql.includes("from cart_items ci") && sql.includes("join listings")) {
       return { rows: [projectionRow()] };
+    }
+    if (sql.includes("count(*)::integer as line_item_count")) {
+      return { rows: [{ line_item_count: 1, total_quantity: "2" }] };
     }
 
     return { rows: [] };
@@ -172,21 +197,6 @@ function createPool({
   } as unknown as Pool;
 
   return { calls, pool, query, release };
-}
-
-function createRedis(setError?: Error, cachedValue: string | null = null) {
-  const setEx = vi.fn(async (_key: string, _ttl: number, _value: string) => {
-    if (setError) {
-      throw setError;
-    }
-    return "OK";
-  });
-  const redis = {
-    del: vi.fn(async () => 1),
-    get: vi.fn(async () => cachedValue),
-    setEx
-  } as unknown as RedisClientType;
-  return { redis, setEx };
 }
 
 function createCustomPool(
@@ -204,6 +214,9 @@ function createCustomPool(
 
 function createReadPool() {
   const query = vi.fn(async (sql: string) => {
+    if (sql.startsWith("begin") || sql === "commit" || sql === "rollback") {
+      return { rows: [] };
+    }
     if (sql.includes("from carts")) {
       return {
         rows: [
@@ -211,6 +224,7 @@ function createReadPool() {
             id: ids.cart,
             currency: "usd",
             expires_at: expiresAt,
+            revision: 7,
             subtotal_cents: 17000
           }
         ]
@@ -219,41 +233,67 @@ function createReadPool() {
     if (sql.includes("from cart_items ci") && sql.includes("join listings")) {
       return { rows: [projectionRow()] };
     }
+    if (sql.includes("count(*)::integer as line_item_count")) {
+      return { rows: [{ line_item_count: 1, total_quantity: "2" }] };
+    }
     return { rows: [] };
   });
+  const client = { query, release: vi.fn() } as unknown as PoolClient;
   const pool = {
-    connect: vi.fn(),
-    query
+    connect: vi.fn(async () => client),
+    query: vi.fn()
   } as unknown as Pool;
 
   return { pool, query };
 }
 
-describe("CartService guest mutations", () => {
-  const logger = { warn: vi.fn() };
+describe("cart add fingerprint", () => {
+  it("is stable across object insertion order and covers every fixed input field", () => {
+    const original = input();
+    const reordered = {
+      trimOptionId: original.trimOptionId,
+      quantity: original.quantity,
+      listingPriceVariantId: original.listingPriceVariantId,
+      listingId: original.listingId,
+      listingCustomizationSetId: original.listingCustomizationSetId,
+      line2: original.line2,
+      line1: original.line1,
+      imageAssetId: original.imageAssetId,
+      fontOptionId: original.fontOptionId,
+      fabricId: original.fabricId
+    };
 
-  beforeEach(() => {
-    logger.warn.mockReset();
+    expect(fingerprintCartItemInput(reordered)).toBe(
+      fingerprintCartItemInput(original),
+    );
+    expect(
+      fingerprintCartItemInput({ ...original, line2: `${original.line2}!` }),
+    ).not.toBe(fingerprintCartItemInput(original));
   });
+});
 
+describe("CartService guest mutations", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("locks hashed durable ownership and persists server-derived pricing", async () => {
+  it("locks hashed ownership and persists pricing, idempotency, counts, and revision", async () => {
     const { calls, pool, query, release } = createPool();
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     const result = await service.addGuestItem(
       { cartId: ids.cart, sessionId },
       input(),
+      idempotencyKey,
     );
 
     expect(result).toMatchObject({
       cartId: ids.cart,
       cartItemId: ids.cartItem,
-      subtotalCents: 17000
+      lineItemCount: 1,
+      revision: 1,
+      subtotalCents: 17000,
+      totalQuantity: 2
     });
     const lockCall = calls.find(({ sql }) => sql.includes("from carts"));
     expect(lockCall?.values).toEqual([
@@ -262,63 +302,84 @@ describe("CartService guest mutations", () => {
     ]);
     const insertCall = calls.find(({ sql }) => sql.includes("insert into cart_items"));
     expect(insertCall?.values[6]).toBe(8500);
-    expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
-    expect(setEx).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(setEx.mock.calls[0][2]))[0]).not.toHaveProperty(
-      "privateUrl",
+    const idempotencyInsert = calls.find(({ sql }) =>
+      sql.includes("insert into cart_add_idempotency_keys"),
     );
+    expect(idempotencyInsert?.values).toEqual([
+      ids.cart,
+      idempotencyKey,
+      fingerprintCartItemInput(input()),
+      ids.cartItem
+    ]);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("rolls back without writing Redis when durable ownership fails", async () => {
+  it("rolls back when durable ownership fails", async () => {
     const { pool, query } = createPool({ authorized: false });
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     await expect(
-      service.addGuestItem({ cartId: ids.cart, sessionId }, input()),
+      service.addGuestItem(
+        { cartId: ids.cart, sessionId },
+        input(),
+        idempotencyKey,
+      ),
     ).rejects.toMatchObject({ name: "CartNotFoundError" });
 
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
-    expect(setEx).not.toHaveBeenCalled();
   });
 
-  it("keeps the committed mutation when disposable cache refresh fails", async () => {
-    const { pool, query } = createPool();
-    const { redis } = createRedis(new Error("redis://secret-host unavailable"));
-    const service = new CartService(pool, redis, logger as never);
+  it("rejects an invalid idempotency key before opening a transaction", async () => {
+    const { pool } = createPool();
+    const service = new CartService(pool);
+
+    await expect(
+      service.addGuestItem({ cartId: ids.cart, sessionId }, input(), ""),
+    ).rejects.toMatchObject({ name: "CartValidationError" });
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("replays the original add result without another item or revision", async () => {
+    const itemInput = input();
+    const { calls, pool } = createPool({
+      idempotencyFingerprint: fingerprintCartItemInput(itemInput),
+      revision: 4,
+      subtotalCents: 17000
+    });
+    const service = new CartService(pool);
 
     const result = await service.addGuestItem(
       { cartId: ids.cart, sessionId },
-      input(),
+      itemInput,
+      idempotencyKey,
     );
 
-    expect(result.cartItemId).toBe(ids.cartItem);
-    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(true);
-    expect(logger.warn).toHaveBeenCalledWith(
-      {
-        cartId: ids.cart,
-        cacheError: { name: "Error" }
-      },
-      "Guest cart projection refresh failed",
-    );
-    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("secret-host");
+    expect(result).toMatchObject({
+      cartItemId: ids.cartItem,
+      lineItemCount: 1,
+      revision: 4,
+      subtotalCents: 17000,
+      totalQuantity: 2
+    });
+    expect(calls.some(({ sql }) => sql.includes("insert into cart_items"))).toBe(false);
+    expect(calls.some(({ sql }) => sql.includes("update carts"))).toBe(false);
   });
 
-  it("writes the projection with the remaining durable cart lifetime", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2027-08-01T11:00:00.000Z");
-    const { pool } = createPool({ cartExpiresAt: expiresAt });
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+  it("rejects reuse of an idempotency key with different fixed input", async () => {
+    const { calls, pool } = createPool({
+      idempotencyFingerprint: fingerprintCartItemInput(input())
+    });
+    const service = new CartService(pool);
 
-    await service.addGuestItem({ cartId: ids.cart, sessionId }, input());
-
-    expect(setEx).toHaveBeenCalledWith(
-      `guest_cart:${ids.cart}:items`,
-      3600,
-      expect.any(String),
-    );
+    await expect(
+      service.addGuestItem(
+        { cartId: ids.cart, sessionId },
+        { ...input(), quantity: 3 },
+        idempotencyKey,
+      ),
+    ).rejects.toMatchObject({ name: "CartIdempotencyConflictError" });
+    expect(calls.some(({ sql }) => sql.includes("insert into cart_items"))).toBe(false);
   });
 
   it("locks an owned image and rolls back when conditional attachment loses the row", async () => {
@@ -331,9 +392,10 @@ describe("CartService guest mutations", () => {
           rows: [
             {
               id: ids.cart,
-              currency: "usd",
-              expires_at: expiresAt,
-              subtotal_cents: 0
+                currency: "usd",
+                expires_at: expiresAt,
+                revision: 0,
+                subtotal_cents: 0
             }
           ]
         };
@@ -370,13 +432,13 @@ describe("CartService guest mutations", () => {
       }
       return { rows: [] };
     });
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     await expect(
       service.addGuestItem(
         { cartId: ids.cart, sessionId },
         { ...input(), imageAssetId: ids.asset },
+        idempotencyKey,
       ),
     ).rejects.toMatchObject({ name: "CartConflictError" });
 
@@ -388,7 +450,6 @@ describe("CartService guest mutations", () => {
       "status in ('uploaded', 'attached')",
     );
     expect(sql.at(-1)).toBe("rollback");
-    expect(setEx).not.toHaveBeenCalled();
   });
 
   it("rolls back before writing an overflowing subtotal", async () => {
@@ -401,9 +462,10 @@ describe("CartService guest mutations", () => {
           rows: [
             {
               id: ids.cart,
-              currency: "usd",
-              expires_at: expiresAt,
-              subtotal_cents: 0
+                currency: "usd",
+                expires_at: expiresAt,
+                revision: 0,
+                subtotal_cents: 0
             }
           ]
         };
@@ -437,11 +499,14 @@ describe("CartService guest mutations", () => {
       }
       return { rows: [] };
     });
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     await expect(
-      service.addGuestItem({ cartId: ids.cart, sessionId }, input()),
+      service.addGuestItem(
+        { cartId: ids.cart, sessionId },
+        input(),
+        idempotencyKey,
+      ),
     ).rejects.toMatchObject({
       message: "Cart total exceeds the supported maximum.",
       name: "CartConflictError"
@@ -452,7 +517,6 @@ describe("CartService guest mutations", () => {
       false,
     );
     expect(sql.at(-1)).toBe("rollback");
-    expect(setEx).not.toHaveBeenCalled();
   });
 
   it("releases fabric inventory and an unreferenced asset when removing a line", async () => {
@@ -465,9 +529,10 @@ describe("CartService guest mutations", () => {
           rows: [
             {
               id: ids.cart,
-              currency: "usd",
-              expires_at: expiresAt,
-              subtotal_cents: 8500
+                currency: "usd",
+                expires_at: expiresAt,
+                revision: 3,
+                subtotal_cents: 8500
             }
           ]
         };
@@ -499,12 +564,11 @@ describe("CartService guest mutations", () => {
         return { rows: [{ subtotal_cents: "0" }] };
       }
       if (sql.includes("update carts")) {
-        return { rows: [{ subtotal_cents: 0 }] };
+        return { rows: [{ revision: 4, subtotal_cents: 0 }] };
       }
       return { rows: [] };
     });
-    const { redis } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     const result = await service.removeGuestItem(
       { cartId: ids.cart, sessionId },
@@ -512,6 +576,11 @@ describe("CartService guest mutations", () => {
     );
 
     expect(result.items).toEqual([]);
+    expect(result).toMatchObject({
+      lineItemCount: 0,
+      revision: 4,
+      totalQuantity: 0
+    });
     const sql = query.mock.calls.map(([statement]) => String(statement));
     expect(sql.findIndex((statement) => statement.includes("status = 'released'"))).toBeLessThan(
       sql.findIndex((statement) => statement.includes("delete from cart_items")),
@@ -532,9 +601,10 @@ describe("CartService guest mutations", () => {
           rows: [
             {
               id: ids.cart,
-              currency: "usd",
-              expires_at: expiresAt,
-              subtotal_cents: 8500
+                currency: "usd",
+                expires_at: expiresAt,
+                revision: 3,
+                subtotal_cents: 8500
             }
           ]
         };
@@ -598,8 +668,7 @@ describe("CartService guest mutations", () => {
       }
       return { rows: [] };
     });
-    const { redis, setEx } = createRedis();
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     await expect(
       service.updateGuestItem(
@@ -610,45 +679,54 @@ describe("CartService guest mutations", () => {
     ).rejects.toMatchObject({ name: "CartConflictError" });
 
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
-    expect(setEx).not.toHaveBeenCalled();
   });
 });
 
 describe("CartService guest display projection", () => {
-  const logger = { warn: vi.fn() };
-
-  beforeEach(() => {
-    logger.warn.mockReset();
-  });
-
-  it("returns a valid cache hit after only durable cart-shell validation", async () => {
+  it("always reads the authoritative PostgreSQL projection in one snapshot", async () => {
     const { pool, query } = createReadPool();
-    const { redis, setEx } = createRedis(undefined, JSON.stringify([displayItem()]));
-    const service = new CartService(pool, redis, logger as never);
+    const service = new CartService(pool);
 
     const result = await service.getGuestCart({ cartId: ids.cart, sessionId });
 
-    expect(result.items).toEqual([displayItem()]);
-    expect(query).toHaveBeenCalledOnce();
-    expect(String(query.mock.calls[0][0])).toContain("from carts");
-    expect(String(query.mock.calls[0][0])).not.toContain("join listings");
-    expect(setEx).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["a cache miss", null],
-    ["a rejected cache value", "{malformed"]
-  ])("rebuilds the PostgreSQL projection after %s", async (_label, cachedValue) => {
-    const { pool, query } = createReadPool();
-    const { redis, setEx } = createRedis(undefined, cachedValue);
-    const service = new CartService(pool, redis, logger as never);
-
-    const result = await service.getGuestCart({ cartId: ids.cart, sessionId });
-
-    expect(result.items).toEqual([displayItem()]);
+    expect(result).toMatchObject({
+      items: [displayItem()],
+      lineItemCount: 1,
+      revision: 7,
+      subtotalCents: 17000,
+      totalQuantity: 2
+    });
+    expect(query.mock.calls[0]?.[0]).toBe(
+      "begin transaction isolation level repeatable read read only",
+    );
     expect(
       query.mock.calls.some(([sql]) => String(sql).includes("join listings")),
     ).toBe(true);
-    expect(setEx).toHaveBeenCalledOnce();
+    expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
+
+  it("returns canonical summary counts without creating a cart", async () => {
+    const { pool, query } = createReadPool();
+    const service = new CartService(pool);
+
+    await expect(
+      service.getGuestCartSummary({ cartId: ids.cart, sessionId }),
+    ).resolves.toEqual({
+      cartId: ids.cart,
+      lineItemCount: 1,
+      revision: 7,
+      totalQuantity: 2
+    });
+    await expect(service.getGuestCartSummary(null)).resolves.toEqual({
+      lineItemCount: 0,
+      revision: 0,
+      totalQuantity: 0
+    });
+
+    expect(
+      query.mock.calls.some(([sql]) =>
+        String(sql).includes("count(*)::integer as line_item_count"),
+      ),
+    ).toBe(true);
   });
 });

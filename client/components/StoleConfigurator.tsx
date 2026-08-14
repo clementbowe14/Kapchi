@@ -3,9 +3,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ImageIcon, ShoppingCart, Type, WandSparkles } from "lucide-react";
-import { useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CustomizationImageUpload } from "./CustomizationImageUpload";
 import { buildApiUrl } from "@/lib/api";
+import { publishCartInvalidation } from "@/lib/cart-state";
 import { parseCartView, readCheckoutApiError } from "@/lib/checkout";
 import type {
   CustomizationPackage,
@@ -16,6 +17,14 @@ import type {
 export const CUSTOMIZATION_POLICY_NOTICE =
   "Only customizations included in your selected package will be produced. Requests for unpaid additions will be rejected; update your package before checkout.";
 const CART_REQUEST_TIMEOUT_MS = 15_000;
+
+function createIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 type ConfiguratorState = {
   fabricId: string | null;
@@ -199,6 +208,11 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
   const [guestCartState, setGuestCartState] = useState<
     "idle" | "loading" | "error"
   >("idle");
+  const addGuard = useRef(false);
+  const guestCartPreparation = useRef<Promise<string | null> | null>(null);
+  const pendingAdd = useRef<{ idempotencyKey: string; payloadKey: string } | null>(
+    null,
+  );
   const selectedPackage =
     listing.customizationPackages.find((item) => item.id === state.packageId) ?? null;
   const selectedVariant = useMemo(() => {
@@ -265,26 +279,61 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
 
     return null;
   })();
+  const addPayload =
+    selectedPackage && selectedVariant
+      ? {
+          fabricId: state.fabricId,
+          fontOptionId: state.fontId,
+          imageAssetId: state.imageAssetId,
+          line1: state.text.trim(),
+          line2: "",
+          listingCustomizationSetId: selectedPackage.id,
+          listingId: listing.id,
+          listingPriceVariantId: selectedVariant.id,
+          quantity: 1,
+          trimOptionId: state.trimId,
+        }
+      : null;
+  const addPayloadKey = addPayload ? JSON.stringify(addPayload) : "";
+
+  useEffect(() => {
+    pendingAdd.current = null;
+  }, [addPayloadKey]);
 
   async function prepareGuestCart() {
-    if (guestCartId || guestCartState === "loading") return guestCartId;
+    if (guestCartId) return guestCartId;
+    if (guestCartPreparation.current) return guestCartPreparation.current;
 
     setGuestCartState("loading");
+    const preparation = (async () => {
+      try {
+        const response = await fetchCart(buildApiUrl("/cart/"), {
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (!response.ok) throw await readCheckoutApiError(response);
+
+        const cart = parseCartView(await response.json());
+        if (!cart.cartId) {
+          throw new Error("Cart response did not include an identifier.");
+        }
+
+        setGuestCartId(cart.cartId);
+        setGuestCartState("idle");
+        return cart.cartId;
+      } catch {
+        setGuestCartState("error");
+        return null;
+      }
+    })();
+
+    guestCartPreparation.current = preparation;
     try {
-      const response = await fetchCart(buildApiUrl("/cart/"), {
-        credentials: "same-origin",
-      });
-      if (!response.ok) throw await readCheckoutApiError(response);
-
-      const cart = parseCartView(await response.json());
-      if (!cart.cartId) throw new Error("Cart response did not include an identifier.");
-
-      setGuestCartId(cart.cartId);
-      setGuestCartState("idle");
-      return cart.cartId;
-    } catch {
-      setGuestCartState("error");
-      return null;
+      return await preparation;
+    } finally {
+      if (guestCartPreparation.current === preparation) {
+        guestCartPreparation.current = null;
+      }
     }
   }
 
@@ -298,46 +347,60 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
   }
 
   async function addToCart() {
-    if (configurationError || !selectedPackage || !selectedVariant) return;
+    if (addGuard.current || configurationError || !addPayload) return;
 
+    addGuard.current = true;
     setAddError("");
     setAddState("adding");
+    const attempt =
+      pendingAdd.current?.payloadKey === addPayloadKey
+        ? pendingAdd.current
+        : { idempotencyKey: createIdempotencyKey(), payloadKey: addPayloadKey };
+    pendingAdd.current = attempt;
+    let outcomeIsAmbiguous = true;
+
     try {
       const response = await fetchCart(buildApiUrl("/cart/items"), {
-        body: JSON.stringify({
-          fabricId: state.fabricId,
-          fontOptionId: state.fontId,
-          imageAssetId: state.imageAssetId,
-          line1: state.text.trim(),
-          line2: "",
-          listingCustomizationSetId: selectedPackage.id,
-          listingId: listing.id,
-          listingPriceVariantId: selectedVariant.id,
-          quantity: 1,
-          trimOptionId: state.trimId,
-        }),
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(addPayload),
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": attempt.idempotencyKey,
+        },
         method: "POST",
       });
 
-      if (!response.ok) throw await readCheckoutApiError(response);
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 500) {
+          outcomeIsAmbiguous = false;
+          pendingAdd.current = null;
+        }
+        throw await readCheckoutApiError(response);
+      }
 
-      const cart = parseCartView(await response.json());
-      setGuestCartId(cart.cartId ?? guestCartId);
+      outcomeIsAmbiguous = false;
+      pendingAdd.current = null;
+      publishCartInvalidation();
       setAddState("success");
-      window.dispatchEvent(
-        new CustomEvent("kapchi:cart-updated", {
-          detail: {
-            count: cart.items.reduce((total, item) => total + item.quantity, 0),
-          },
-        }),
-      );
+
+      try {
+        const cart = parseCartView(await response.json());
+        if (cart.cartId) {
+          setGuestCartId(cart.cartId);
+        }
+      } catch {
+        // The 2xx confirms the mutation; the invalidation refreshes canonical state.
+      }
     } catch {
+      if (outcomeIsAmbiguous) {
+        publishCartInvalidation();
+      }
       setAddState("idle");
       setAddError(
         "We could not confirm that this item was added. Check your cart before trying again.",
       );
+    } finally {
+      addGuard.current = false;
     }
   }
 

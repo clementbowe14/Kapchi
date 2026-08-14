@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Pool } from "pg";
-import type { RedisClientType } from "redis";
+import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadBackendEnvironment } from "../../config/load-environment.js";
 import type { CartItemInput } from "./types.js";
@@ -39,18 +38,7 @@ integrationDescribe("guest cart database lifecycle", () => {
     ]);
     pool = createDatabasePool();
 
-    const cache = new Map<string, string>();
-    const redis = {
-      async get(key: string) {
-        return cache.get(key) ?? null;
-      },
-      async setEx(key: string, _ttl: number, value: string) {
-        cache.set(key, value);
-        return "OK";
-      },
-    } as unknown as RedisClientType;
-
-    service = new CartService(pool, redis, { warn() {} });
+    service = new CartService(pool);
     await pool.query(
       `
         insert into carts (id, guest_token_hash, status, currency, expires_at)
@@ -233,10 +221,48 @@ integrationDescribe("guest cart database lifecycle", () => {
           quantity: 1,
           trimOptionId,
         };
-        const result = await service.addGuestItem({ cartId, sessionId }, input);
+        const idempotencyKey = `integration-add-${customization.kind}`;
+        const attempts =
+          customization.kind === "blank"
+            ? await Promise.all([
+                service.addGuestItem(
+                  { cartId, sessionId },
+                  input,
+                  idempotencyKey,
+                ),
+                service.addGuestItem(
+                  { cartId, sessionId },
+                  input,
+                  idempotencyKey,
+                ),
+              ])
+            : [
+                await service.addGuestItem(
+                  { cartId, sessionId },
+                  input,
+                  idempotencyKey,
+                )
+              ];
+        const result = attempts[0];
         expect(result.cartItemId).toBeDefined();
+        expect(new Set(attempts.map((attempt) => attempt.cartItemId))).toEqual(
+          new Set([result.cartItemId]),
+        );
+        expect(new Set(attempts.map((attempt) => attempt.revision))).toEqual(
+          new Set([result.revision]),
+        );
         itemIds.set(customization.kind, result.cartItemId!);
         inputs.set(customization.kind, input);
+
+        if (customization.kind === "blank") {
+          await expect(
+            service.addGuestItem(
+              { cartId, sessionId },
+              { ...input, quantity: 2 },
+              idempotencyKey,
+            ),
+          ).rejects.toMatchObject({ name: "CartIdempotencyConflictError" });
+        }
       }
 
       const stored = await pool.query<{
@@ -260,6 +286,13 @@ integrationDescribe("guest cart database lifecycle", () => {
         [cartId],
       );
       expect(stored.rows).toHaveLength(5);
+      await expect(
+        service.getGuestCart({ cartId, sessionId }),
+      ).resolves.toMatchObject({
+        lineItemCount: 5,
+        revision: 5,
+        totalQuantity: 5
+      });
       for (const row of stored.rows) {
         const expected = inputs.get(row.kind)!;
         expect(row.customization_payload).toEqual({
@@ -273,7 +306,7 @@ integrationDescribe("guest cart database lifecycle", () => {
       }
 
       const longInput = inputs.get("text_long")!;
-      await service.updateGuestItem(
+      const updatedView = await service.updateGuestItem(
         { cartId, sessionId },
         itemIds.get("text_long")!,
         {
@@ -282,6 +315,11 @@ integrationDescribe("guest cart database lifecycle", () => {
           quantity: 2,
         },
       );
+      expect(updatedView).toMatchObject({
+        lineItemCount: 5,
+        revision: 6,
+        totalQuantity: 6
+      });
       const updated = await pool.query<{
         customization_payload: { line1: string };
         quantity: number;
@@ -293,10 +331,15 @@ integrationDescribe("guest cart database lifecycle", () => {
         quantity: 2,
       });
 
-      await service.removeGuestItem(
+      const removedView = await service.removeGuestItem(
         { cartId, sessionId },
         itemIds.get("text_image_trim")!,
       );
+      expect(removedView).toMatchObject({
+        lineItemCount: 4,
+        revision: 7,
+        totalQuantity: 5
+      });
       expect(
         await pool.query("select id from cart_items where id = $1", [
           itemIds.get("text_image_trim"),
@@ -314,7 +357,13 @@ integrationDescribe("guest cart database lifecycle", () => {
         }
       }
       const finalCart = await service.getGuestCart({ cartId, sessionId });
-      expect(finalCart).toMatchObject({ items: [], subtotalCents: 0 });
+      expect(finalCart).toMatchObject({
+        items: [],
+        lineItemCount: 0,
+        revision: 11,
+        subtotalCents: 0,
+        totalQuantity: 0
+      });
       const finalFabric = await pool.query<{ quantity_reserved: number }>(
         "select quantity_reserved from fabrics where id = $1",
         [fabricId],
@@ -323,4 +372,155 @@ integrationDescribe("guest cart database lifecycle", () => {
     },
     30_000,
   );
+
+  it("keeps cart fields and quantities in one repeatable-read snapshot", async () => {
+    const snapshotCartId = randomUUID();
+    const snapshotItemId = randomUUID();
+    const snapshotSessionId = `snapshot_${randomUUID()}_${randomUUID()}`;
+    const catalog = await pool.query<{
+      listing_customization_set_id: string;
+      listing_id: string;
+      listing_price_variant_id: string;
+      unit_amount_cents: number;
+    }>(
+      `
+        select
+          l.id as listing_id,
+          lcs.id as listing_customization_set_id,
+          lpv.id as listing_price_variant_id,
+          lpv.unit_amount_cents
+        from listings l
+        join listing_customization_sets lcs
+          on lcs.listing_id = l.id and lcs.enabled = true
+        join listing_price_variants lpv
+          on lpv.listing_id = l.id
+          and lpv.listing_customization_set_id = lcs.id
+          and lpv.active = true
+          and lpv.replaced_at is null
+        where l.status = 'active'
+        order by l.id, lcs.id, lpv.id
+        limit 1
+      `,
+    );
+    const selection = catalog.rows[0];
+    expect(selection).toBeDefined();
+
+    await pool.query(
+      `
+        insert into carts (
+          id, guest_token_hash, status, currency, subtotal_cents, expires_at
+        ) values ($1, $2, 'active', 'usd', $3, now() + interval '1 hour')
+      `,
+      [
+        snapshotCartId,
+        createHash("sha256").update(snapshotSessionId).digest("hex"),
+        selection.unit_amount_cents
+      ],
+    );
+    await pool.query(
+      `
+        insert into cart_items (
+          id, cart_id, listing_id, listing_customization_set_id,
+          listing_price_variant_id, quantity, unit_amount_cents, currency,
+          customization_payload, validation_status
+        ) values ($1, $2, $3, $4, $5, 1, $6, 'usd', '{}'::jsonb, 'valid')
+      `,
+      [
+        snapshotItemId,
+        snapshotCartId,
+        selection.listing_id,
+        selection.listing_customization_set_id,
+        selection.listing_price_variant_id,
+        selection.unit_amount_cents
+      ],
+    );
+
+    let signalShellRead!: () => void;
+    let continueProjection!: () => void;
+    const shellRead = new Promise<void>((resolve) => {
+      signalShellRead = resolve;
+    });
+    const projectionGate = new Promise<void>((resolve) => {
+      continueProjection = resolve;
+    });
+    let paused = false;
+    const snapshotPool = {
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          async query(text: string, values: unknown[] = []) {
+            const result = await client.query(text, values);
+            if (
+              !paused &&
+              text.includes("from carts") &&
+              text.includes("guest_token_hash") &&
+              !text.includes("for update")
+            ) {
+              paused = true;
+              signalShellRead();
+              await projectionGate;
+            }
+            return result;
+          },
+          release() {
+            client.release();
+          }
+        } as unknown as PoolClient;
+      },
+      query: pool.query.bind(pool)
+    } as unknown as Pool;
+    const { CartService } = await import("./service.js");
+    const snapshotService = new CartService(snapshotPool);
+    const readPromise = snapshotService.getGuestCart({
+      cartId: snapshotCartId,
+      sessionId: snapshotSessionId
+    });
+
+    try {
+      await shellRead;
+      const writer = await pool.connect();
+      try {
+        await writer.query("begin");
+        await writer.query("update cart_items set quantity = 2 where id = $1", [
+          snapshotItemId
+        ]);
+        await writer.query(
+          `
+            update carts
+            set subtotal_cents = $2, revision = revision + 1
+            where id = $1
+          `,
+          [snapshotCartId, selection.unit_amount_cents * 2],
+        );
+        await writer.query("commit");
+      } catch (error) {
+        await writer.query("rollback");
+        throw error;
+      } finally {
+        writer.release();
+      }
+      continueProjection();
+
+      await expect(readPromise).resolves.toMatchObject({
+        lineItemCount: 1,
+        revision: 0,
+        subtotalCents: selection.unit_amount_cents,
+        totalQuantity: 1
+      });
+      await expect(
+        service.getGuestCart({
+          cartId: snapshotCartId,
+          sessionId: snapshotSessionId
+        }),
+      ).resolves.toMatchObject({
+        lineItemCount: 1,
+        revision: 1,
+        subtotalCents: selection.unit_amount_cents * 2,
+        totalQuantity: 2
+      });
+    } finally {
+      continueProjection();
+      await pool.query("delete from carts where id = $1", [snapshotCartId]);
+    }
+  });
 });

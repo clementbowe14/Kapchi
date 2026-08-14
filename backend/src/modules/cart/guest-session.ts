@@ -1,7 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { RedisClientType } from "redis";
 import { config } from "../../config/index.js";
 import { safeErrorDetails } from "../../observability/safe-error.js";
 
@@ -10,13 +9,8 @@ export const GUEST_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 export const MAX_GUEST_SESSION_RECORD_BYTES = 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CURRENCY_PATTERN = /^[a-z]{3}$/;
-export const MAX_GUEST_CART_PROJECTION_BYTES = 64 * 1024;
 export const MAX_GUEST_CART_ITEMS = 100;
-export const MAX_GUEST_CART_QUANTITY = 999;
 export const MAX_CART_SUBTOTAL_CENTS = 2_147_483_647;
-const MAX_LISTING_TEXT_LENGTH = 255;
-const MAX_CUSTOMIZATION_LINE_LENGTH = 512;
 type CookieNodeEnv = typeof config.app.nodeEnv;
 
 type GuestSession = {
@@ -57,10 +51,6 @@ export type GuestCartContext = {
   cartId: string;
   sessionId: string;
 };
-
-export type GuestCartCacheResult =
-  | { hit: true; items: GuestCartDisplayItem[] }
-  | { hit: false };
 
 export function hashSessionId(sessionId: string) {
   return createHash("sha256").update(sessionId).digest("hex");
@@ -140,124 +130,6 @@ function isIsoTimestamp(value: unknown): value is string {
   return !Number.isNaN(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function isBoundedString(
-  value: unknown,
-  minimumLength: number,
-  maximumLength: number,
-): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-
-  const characterLength = Array.from(value).length;
-  return characterLength >= minimumLength && characterLength <= maximumLength;
-}
-
-function isIntegerBetween(
-  value: unknown,
-  minimum: number,
-  maximum: number,
-): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= minimum &&
-    value <= maximum
-  );
-}
-
-function parseGuestCartCustomizationSummary(
-  value: unknown,
-): GuestCartCustomizationSummary | null {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      "fontOptionId",
-      "line1",
-      "line2",
-      "imageAssetId",
-      "trimOptionId"
-    ]) ||
-    !(value.fontOptionId === null || isUuid(value.fontOptionId)) ||
-    !isBoundedString(value.line1, 0, MAX_CUSTOMIZATION_LINE_LENGTH) ||
-    !isBoundedString(value.line2, 0, MAX_CUSTOMIZATION_LINE_LENGTH) ||
-    !(value.imageAssetId === null || isUuid(value.imageAssetId)) ||
-    !(value.trimOptionId === null || isUuid(value.trimOptionId))
-  ) {
-    return null;
-  }
-
-  return {
-    fontOptionId: value.fontOptionId,
-    line1: value.line1,
-    line2: value.line2,
-    imageAssetId: value.imageAssetId,
-    trimOptionId: value.trimOptionId
-  };
-}
-
-function parseGuestCartDisplayItem(value: unknown): GuestCartDisplayItem | null {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      "cartItemId",
-      "listingId",
-      "listingSlug",
-      "title",
-      "quantity",
-      "unitAmountCents",
-      "currency",
-      "fabricId",
-      "customizationSetId",
-      "listingPriceVariantId",
-      "customizationSummary",
-      "validationStatus"
-    ]) ||
-    !isUuid(value.cartItemId) ||
-    !isUuid(value.listingId) ||
-    !isBoundedString(value.listingSlug, 1, MAX_LISTING_TEXT_LENGTH) ||
-    !isBoundedString(value.title, 1, MAX_LISTING_TEXT_LENGTH) ||
-    !isIntegerBetween(value.quantity, 1, MAX_GUEST_CART_QUANTITY) ||
-    !isIntegerBetween(value.unitAmountCents, 0, MAX_CART_SUBTOTAL_CENTS) ||
-    typeof value.currency !== "string" ||
-    !CURRENCY_PATTERN.test(value.currency) ||
-    !(value.fabricId === null || isUuid(value.fabricId)) ||
-    !isUuid(value.customizationSetId) ||
-    !isUuid(value.listingPriceVariantId) ||
-    !(
-      value.validationStatus === "valid" ||
-      value.validationStatus === "invalid" ||
-      value.validationStatus === "needs_reprice" ||
-      value.validationStatus === "unavailable"
-    )
-  ) {
-    return null;
-  }
-
-  const customizationSummary = parseGuestCartCustomizationSummary(
-    value.customizationSummary,
-  );
-
-  if (!customizationSummary) {
-    return null;
-  }
-
-  return {
-    cartItemId: value.cartItemId,
-    listingId: value.listingId,
-    listingSlug: value.listingSlug,
-    title: value.title,
-    quantity: value.quantity,
-    unitAmountCents: value.unitAmountCents,
-    currency: value.currency,
-    fabricId: value.fabricId,
-    customizationSetId: value.customizationSetId,
-    listingPriceVariantId: value.listingPriceVariantId,
-    customizationSummary,
-    validationStatus: value.validationStatus
-  };
-}
-
 export function buildGuestSessionCookieOptions(
   nodeEnv: CookieNodeEnv = config.app.nodeEnv,
 ) {
@@ -308,28 +180,15 @@ async function createGuestCartContext(
       JSON.stringify(session),
     );
   } catch (error) {
-    try {
-      await request.server.pg.query(
-        `
-          update carts
-          set status = 'abandoned'
-          where id = $1
-            and guest_token_hash = $2
-            and status = 'active'
-        `,
-        [session.cartId, guestTokenHash],
-      );
-    } catch (abandonmentError) {
-      request.log.error(
-        {
-          cartId: session.cartId,
-          databaseError: safeErrorDetails(abandonmentError)
-        },
-        "Failed to abandon guest cart after Redis session write failure",
-      );
-    }
-
-    throw error;
+    request.log.warn(
+      {
+        event: "cart.guest_session.cache_failed",
+        cacheOperation: "create",
+        cartId: session.cartId,
+        cacheError: safeErrorDetails(error)
+      },
+      "Guest cart session cache write failed",
+    );
   }
 
   setGuestSessionCookie(reply, sessionId);
@@ -361,6 +220,127 @@ async function hasActiveDurableGuestCart(
   return result.rows[0]?.id === cartId;
 }
 
+type DurableGuestCartRow = {
+  created_at: Date | string;
+  expires_at: Date | string;
+  id: string;
+};
+
+function timestamp(value: Date | string) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+async function findDurableGuestCart(
+  request: FastifyRequest,
+  sessionId: string,
+) {
+  const result = await request.server.pg.query<DurableGuestCartRow>(
+    `
+      select id, created_at, expires_at
+      from carts
+      where guest_token_hash = $1
+        and status = 'active'
+        and expires_at > now()
+      order by created_at desc, id desc
+      limit 1
+    `,
+    [hashSessionId(sessionId)],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function repairGuestSessionCache(
+  request: FastifyRequest,
+  sessionId: string,
+  cart: DurableGuestCartRow,
+) {
+  const ttlSeconds = Math.floor(
+    (new Date(cart.expires_at).getTime() - Date.now()) / 1000,
+  );
+
+  if (ttlSeconds < 1) {
+    return false;
+  }
+
+  try {
+    await request.server.redis.setEx(
+      buildGuestSessionKey(sessionId),
+      ttlSeconds,
+      JSON.stringify({ cartId: cart.id, createdAt: timestamp(cart.created_at) }),
+    );
+    return true;
+  } catch (error) {
+    request.log.warn(
+      {
+        event: "cart.guest_session.cache_failed",
+        cacheOperation: "repair",
+        cartId: cart.id,
+        cacheError: safeErrorDetails(error)
+      },
+      "Guest cart session cache repair failed",
+    );
+    return false;
+  }
+}
+
+async function resolveGuestCartContext(
+  request: FastifyRequest,
+  sessionId: string,
+): Promise<GuestCartContext | null> {
+  let cacheOutcome: "error" | "invalid" | "miss" | "stale" = "miss";
+  let cachedSession: GuestSession | null = null;
+
+  try {
+    const cachedValue = await request.server.redis.get(buildGuestSessionKey(sessionId));
+    cachedSession = parseGuestSession(cachedValue);
+    cacheOutcome = cachedSession
+      ? "stale"
+      : cachedValue === null
+        ? "miss"
+        : "invalid";
+  } catch (error) {
+    cacheOutcome = "error";
+    request.log.warn(
+      {
+        event: "cart.guest_session.cache_failed",
+        cacheOperation: "read",
+        cacheError: safeErrorDetails(error)
+      },
+      "Guest cart session cache read failed",
+    );
+  }
+
+  if (
+    cachedSession &&
+    (await hasActiveDurableGuestCart(request, sessionId, cachedSession.cartId))
+  ) {
+    return { cartId: cachedSession.cartId, sessionId };
+  }
+
+  const durableCart = await findDurableGuestCart(request, sessionId);
+  if (!durableCart) {
+    return null;
+  }
+
+  const cacheRepaired = await repairGuestSessionCache(
+    request,
+    sessionId,
+    durableCart,
+  );
+  request.log.info(
+    {
+      event: "cart.guest_session.recovered",
+      cacheOutcome,
+      cacheRepaired,
+      cartId: durableCart.id
+    },
+    "Guest cart session recovered from durable state",
+  );
+
+  return { cartId: durableCart.id, sessionId };
+}
+
 export async function getOrCreateGuestCartContext(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -368,18 +348,9 @@ export async function getOrCreateGuestCartContext(
   const sessionId = request.cookies[GUEST_SESSION_COOKIE];
 
   if (isValidSessionId(sessionId)) {
-    const session = parseGuestSession(
-      await request.server.redis.get(buildGuestSessionKey(sessionId)),
-    );
-
-    if (
-      session &&
-      (await hasActiveDurableGuestCart(request, sessionId, session.cartId))
-    ) {
-      return {
-        cartId: session.cartId,
-        sessionId
-      };
+    const context = await resolveGuestCartContext(request, sessionId);
+    if (context) {
+      return context;
     }
   }
 
@@ -395,21 +366,7 @@ export async function getGuestCartContext(
     return null;
   }
 
-  const session = parseGuestSession(
-    await request.server.redis.get(buildGuestSessionKey(sessionId)),
-  );
-
-  if (
-    !session ||
-    !(await hasActiveDurableGuestCart(request, sessionId, session.cartId))
-  ) {
-    return null;
-  }
-
-  return {
-    cartId: session.cartId,
-    sessionId
-  };
+  return resolveGuestCartContext(request, sessionId);
 }
 
 export async function getGuestCartSessionContext(
@@ -471,93 +428,4 @@ export async function getGuestCartClaimContext(
   const cartId = result.rows[0]?.id;
 
   return cartId ? { cartId, sessionId } : null;
-}
-
-function parseGuestCartItemsValue(value: string | null): GuestCartCacheResult {
-  if (!value) {
-    return { hit: false };
-  }
-
-  if (Buffer.byteLength(value, "utf8") > MAX_GUEST_CART_PROJECTION_BYTES) {
-    return { hit: false };
-  }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(value) as unknown;
-  } catch {
-    return { hit: false };
-  }
-
-  if (!Array.isArray(parsed) || parsed.length > MAX_GUEST_CART_ITEMS) {
-    return { hit: false };
-  }
-
-  const items: GuestCartDisplayItem[] = [];
-
-  for (const item of parsed) {
-    const displayItem = parseGuestCartDisplayItem(item);
-
-    if (!displayItem) {
-      return { hit: false };
-    }
-
-    items.push(displayItem);
-  }
-
-  return { hit: true, items };
-}
-
-export async function readGuestCartItems(
-  redis: RedisClientType,
-  cartId: string,
-): Promise<GuestCartCacheResult> {
-  return parseGuestCartItemsValue(
-    await redis.get(buildGuestCartItemsKey(cartId)),
-  );
-}
-
-export function serializeGuestCartItems(items: GuestCartDisplayItem[]) {
-  const serialized = JSON.stringify(items);
-  const parsed = parseGuestCartItemsValue(serialized);
-
-  if (!parsed.hit) {
-    throw new RangeError("Guest cart projection exceeds its strict data contract.");
-  }
-
-  return serialized;
-}
-
-export async function writeGuestCartItems(
-  redis: RedisClientType,
-  cartId: string,
-  items: GuestCartDisplayItem[],
-  ttlSeconds: number,
-) {
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) {
-    await redis.del(buildGuestCartItemsKey(cartId));
-    return;
-  }
-
-  await redis.setEx(
-    buildGuestCartItemsKey(cartId),
-    ttlSeconds,
-    serializeGuestCartItems(items),
-  );
-}
-
-export async function deleteGuestCartItems(
-  redis: RedisClientType,
-  cartId: string,
-) {
-  await redis.del(buildGuestCartItemsKey(cartId));
-}
-
-export async function getGuestCartItems(
-  redis: RedisClientType,
-  cartId: string,
-): Promise<GuestCartDisplayItem[]> {
-  const result = await readGuestCartItems(redis, cartId);
-  return result.hit ? result.items : [];
 }

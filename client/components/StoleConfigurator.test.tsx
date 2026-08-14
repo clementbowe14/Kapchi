@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ImgHTMLAttributes } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { subscribeToCartInvalidations } from "@/lib/cart-state";
 import type { GraduationStoleDetail } from "@/lib/listings";
 import {
   configuratorReducer,
@@ -65,7 +66,14 @@ const fetchMock = vi.fn();
 
 function cartResponse() {
   return new Response(
-    JSON.stringify({ cartId: "cart-1", items: [], subtotalCents: 0 }),
+    JSON.stringify({
+      cartId: "cart-1",
+      items: [],
+      lineItemCount: 0,
+      revision: 1,
+      subtotalCents: 0,
+      totalQuantity: 0,
+    }),
     { headers: { "Content-Type": "application/json" }, status: 200 },
   );
 }
@@ -468,4 +476,172 @@ describe("StoleConfigurator", () => {
       });
     },
   );
+
+  it("single-flights guest cart preparation across rapid package changes", async () => {
+    const user = userEvent.setup();
+    let resolveCart!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveCart = resolve;
+      }),
+    );
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(
+      screen.getByRole("radio", { name: /Text \(long\) and Image/ }),
+    );
+    await user.click(
+      screen.getByRole("radio", { name: /Text \(long\) \+ Image \+ Trim/ }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    resolveCart(cartResponse());
+  });
+
+  it("guards rapid duplicate adds and reuses an idempotency key after timeout", async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("network timeout"))
+      .mockResolvedValueOnce(cartResponse());
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(screen.getByRole("radio", { name: /No customization/ }));
+    const addButton = screen.getByRole("button", { name: "Add to cart" });
+    fireEvent.click(addButton);
+    fireEvent.click(addButton);
+
+    expect(await screen.findByText(/could not confirm that this item was added/i))
+      .toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    expect(await screen.findByText(/Added to your cart/)).toBeInTheDocument();
+
+    const addCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => url === "/api/cart/items" && init?.method === "POST",
+    );
+    expect(addCalls).toHaveLength(2);
+    const firstHeaders = addCalls[0][1]?.headers as Record<string, string>;
+    const secondHeaders = addCalls[1][1]?.headers as Record<string, string>;
+    expect(firstHeaders["Idempotency-Key"]).toBeTruthy();
+    expect(secondHeaders["Idempotency-Key"]).toBe(
+      firstHeaders["Idempotency-Key"],
+    );
+    expect(addCalls[0][1]).toEqual(
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("treats a 201 with malformed JSON as success and rotates the next add key", async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response("{malformed", {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+      )
+      .mockResolvedValueOnce(cartResponse());
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(screen.getByRole("radio", { name: /No customization/ }));
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+
+    expect(await screen.findByText(/Added to your cart/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/could not confirm that this item was added/i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const addCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => url === "/api/cart/items" && init?.method === "POST",
+    );
+    const firstHeaders = addCalls[0][1]?.headers as Record<string, string>;
+    const secondHeaders = addCalls[1][1]?.headers as Record<string, string>;
+    expect(firstHeaders["Idempotency-Key"]).toBeTruthy();
+    expect(secondHeaders["Idempotency-Key"]).toBeTruthy();
+    expect(secondHeaders["Idempotency-Key"]).not.toBe(
+      firstHeaders["Idempotency-Key"],
+    );
+  });
+
+  it("reuses the idempotency key after an ambiguous 5xx response", async () => {
+    const user = userEvent.setup();
+    const invalidated = vi.fn();
+    const unsubscribe = subscribeToCartInvalidations(invalidated);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "INTERNAL_SERVER_ERROR",
+            message: "Unable to serialize the cart response.",
+            statusCode: 500,
+          }),
+          { headers: { "Content-Type": "application/json" }, status: 500 },
+        ),
+      )
+      .mockResolvedValueOnce(cartResponse());
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(screen.getByRole("radio", { name: /No customization/ }));
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    expect(await screen.findByText(/could not confirm that this item was added/i))
+      .toBeInTheDocument();
+    expect(invalidated).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const addCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => url === "/api/cart/items" && init?.method === "POST",
+    );
+    const firstHeaders = addCalls[0][1]?.headers as Record<string, string>;
+    const secondHeaders = addCalls[1][1]?.headers as Record<string, string>;
+    expect(secondHeaders["Idempotency-Key"]).toBe(
+      firstHeaders["Idempotency-Key"],
+    );
+    expect(invalidated).toHaveBeenCalledTimes(2);
+    unsubscribe();
+  });
+
+  it("rotates the idempotency key after a definitive 4xx rejection", async () => {
+    const user = userEvent.setup();
+    const invalidated = vi.fn();
+    const unsubscribe = subscribeToCartInvalidations(invalidated);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "VALIDATION_ERROR",
+            message: "The selected configuration is invalid.",
+            statusCode: 400,
+          }),
+          { headers: { "Content-Type": "application/json" }, status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(cartResponse());
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(screen.getByRole("radio", { name: /No customization/ }));
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    expect(await screen.findByText(/could not confirm that this item was added/i))
+      .toBeInTheDocument();
+    expect(invalidated).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const addCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => url === "/api/cart/items" && init?.method === "POST",
+    );
+    const firstHeaders = addCalls[0][1]?.headers as Record<string, string>;
+    const secondHeaders = addCalls[1][1]?.headers as Record<string, string>;
+    expect(secondHeaders["Idempotency-Key"]).not.toBe(
+      firstHeaders["Idempotency-Key"],
+    );
+    expect(invalidated).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
 });

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ const authState = vi.hoisted(() => ({
   getToken: vi.fn(),
   isLoaded: true,
   isSignedIn: false,
+  userId: null as string | null,
   user: null as null | {
     primaryEmailAddress?: { emailAddress?: string };
   },
@@ -18,6 +19,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: authState.getToken,
     isLoaded: authState.isLoaded,
     isSignedIn: authState.isSignedIn,
+    userId: authState.userId,
   }),
   useUser: () => ({ user: authState.user }),
 }));
@@ -25,31 +27,37 @@ vi.mock("@clerk/nextjs", () => ({
 function cartResponse(
   overrides: Record<string, unknown> = {},
 ) {
+  const defaultItems = [
+    {
+      cartItemId: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
+      currency: "usd",
+      customizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
+      customizationSummary: {
+        fontOptionId: null,
+        imageAssetId: null,
+        line1: "Class of 2027",
+        line2: "Kapchi University",
+        trimOptionId: null,
+      },
+      fabricId: null,
+      listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
+      listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+      listingSlug: "graduation-stole",
+      quantity: 1,
+      title: "Graduation Stole",
+      unitAmountCents: 8500,
+      validationStatus: "valid",
+    },
+  ];
+  const items = (overrides.items ?? defaultItems) as typeof defaultItems;
+
   return {
     cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
-    items: [
-      {
-        cartItemId: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
-        currency: "usd",
-        customizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
-        customizationSummary: {
-          fontOptionId: null,
-          imageAssetId: null,
-          line1: "Class of 2027",
-          line2: "Kapchi University",
-          trimOptionId: null,
-        },
-        fabricId: null,
-        listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
-        listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
-        listingSlug: "graduation-stole",
-        quantity: 1,
-        title: "Graduation Stole",
-        unitAmountCents: 8500,
-        validationStatus: "valid",
-      },
-    ],
+    items,
+    lineItemCount: items.length,
+    revision: 1,
     subtotalCents: 8500,
+    totalQuantity: items.reduce((total, item) => total + item.quantity, 0),
     ...overrides,
   };
 }
@@ -67,6 +75,7 @@ describe("CartCheckoutClient", () => {
     authState.getToken.mockResolvedValue("clerk-test-token");
     authState.isLoaded = true;
     authState.isSignedIn = false;
+    authState.userId = null;
     authState.user = null;
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -88,7 +97,7 @@ describe("CartCheckoutClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/cart/",
-      expect.objectContaining({ credentials: "same-origin" }),
+      expect.objectContaining({ credentials: "include" }),
     );
   });
 
@@ -139,6 +148,7 @@ describe("CartCheckoutClient", () => {
 
   it("claims a guest cart and checks out an account with a Clerk token", async () => {
     authState.isSignedIn = true;
+    authState.userId = "user-1";
     authState.user = {
       primaryEmailAddress: { emailAddress: "member@example.com" },
     };
@@ -148,7 +158,7 @@ describe("CartCheckoutClient", () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === "/api/cart/claim") {
-        return jsonResponse({ claimed: true });
+        return jsonResponse(cartResponse({ revision: 2 }));
       }
       if (url === "/api/cart/") {
         return jsonResponse(cartResponse());
@@ -179,6 +189,9 @@ describe("CartCheckoutClient", () => {
         method: "POST",
       }),
     );
+    expect(
+      fetchMock.mock.calls.filter(([url]) => url === "/api/cart/")
+    ).toHaveLength(0);
     const checkoutCall = fetchMock.mock.calls.find(
       ([url]) => url === "/api/payments/checkout-sessions",
     );
@@ -207,7 +220,9 @@ describe("CartCheckoutClient", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(unavailable))
       .mockResolvedValueOnce(
-        jsonResponse({ cartId: unavailable.cartId, items: [], subtotalCents: 0 }),
+        jsonResponse(
+          cartResponse({ items: [], revision: 2, subtotalCents: 0 }),
+        ),
       );
 
     render(<CartCheckoutClient />);
@@ -246,7 +261,9 @@ describe("CartCheckoutClient", () => {
       .mockResolvedValueOnce(jsonResponse(customized))
       .mockResolvedValueOnce(jsonResponse(updated))
       .mockResolvedValueOnce(
-        jsonResponse({ cartId: customized.cartId, items: [], subtotalCents: 0 }),
+        jsonResponse(
+          cartResponse({ items: [], revision: 3, subtotalCents: 0 }),
+        ),
       );
 
     render(<CartCheckoutClient />);
@@ -262,6 +279,7 @@ describe("CartCheckoutClient", () => {
         screen.getByRole("group", { name: "Quantity for Graduation Stole" }),
       ).toHaveTextContent("2"),
     );
+    expect(screen.getByText("2 items")).toBeInTheDocument();
     const patchCall = fetchMock.mock.calls.find(
       ([url, init]) =>
         url === "/api/cart/items/0f82fc95-66a6-41b9-9ed5-05a5a20e6f61" &&
@@ -285,6 +303,99 @@ describe("CartCheckoutClient", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/cart/items/0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
       expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("clears the cart count when a mutation reports CART_NOT_FOUND", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(cartResponse()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: "CART_NOT_FOUND",
+            message: "Cart not found.",
+            statusCode: 404,
+          },
+          404,
+        ),
+      );
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    await user.click(screen.getByRole("button", { name: "Remove item" }));
+
+    expect(await screen.findByText("Your cart is empty")).toBeInTheDocument();
+  });
+
+  it("does not let an older cart revision overwrite newer state", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    const current = cartResponse({
+      items: [{ ...cartResponse().items[0], quantity: 2 }],
+      revision: 3,
+      subtotalCents: 17000,
+    });
+    const stale = cartResponse({
+      items: [{ ...cartResponse().items[0], quantity: 3 }],
+      revision: 2,
+      subtotalCents: 25500,
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(current))
+      .mockResolvedValueOnce(jsonResponse(stale));
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("2 items");
+    await user.click(
+      screen.getByRole("button", { name: "Increase Graduation Stole quantity" }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(
+      screen.getByRole("group", { name: "Quantity for Graduation Stole" }),
+    ).toHaveTextContent("2");
+    expect(screen.getByText("2 items")).toBeInTheDocument();
+  });
+
+  it("blocks checkout while a quantity mutation is in flight", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    let resolveUpdate!: (response: Response) => void;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(cartResponse()))
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveUpdate = resolve;
+        }),
+      );
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    await user.click(
+      screen.getByRole("button", { name: "Increase Graduation Stole quantity" }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Continue to secure checkout" }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      resolveUpdate(
+        jsonResponse(
+          cartResponse({
+            items: [{ ...cartResponse().items[0], quantity: 2 }],
+            revision: 2,
+            subtotalCents: 17000,
+          }),
+        ),
+      );
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Continue to secure checkout" }),
+      ).toBeEnabled(),
     );
   });
 

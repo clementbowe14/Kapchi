@@ -60,6 +60,7 @@ function cartRow(id: string) {
     expires_at:
       id === ids.guestCart ? "2026-08-08T12:00:00.000Z" : null,
     id,
+    revision: 2,
     subtotal_cents: 8500,
     user_id: id === ids.accountCart ? identity.authSubject : null
   };
@@ -156,8 +157,8 @@ function commonViewResult(
   if (sql.includes("set subtotal_cents = $2")) {
     return { rows: [{ id: cartId }] };
   }
-  if (sql.includes("select subtotal_cents from carts")) {
-    return { rows: [{ subtotal_cents: 17000 }] };
+  if (sql.includes("select subtotal_cents, revision from carts")) {
+    return { rows: [{ revision: 3, subtotal_cents: 17000 }] };
   }
   if (sql.includes("validation_status <> 'valid'")) {
     return { rows: warningRows };
@@ -206,7 +207,10 @@ describe("CartClaimRepository", () => {
 
     expect(result).toMatchObject({
       cartId: ids.guestCart,
+      lineItemCount: 1,
+      revision: 3,
       subtotalCents: 17000,
+      totalQuantity: 1,
       warnings: []
     });
     const ownerUpdate = query.mock.calls.find(([sql]) =>
@@ -288,6 +292,11 @@ describe("CartClaimRepository", () => {
       ids.contact
     ]);
     expect(String(sourceAbandonment?.[0])).toContain("authenticated_user_id = $3");
+    expect(result).toMatchObject({
+      lineItemCount: 1,
+      revision: 3,
+      totalQuantity: 3
+    });
     expect(result.items[0]?.quantity).toBe(3);
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
   });
@@ -356,6 +365,7 @@ describe("CartClaimRepository", () => {
       ),
     ).toBe(true);
     expect(result.items).toHaveLength(2);
+    expect(result).toMatchObject({ lineItemCount: 2, totalQuantity: 1000 });
     expect(result.warnings).toEqual([
       {
         cartItemId: ids.sourceItem,
@@ -387,7 +397,12 @@ describe("CartClaimRepository", () => {
 
     const result = await new CartClaimRepository(pool).claim(identity, null);
 
-    expect(result.cartId).toBe(ids.accountCart);
+    expect(result).toMatchObject({
+      cartId: ids.accountCart,
+      lineItemCount: 1,
+      revision: 3,
+      totalQuantity: 1
+    });
     expect(
       query.mock.calls.some(([sql]) =>
         String(sql).includes("update cart_items") ||

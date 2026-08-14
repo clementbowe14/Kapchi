@@ -31,14 +31,11 @@ for (const [key, value] of Object.entries(envDefaults)) {
 
 const {
   buildGuestSessionCookieOptions,
-  buildGuestCartItemsKey,
-  getGuestCartItems,
   getGuestCartClaimContext,
   getGuestCartContext,
   getGuestCartSessionContext,
   getOrCreateGuestCartContext,
-  MAX_GUEST_SESSION_RECORD_BYTES,
-  readGuestCartItems
+  MAX_GUEST_SESSION_RECORD_BYTES
 } = await import("./guest-session.js");
 
 type CookieCall = {
@@ -70,72 +67,9 @@ type RedisMockOptions = {
 const sevenDaysInSeconds = 60 * 60 * 24 * 7;
 const fixedNow = "2026-06-23T12:00:00.000Z";
 const existingCartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
-const displayIds = {
-  cartItem: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
-  customizationSet: "fba94989-b950-4087-bac1-8c1ad4970655",
-  fabric: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
-  imageAsset: "1d66d9cc-0987-46e1-b719-c3e5a09f5013",
-  listing: "396256fa-68f9-4882-934a-5cedffbd8204",
-  variant: "9a990125-7cf1-4f7d-813a-b418093aade0"
-};
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function createValidDisplayItem(overrides: Record<string, unknown> = {}) {
-  return {
-    cartItemId: displayIds.cartItem,
-    listingId: displayIds.listing,
-    listingSlug: "graduation-stole",
-    title: "Graduation Stole",
-    quantity: 1,
-    unitAmountCents: 8500,
-    currency: "usd",
-    fabricId: displayIds.fabric,
-    customizationSetId: displayIds.customizationSet,
-    listingPriceVariantId: displayIds.variant,
-    customizationSummary: {
-      fontOptionId: null,
-      line1: "Class of 2026",
-      line2: "Kapchi University",
-      imageAssetId: displayIds.imageAsset,
-      trimOptionId: null
-    },
-    validationStatus: "valid",
-    ...overrides
-  };
-}
-
-function createProjectionWithExactByteLength(targetBytes: number) {
-  const items = Array.from({ length: 50 }, () =>
-    createValidDisplayItem({
-      customizationSummary: {
-        fontOptionId: null,
-        line1: "",
-        line2: "",
-        imageAssetId: null,
-        trimOptionId: null
-      }
-    }),
-  );
-  let serialized = JSON.stringify(items);
-  let remainingBytes = targetBytes - Buffer.byteLength(serialized, "utf8");
-
-  for (const item of items) {
-    for (const line of ["line1", "line2"] as const) {
-      const addedCharacters = Math.min(512, remainingBytes);
-      item.customizationSummary[line] = "x".repeat(addedCharacters);
-      remainingBytes -= addedCharacters;
-
-      if (remainingBytes === 0) {
-        serialized = JSON.stringify(items);
-        return serialized;
-      }
-    }
-  }
-
-  throw new Error(`Unable to build a ${targetBytes}-byte valid projection.`);
 }
 
 function createRedisMock(
@@ -217,7 +151,9 @@ function createRequestMock(
   return {
     cookies,
     log: {
-      error: vi.fn()
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn()
     },
     server: {
       pg: database,
@@ -381,24 +317,47 @@ describe("guest session cart context", () => {
     expect(cookies[0].value).toBe(context.sessionId);
   });
 
-  test("creates a new session when Redis has no session for a valid cookie", async () => {
+  test("recovers a durable cart when Redis has no session for a valid cookie", async () => {
     const sessionId = "expired_session_id_abcdefghijklmnopqrstuvwxyz123456";
     const { calls, redis } = createRedisMock();
-    const { calls: databaseCalls, database } = createDatabaseMock();
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      {
+        rows: [
+          {
+            created_at: fixedNow,
+            expires_at: "2026-06-30T12:00:00.000Z",
+            id: existingCartId
+          }
+        ]
+      }
+    ]);
     const { cookies, reply } = createReplyMock();
+    const request = createRequestMock(redis, database, { session_id: sessionId });
 
     const context = await getOrCreateGuestCartContext(
-      createRequestMock(redis, database, { session_id: sessionId }),
+      request,
       reply,
     );
 
     expect(calls.get).toEqual([`guest_session:${sha256(sessionId)}`]);
     expect(calls.setEx.length).toBe(1);
     expect(databaseCalls).toHaveLength(1);
-    expect(databaseCalls[0].text).toContain("insert into carts");
-    expect(calls.setEx[0].key).toBe(`guest_session:${sha256(context.sessionId)}`);
-    expect(context.sessionId).not.toBe(sessionId);
-    expect(cookies[0].value).toBe(context.sessionId);
+    expect(databaseCalls[0].text).toContain("where guest_token_hash = $1");
+    expect(calls.setEx[0]).toMatchObject({
+      key: `guest_session:${sha256(sessionId)}`,
+      ttl: sevenDaysInSeconds
+    });
+    expect(context).toEqual({ cartId: existingCartId, sessionId });
+    expect(cookies).toHaveLength(0);
+    expect(request.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheOutcome: "miss",
+        cacheRepaired: true,
+        cartId: existingCartId,
+        event: "cart.guest_session.recovered"
+      }),
+      "Guest cart session recovered from durable state",
+    );
   });
 
   test("creates a new session when the cookie is invalid", async () => {
@@ -430,6 +389,7 @@ describe("guest session cart context", () => {
     });
     const { calls: databaseCalls, database } = createDatabaseMock([
       { rows: [] },
+      { rows: [] },
       { rows: [] }
     ]);
     const { cookies, reply } = createReplyMock();
@@ -441,9 +401,10 @@ describe("guest session cart context", () => {
 
     expect(context.cartId).not.toBe(existingCartId);
     expect(context.sessionId).not.toBe(sessionId);
-    expect(databaseCalls).toHaveLength(2);
+    expect(databaseCalls).toHaveLength(3);
     expect(databaseCalls[0].text).toContain("select id");
-    expect(databaseCalls[1].text).toContain("insert into carts");
+    expect(databaseCalls[1].text).toContain("where guest_token_hash = $1");
+    expect(databaseCalls[2].text).toContain("insert into carts");
     expect(calls.setEx[0].key).toBe(
       `guest_session:${sha256(context.sessionId)}`,
     );
@@ -483,8 +444,9 @@ describe("guest session cart context", () => {
       );
 
       expect(context.sessionId).not.toBe(sessionId);
-      expect(databaseCalls).toHaveLength(1);
-      expect(databaseCalls[0].text).toContain("insert into carts");
+      expect(databaseCalls).toHaveLength(2);
+      expect(databaseCalls[0].text).toContain("where guest_token_hash = $1");
+      expect(databaseCalls[1].text).toContain("insert into carts");
     }
   });
 
@@ -535,28 +497,45 @@ describe("guest session cart context", () => {
       expect(Buffer.byteLength(oversizedValue, "utf8")).toBe(1025);
       expect(parseSpy).not.toHaveBeenCalledWith(oversizedValue);
       expect(context.sessionId).not.toBe(oversizedSessionId);
-      expect(databaseCalls).toHaveLength(1);
-      expect(databaseCalls[0].text).toContain("insert into carts");
+      expect(databaseCalls).toHaveLength(2);
+      expect(databaseCalls[0].text).toContain("where guest_token_hash = $1");
+      expect(databaseCalls[1].text).toContain("insert into carts");
     } finally {
       parseSpy.mockRestore();
     }
   });
 
-  test("propagates Redis read failures without database or cookie writes", async () => {
+  test("recovers durable state when the Redis read fails", async () => {
     const sessionId = "redis_error_session_abcdefghijklmnopqrstuvwxyz123456789";
     const redisError = new Error("Redis read failed");
     const { redis } = createRedisMock({}, { getError: redisError });
-    const { calls: databaseCalls, database } = createDatabaseMock();
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      {
+        rows: [
+          {
+            created_at: fixedNow,
+            expires_at: "2026-06-30T12:00:00.000Z",
+            id: existingCartId
+          }
+        ]
+      }
+    ]);
     const { cookies, reply } = createReplyMock();
+    const request = createRequestMock(redis, database, { session_id: sessionId });
 
     await expect(
-      getOrCreateGuestCartContext(
-        createRequestMock(redis, database, { session_id: sessionId }),
-        reply,
-      ),
-    ).rejects.toBe(redisError);
-    expect(databaseCalls).toHaveLength(0);
+      getOrCreateGuestCartContext(request, reply),
+    ).resolves.toEqual({ cartId: existingCartId, sessionId });
+    expect(databaseCalls).toHaveLength(1);
     expect(cookies).toHaveLength(0);
+    expect(request.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheError: { errorType: "Error" },
+        cacheOperation: "read",
+        event: "cart.guest_session.cache_failed"
+      }),
+      "Guest cart session cache read failed",
+    );
   });
 
   test("propagates durable ownership read failures without rotating", async () => {
@@ -597,59 +576,119 @@ describe("guest session cart context", () => {
     expect(cookies).toHaveLength(0);
   });
 
-  test("abandons the durable cart and rethrows when the Redis write fails", async () => {
+  test("creates a durable guest cart and sets its cookie when Redis is unavailable", async () => {
     const operationOrder: string[] = [];
-    const redisError = new Error("Redis write failed");
+    const redisError = new Error("redis://secret-host unavailable");
     const { calls, redis } = createRedisMock(
       {},
       { operationOrder, setExError: redisError },
     );
     const { calls: databaseCalls, database } = createDatabaseMock(
-      [{ rows: [] }, { rows: [] }],
+      [{ rows: [] }],
       operationOrder,
     );
     const { cookies, reply } = createReplyMock(operationOrder);
+    const request = createRequestMock(redis, database);
 
-    await expect(
-      getOrCreateGuestCartContext(
-        createRequestMock(redis, database),
-        reply,
-      ),
-    ).rejects.toBe(redisError);
+    const context = await getOrCreateGuestCartContext(request, reply);
+
     expect(operationOrder).toEqual([
       "database:query",
       "redis:setEx",
-      "database:query"
+      "cookie:set"
     ]);
-    expect(databaseCalls[1].text).toContain("set status = 'abandoned'");
-    expect(databaseCalls[1].values).toEqual([
-      JSON.parse(calls.setEx[0].value).cartId,
-      calls.setEx[0].key.replace("guest_session:", "")
-    ]);
-    expect(cookies).toHaveLength(0);
+    expect(databaseCalls).toHaveLength(1);
+    expect(databaseCalls[0].text).toContain("insert into carts");
+    expect(databaseCalls[0].text).not.toContain("set status = 'abandoned'");
+    expect(calls.setEx).toHaveLength(1);
+    expect(context.cartId).toBe(JSON.parse(calls.setEx[0].value).cartId);
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0].value).toBe(context.sessionId);
+    expect(request.log.warn).toHaveBeenCalledWith(
+      {
+        event: "cart.guest_session.cache_failed",
+        cacheOperation: "create",
+        cartId: context.cartId,
+        cacheError: { errorType: "Error" }
+      },
+      "Guest cart session cache write failed",
+    );
+    expect(JSON.stringify(vi.mocked(request.log.warn).mock.calls)).not.toContain(
+      "secret-host",
+    );
+    expect(JSON.stringify(vi.mocked(request.log.warn).mock.calls)).not.toContain(
+      context.sessionId,
+    );
+    expect(JSON.stringify(vi.mocked(request.log.warn).mock.calls)).not.toContain(
+      sha256(context.sessionId),
+    );
   });
 
-  test("preserves the Redis error when best-effort abandonment also fails", async () => {
-    const redisError = new Error("Redis write failed");
-    const abandonmentError = new Error("PostgreSQL abandonment failed");
-    const { redis } = createRedisMock({}, { setExError: redisError });
-    const { database } = createDatabaseMock([
-      { rows: [] },
-      abandonmentError
-    ]);
-    const { cookies, reply } = createReplyMock();
-    const request = createRequestMock(redis, database);
+  test("recovers a guest cart created during a Redis outage and repairs the cache", async () => {
+    const unavailableRedis = createRedisMock({}, {
+      setExError: new Error("Redis write failed")
+    });
+    const creationDatabase = createDatabaseMock([{ rows: [] }]);
+    const creationReply = createReplyMock();
 
-    await expect(getOrCreateGuestCartContext(request, reply)).rejects.toBe(
-      redisError,
+    const createdContext = await getOrCreateGuestCartContext(
+      createRequestMock(unavailableRedis.redis, creationDatabase.database),
+      creationReply.reply,
     );
-    expect(request.log.error).toHaveBeenCalledWith(
+
+    const { calls: recoveredRedisCalls, redis: recoveredRedis } =
+      createRedisMock();
+    const { calls: recoveryDatabaseCalls, database: recoveryDatabase } =
+      createDatabaseMock([
+        {
+          rows: [
+            {
+              created_at: fixedNow,
+              expires_at: "2026-06-30T12:00:00.000Z",
+              id: createdContext.cartId
+            }
+          ]
+        }
+      ]);
+    const recoveryReply = createReplyMock();
+    const recoveryRequest = createRequestMock(
+      recoveredRedis,
+      recoveryDatabase,
+      { session_id: createdContext.sessionId },
+    );
+
+    await expect(
+      getOrCreateGuestCartContext(recoveryRequest, recoveryReply.reply),
+    ).resolves.toEqual(createdContext);
+    expect(recoveredRedisCalls.get).toEqual([
+      `guest_session:${sha256(createdContext.sessionId)}`
+    ]);
+    expect(recoveredRedisCalls.setEx).toHaveLength(1);
+    expect(recoveredRedisCalls.setEx[0]).toMatchObject({
+      key: `guest_session:${sha256(createdContext.sessionId)}`,
+      ttl: sevenDaysInSeconds
+    });
+    expect(JSON.parse(recoveredRedisCalls.setEx[0].value)).toEqual({
+      cartId: createdContext.cartId,
+      createdAt: fixedNow
+    });
+    expect(recoveryDatabaseCalls).toHaveLength(1);
+    expect(recoveryDatabaseCalls[0].text).toContain(
+      "where guest_token_hash = $1",
+    );
+    expect(recoveryDatabaseCalls[0].values).toEqual([
+      sha256(createdContext.sessionId)
+    ]);
+    expect(recoveryReply.cookies).toHaveLength(0);
+    expect(recoveryRequest.log.info).toHaveBeenCalledWith(
       expect.objectContaining({
-        databaseError: { errorType: "Error" }
+        cacheOutcome: "miss",
+        cacheRepaired: true,
+        cartId: createdContext.cartId,
+        event: "cart.guest_session.recovered"
       }),
-      "Failed to abandon guest cart after Redis session write failure",
+      "Guest cart session recovered from durable state",
     );
-    expect(cookies).toHaveLength(0);
   });
 
   test("non-creating lookup returns only an active durable context", async () => {
@@ -684,6 +723,78 @@ describe("guest session cart context", () => {
         }),
       ),
     ).resolves.toBeNull();
+  });
+
+  test("non-creating lookup recovers a Redis miss without rotating the cookie", async () => {
+    const sessionId = "lookup_recovery_session_abcdefghijklmnopqrstuvwxyz123456";
+    const { calls: redisCalls, redis } = createRedisMock();
+    const { calls: databaseCalls, database } = createDatabaseMock([
+      {
+        rows: [
+          {
+            created_at: fixedNow,
+            expires_at: "2026-06-30T12:00:00.000Z",
+            id: existingCartId
+          }
+        ]
+      }
+    ]);
+    const request = createRequestMock(redis, database, { session_id: sessionId });
+
+    await expect(getGuestCartContext(request)).resolves.toEqual({
+      cartId: existingCartId,
+      sessionId
+    });
+    expect(databaseCalls).toHaveLength(1);
+    expect(redisCalls.setEx).toHaveLength(1);
+    expect(request.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ cacheOutcome: "miss", cacheRepaired: true }),
+      "Guest cart session recovered from durable state",
+    );
+  });
+
+  test("keeps durable recovery available when cache repair fails safely", async () => {
+    const sessionId = "repair_failure_session_abcdefghijklmnopqrstuvwxyz123456";
+    const { redis } = createRedisMock(
+      {},
+      { setExError: new Error("redis://secret-host unavailable") },
+    );
+    const { database } = createDatabaseMock([
+      {
+        rows: [
+          {
+            created_at: fixedNow,
+            expires_at: "2026-06-30T12:00:00.000Z",
+            id: existingCartId
+          }
+        ]
+      }
+    ]);
+    const request = createRequestMock(redis, database, { session_id: sessionId });
+
+    await expect(getGuestCartContext(request)).resolves.toEqual({
+      cartId: existingCartId,
+      sessionId
+    });
+    expect(request.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheError: { errorType: "Error" },
+        cacheOperation: "repair",
+        cartId: existingCartId,
+        event: "cart.guest_session.cache_failed"
+      }),
+      "Guest cart session cache repair failed",
+    );
+    expect(request.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ cacheRepaired: false }),
+      "Guest cart session recovered from durable state",
+    );
+    expect(JSON.stringify(vi.mocked(request.log.warn).mock.calls)).not.toContain(
+      "secret-host",
+    );
+    expect(JSON.stringify(vi.mocked(request.log.info).mock.calls)).not.toContain(
+      sessionId,
+    );
   });
 
   test("checkout lookup resolves the hashed cookie from PostgreSQL without Redis", async () => {
@@ -721,268 +832,5 @@ describe("guest session cart context", () => {
     expect(calls[0].text).toContain("status = 'active'");
     expect(calls[0].text).toContain("expires_at > now()");
     expect(calls[0].text).not.toContain("checkout_started");
-  });
-});
-
-describe("guest cart items", () => {
-  test("distinguishes a valid empty projection from a cache miss", async () => {
-    const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
-    const { redis: hitRedis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: "[]"
-    });
-    const { redis: missRedis } = createRedisMock();
-
-    expect(await readGuestCartItems(hitRedis, cartId)).toEqual({
-      hit: true,
-      items: []
-    });
-    expect(await readGuestCartItems(missRedis, cartId)).toEqual({ hit: false });
-  });
-
-  test("treats a rejected strict projection as a cache miss", async () => {
-    const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify([
-        { ...createValidDisplayItem(), stripeCheckoutSessionId: "cs_secret" }
-      ])
-    });
-
-    expect(await readGuestCartItems(redis, cartId)).toEqual({ hit: false });
-  });
-
-  test("returns fresh typed guest cart display items from Redis", async () => {
-    const cartId = "cart-items";
-    const items = [
-      createValidDisplayItem(),
-      createValidDisplayItem({
-        cartItemId: "f33d7a50-cd15-418a-96dd-46e8c6466830",
-        fabricId: null,
-        customizationSummary: {
-          fontOptionId: null,
-          line1: "",
-          line2: "",
-          imageAssetId: null,
-          trimOptionId: null
-        },
-        quantity: 999,
-        unitAmountCents: 2_147_483_647,
-        validationStatus: "needs_reprice"
-      })
-    ];
-    const { calls, redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify(items)
-    });
-
-    const result = await getGuestCartItems(redis, cartId);
-
-    expect(result).toEqual(items);
-    expect(result).not.toBe(items);
-    expect(result[0]).not.toBe(items[0]);
-    expect(result[0].customizationSummary).not.toBe(
-      items[0].customizationSummary,
-    );
-    expect(calls.get).toEqual([buildGuestCartItemsKey(cartId)]);
-  });
-
-  test("returns an empty array for missing guest cart items", async () => {
-    const { redis } = createRedisMock();
-
-    const result = await getGuestCartItems(redis, "missing-cart");
-
-    expect(result).toEqual([]);
-  });
-
-  test("returns an empty array for non-array guest cart values", async () => {
-    const cartId = "invalid-cart";
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify({ listingId: "listing-1" })
-    });
-
-    const result = await getGuestCartItems(redis, cartId);
-
-    expect(result).toEqual([]);
-  });
-
-  test("returns an empty array for malformed guest cart values", async () => {
-    const cartId = "malformed-cart";
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: "{not-json"
-    });
-
-    const result = await getGuestCartItems(redis, cartId);
-
-    expect(result).toEqual([]);
-  });
-
-  test("rejects the entire projection when an item is missing a required field", async () => {
-    const cartId = "missing-field-cart";
-    const { title: _title, ...incompleteItem } = createValidDisplayItem();
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify([
-        createValidDisplayItem(),
-        incompleteItem
-      ])
-    });
-
-    const result = await getGuestCartItems(redis, cartId);
-
-    expect(result).toEqual([]);
-  });
-
-  test("rejects unknown and sensitive fields instead of stripping them", async () => {
-    const sensitiveItems = [
-      createValidDisplayItem({ stripePaymentIntentId: "pi_secret" }),
-      createValidDisplayItem({ sessionToken: "raw-session-token" }),
-      createValidDisplayItem({ privateUrl: "https://private.test/asset" }),
-      createValidDisplayItem({ internalNotes: "do not expose" }),
-      createValidDisplayItem({
-        customizationSummary: {
-          fontOptionId: null,
-          line1: "Class of 2026",
-          line2: "Kapchi University",
-          imageAssetId: displayIds.imageAsset,
-          trimOptionId: null,
-          privateUrl: "https://private.test/asset"
-        }
-      })
-    ];
-
-    for (const [index, item] of sensitiveItems.entries()) {
-      const cartId = `sensitive-cart-${index}`;
-      const { redis } = createRedisMock({
-        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
-      });
-
-      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
-    }
-  });
-
-  test("rejects invalid identifiers, numbers, currency, and status", async () => {
-    const invalidItems = [
-      createValidDisplayItem({ cartItemId: "not-a-uuid" }),
-      createValidDisplayItem({ listingId: "not-a-uuid" }),
-      createValidDisplayItem({ fabricId: "not-a-uuid" }),
-      createValidDisplayItem({ customizationSetId: "not-a-uuid" }),
-      createValidDisplayItem({ quantity: 0 }),
-      createValidDisplayItem({ quantity: 1000 }),
-      createValidDisplayItem({ quantity: 1.5 }),
-      createValidDisplayItem({ unitAmountCents: -1 }),
-      createValidDisplayItem({ unitAmountCents: 2_147_483_648 }),
-      createValidDisplayItem({ unitAmountCents: 1.5 }),
-      createValidDisplayItem({ currency: "USD" }),
-      createValidDisplayItem({ currency: "us" }),
-      createValidDisplayItem({ validationStatus: "pending" }),
-      createValidDisplayItem({
-        customizationSummary: {
-          fontOptionId: null,
-          line1: "Class of 2026",
-          line2: "Kapchi University",
-          imageAssetId: "not-a-uuid",
-          trimOptionId: null
-        }
-      })
-    ];
-
-    for (const [index, item] of invalidItems.entries()) {
-      const cartId = `invalid-item-cart-${index}`;
-      const { redis } = createRedisMock({
-        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
-      });
-
-      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
-    }
-  });
-
-  test("accepts exact text limits and rejects one character over", async () => {
-    const cartId = "exact-text-limits-cart";
-    const exactLimitItem = createValidDisplayItem({
-      listingSlug: "s".repeat(255),
-      title: "t".repeat(255),
-      customizationSummary: {
-        fontOptionId: null,
-        line1: "x".repeat(512),
-        line2: "y".repeat(512),
-        imageAssetId: null,
-        trimOptionId: null
-      }
-    });
-    const { redis } = createRedisMock({
-      [buildGuestCartItemsKey(cartId)]: JSON.stringify([exactLimitItem])
-    });
-
-    await expect(getGuestCartItems(redis, cartId)).resolves.toEqual([
-      exactLimitItem
-    ]);
-
-    const invalidItems = [
-      createValidDisplayItem({ listingSlug: "" }),
-      createValidDisplayItem({ listingSlug: "s".repeat(256) }),
-      createValidDisplayItem({ title: "" }),
-      createValidDisplayItem({ title: "t".repeat(256) }),
-      createValidDisplayItem({
-        customizationSummary: {
-          fontOptionId: null,
-          line1: "x".repeat(513),
-          line2: "",
-          imageAssetId: null,
-          trimOptionId: null
-        }
-      }),
-      createValidDisplayItem({
-        customizationSummary: {
-          fontOptionId: null,
-          line1: "",
-          line2: "y".repeat(513),
-          imageAssetId: null,
-          trimOptionId: null
-        }
-      })
-    ];
-
-    for (const [index, item] of invalidItems.entries()) {
-      const cartId = `invalid-text-cart-${index}`;
-      const { redis } = createRedisMock({
-        [buildGuestCartItemsKey(cartId)]: JSON.stringify([item])
-      });
-
-      expect(await getGuestCartItems(redis, cartId)).toEqual([]);
-    }
-  });
-
-  test("accepts exactly 100 items and rejects 101", async () => {
-    const exactCartId = "exact-item-count-cart";
-    const items = Array.from({ length: 101 }, (_, index) =>
-      createValidDisplayItem({
-        cartItemId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`
-      }),
-    );
-    const { redis: exactRedis } = createRedisMock({
-      [buildGuestCartItemsKey(exactCartId)]: JSON.stringify(items.slice(0, 100))
-    });
-    const overCartId = "over-item-count-cart";
-    const { redis: overRedis } = createRedisMock({
-      [buildGuestCartItemsKey(overCartId)]: JSON.stringify(items)
-    });
-
-    expect(await getGuestCartItems(exactRedis, exactCartId)).toHaveLength(100);
-    expect(await getGuestCartItems(overRedis, overCartId)).toEqual([]);
-  });
-
-  test("accepts exactly 64 KiB and rejects one UTF-8 byte over", async () => {
-    const exactCartId = "exact-byte-limit-cart";
-    const exactProjection = createProjectionWithExactByteLength(64 * 1024);
-    const overCartId = "over-byte-limit-cart";
-    const overProjection = createProjectionWithExactByteLength(64 * 1024 + 1);
-    const { redis: exactRedis } = createRedisMock({
-      [buildGuestCartItemsKey(exactCartId)]: exactProjection
-    });
-    const { redis: overRedis } = createRedisMock({
-      [buildGuestCartItemsKey(overCartId)]: overProjection
-    });
-
-    expect(Buffer.byteLength(exactProjection, "utf8")).toBe(64 * 1024);
-    expect(await getGuestCartItems(exactRedis, exactCartId)).toHaveLength(50);
-    expect(Buffer.byteLength(overProjection, "utf8")).toBe(64 * 1024 + 1);
-    expect(await getGuestCartItems(overRedis, overCartId)).toEqual([]);
   });
 });

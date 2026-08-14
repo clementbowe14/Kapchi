@@ -1,8 +1,9 @@
 # Backend Observability
 
 The backend emits JSON logs for every request and detailed lifecycle events for
-checkout. Logs are designed to support production troubleshooting without
-including credentials, customer contact data, or payment payloads.
+cart and checkout workflows. Logs are designed to support production
+troubleshooting without including credentials, customer contact data,
+customization content, or payment payloads.
 
 ## Request IDs
 
@@ -56,13 +57,53 @@ Depending on the event, safe fields include `orderId`, `providerSessionId`,
 request logger, so they carry the HTTP `requestId` without passing HTTP objects
 into the service.
 
+## Cart Events
+
+Cart route events use the request logger and therefore include the HTTP
+`requestId`. The cart observer emits one completion event for a successful
+operation or one `cart.operation.failed` event when the cart route handles or
+throws an error.
+
+| Event | Operation | Meaning |
+| --- | --- | --- |
+| `cart.read.completed` | `read` or `summary` | A full cart or lightweight count summary was read. |
+| `cart.item.added` | `add` | An idempotent add-item request completed. |
+| `cart.item.updated` | `update` | A cart item was updated. |
+| `cart.item.removed` | `remove` | A cart item was removed. |
+| `cart.claim.completed` | `claim` | A guest cart was merged into an authenticated cart. |
+| `cart.operation.failed` | Any cart operation | A handled 4xx or unexpected failure occurred. |
+
+Every cart event includes `actorType`, `durationMs`, and `operation`. Successful
+events include the available bounded state fields: `cartId`, `cartItemId`,
+`revision`, `lineItemCount`, `totalQuantity`, and `subtotalCents`. Failure events
+include `statusCode`, `errorType`, and a constrained `errorCode` when available;
+they use warning level for 4xx responses and error level for 5xx responses.
+
+`lineItemCount` is the number of distinct cart rows. `totalQuantity` is the sum
+of the rows' quantities and is the value a navigation badge should display.
+`revision` changes after a successful cart mutation and can identify stale or
+out-of-order client responses. `GET /cart/summary` returns these count fields
+without loading the full cart. A guest without a valid cart context receives a
+zero summary and the read does not create a cart or set a guest cookie.
+
+Retry-safe callers of `POST /cart/items` send a bounded `Idempotency-Key`
+header. Retrying the same payload with the same key returns the original
+result; reusing the key for a different payload returns
+`409 CART_IDEMPOTENCY_CONFLICT`. During independent client/backend rollouts, a
+legacy request without the header receives a server-generated one-request key,
+so it remains compatible but is not safe to replay. The key itself is never
+logged.
+
 ## Redaction
 
 Logger redaction covers authorization headers, cookies, Stripe signatures,
 secret and token fields, passwords, raw bodies and payloads, customer email and
-phone fields, client secrets, payment methods, and card fields. Remote provider
-and infrastructure errors are logged only as an error type and a constrained
-error code.
+phone fields, client secrets, payment methods, and card fields. Cart event
+payloads are allowlisted separately and never include guest session values or
+hashes, auth subjects, customer data, customization text, asset or file
+metadata, request bodies, idempotency keys, or raw errors. Remote provider and
+infrastructure errors are logged only as an error type and a constrained error
+code.
 
 Do not add raw request bodies, webhook payloads, customer contact details, auth
 tokens, provider error objects, or payment details to new event fields. Add new
@@ -72,13 +113,23 @@ structured identifiers or bounded state fields instead.
 
 1. Start with `http.request.failed` or a non-success
    `http.request.completed` event.
-2. Search all logs for its `requestId` to reconstruct the request and checkout
+2. Search all logs for its `requestId` to reconstruct the request and workflow
    lifecycle.
-3. For `checkout.provider.failed`, use `providerOperation`, `orderId`, and the
+3. For a cart count mismatch, compare `revision`, `lineItemCount`, and
+   `totalQuantity` across the latest `cart.*` events. A lower revision arriving
+   after a higher revision points to an out-of-order client response; a badge
+   using `lineItemCount` instead of `totalQuantity` points to a client contract
+   mismatch.
+4. For `CART_IDEMPOTENCY_CONFLICT`, verify that the client creates one key per
+   logical add action and preserves it only while retrying that same payload.
+5. For repeated cart 4xx responses, filter `cart.operation.failed` by
+   `operation`, `errorCode`, and `actorType`. Use `cartId` or `cartItemId` when
+   present, without adding sensitive request content to logs.
+6. For `checkout.provider.failed`, use `providerOperation`, `orderId`, and the
    Stripe Dashboard request logs. Do not add the Stripe error body to app logs.
-4. For `checkout.persistence.failed`, use `operation`, `orderId`, and database
+7. For `checkout.persistence.failed`, use `operation`, `orderId`, and database
    health metrics or database logs.
-5. For terminal sessions, inspect `disposition` and `providerSessionId`, then
+8. For terminal sessions, inspect `disposition` and `providerSessionId`, then
    confirm durable order state before retrying.
 
 The observer is intentionally vendor-neutral. A telemetry exporter can be

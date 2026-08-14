@@ -1,3 +1,5 @@
+import { parseCartAggregate, totalPhysicalQuantity } from "./cart-state";
+
 export type PreferredContactMethod = "email" | "phone";
 
 export type CartValidationStatus =
@@ -39,7 +41,10 @@ export type CartWarning = {
 export type CartView = {
   cartId?: string;
   items: CartLine[];
+  lineItemCount: number;
+  revision: number;
   subtotalCents: number;
+  totalQuantity: number;
   warnings: CartWarning[];
 };
 
@@ -232,9 +237,16 @@ export function parseCartView(value: unknown): CartView {
     throw new Error("Invalid cart response.");
   }
 
+  const items = value.items.map(parseCartLine);
+  const aggregate = parseCartAggregate(value, {
+    lineItemCount: items.length,
+    totalQuantity: totalPhysicalQuantity(items),
+  });
+
   return {
+    ...aggregate,
     cartId: typeof value.cartId === "string" ? value.cartId : undefined,
-    items: value.items.map(parseCartLine),
+    items,
     subtotalCents,
     warnings: Array.isArray(value.warnings)
       ? value.warnings.map(parseCartWarning).filter((warning) => warning !== null)

@@ -87,7 +87,10 @@ describe("checkout helpers", () => {
           validationStatus: "unavailable",
         },
       ],
+      lineItemCount: 1,
+      revision: 1,
       subtotalCents: 8500,
+      totalQuantity: 1,
     });
 
     expect(cartNeedsReview(cart)).toBe(true);
