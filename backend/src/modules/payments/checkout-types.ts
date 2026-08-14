@@ -1,8 +1,12 @@
 import type { GuestCartContext } from "../cart/guest-session.js";
 
 export type CheckoutCartOwner =
-  | GuestCartContext
-  | { authSubject: string };
+  | (GuestCartContext & { expectedRevision?: number })
+  | {
+      authSubject: string;
+      cartId?: string;
+      expectedRevision?: number;
+    };
 
 export type PreferredContactMethod = "email" | "phone" | "sms";
 
@@ -10,6 +14,11 @@ export type CheckoutContact = {
   customerEmail: string;
   customerPhone: string | null;
   preferredContactMethod: PreferredContactMethod;
+};
+
+export type CheckoutRequest = CheckoutContact & {
+  cartId?: string;
+  cartRevision?: number;
 };
 
 export type CheckoutReviewIssue = {
@@ -26,11 +35,15 @@ export type CheckoutLine = {
 };
 
 export type PreparedCheckout = {
+  cartId: string;
+  cartRevision: number;
+  cartStatus: "active" | "checkout_started";
   customerEmail: string;
   existingStripeSessionId: string | null;
   lines: CheckoutLine[];
   orderId: string;
   publicOrderNumber: string;
+  reusedOrder: boolean;
 };
 
 export type CheckoutResult = {
@@ -45,4 +58,10 @@ export type CheckoutStatus = {
   orderId: string;
   paymentStatus: string;
   publicOrderNumber: string;
+};
+
+export type CatalogUnavailableDisposition = {
+  cartId: string | null;
+  cartStatus: "abandoned" | "active" | null;
+  orderRetired: boolean;
 };

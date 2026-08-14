@@ -101,7 +101,7 @@ describe("CartCheckoutClient", () => {
     );
   });
 
-  it("submits only contact data and follows a validated Stripe URL", async () => {
+  it("binds contact data to the reviewed cart and follows a validated Stripe URL", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.mocked(fetch);
     const redirect = vi.fn();
@@ -138,12 +138,14 @@ describe("CartCheckoutClient", () => {
     );
     const request = checkoutCall?.[1] as RequestInit;
     expect(JSON.parse(String(request.body))).toEqual({
+      cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
+      cartRevision: 1,
       customerEmail: "guest@example.com",
       customerPhone: "+1 (555) 010-1010",
       preferredContactMethod: "email",
     });
     expect(JSON.stringify(request.body)).not.toContain("subtotal");
-    expect(JSON.stringify(request.body)).not.toContain("cartId");
+    expect(JSON.stringify(request.body)).not.toContain("unitAmount");
   });
 
   it("claims a guest cart and checks out an account with a Clerk token", async () => {

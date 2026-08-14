@@ -651,6 +651,9 @@ export function CartCheckoutClient({
         buildApiUrl("/payments/checkout-sessions"),
         {
           body: JSON.stringify({
+            ...(cart.cartId
+              ? { cartId: cart.cartId, cartRevision: cart.revision }
+              : {}),
             customerEmail: email.trim(),
             customerPhone: phone.trim() || null,
             preferredContactMethod,

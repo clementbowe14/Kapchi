@@ -10,8 +10,8 @@ const integrationDescribe =
   process.env.RUN_DATABASE_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 integrationDescribe("CheckoutRepository catalog failure marker", () => {
-  let cartId: string | null = null;
-  let orderId: string | null = null;
+  let cartIds: string[] = [];
+  let orderIds: string[] = [];
   let pool: Pool;
 
   beforeAll(async () => {
@@ -20,14 +20,14 @@ integrationDescribe("CheckoutRepository catalog failure marker", () => {
   });
 
   afterEach(async () => {
-    if (orderId) {
-      await pool.query("delete from orders where id = $1", [orderId]);
+    if (orderIds.length > 0) {
+      await pool.query("delete from orders where id = any($1::uuid[])", [orderIds]);
     }
-    if (cartId) {
-      await pool.query("delete from carts where id = $1", [cartId]);
+    if (cartIds.length > 0) {
+      await pool.query("delete from carts where id = any($1::uuid[])", [cartIds]);
     }
-    cartId = null;
-    orderId = null;
+    cartIds = [];
+    orderIds = [];
   });
 
   afterAll(async () => {
@@ -35,8 +35,10 @@ integrationDescribe("CheckoutRepository catalog failure marker", () => {
   });
 
   it("persists one event for concurrent deterministic failures", async () => {
-    cartId = randomUUID();
-    orderId = randomUUID();
+    const cartId = randomUUID();
+    const orderId = randomUUID();
+    cartIds.push(cartId);
+    orderIds.push(orderId);
     const userId = `catalog-failure-integration-${cartId}`;
 
     await pool.query(
@@ -61,10 +63,11 @@ integrationDescribe("CheckoutRepository catalog failure marker", () => {
     );
 
     const repository = new CheckoutRepository(pool);
-    await Promise.all([
+    const dispositions = await Promise.all([
       repository.markCatalogUnavailable(orderId),
       repository.markCatalogUnavailable(orderId)
     ]);
+    expect(dispositions.filter((result) => result.orderRetired)).toHaveLength(1);
 
     const order = await pool.query<{
       payment_status: string;
@@ -77,7 +80,7 @@ integrationDescribe("CheckoutRepository catalog failure marker", () => {
     );
     expect(order.rows).toEqual([{
       payment_status: "failed",
-      status: "pending_payment",
+      status: "cancelled",
       stripe_checkout_session_id: null
     }]);
 
@@ -106,6 +109,61 @@ integrationDescribe("CheckoutRepository catalog failure marker", () => {
       "select status from carts where id = $1",
       [cartId],
     );
-    expect(cart.rows).toEqual([{ status: "checkout_started" }]);
+    expect(cart.rows).toEqual([{ status: "active" }]);
+  });
+
+  it("abandons a stale checkout cart when the owner has an active replacement", async () => {
+    const staleCartId = randomUUID();
+    const activeCartId = randomUUID();
+    const orderId = randomUUID();
+    const userId = `catalog-failure-sibling-${staleCartId}`;
+    cartIds.push(staleCartId, activeCartId);
+    orderIds.push(orderId);
+
+    await pool.query(
+      `
+        insert into carts (
+          id, user_id, status, currency, subtotal_cents, expires_at
+        ) values
+          ($1, $3, 'checkout_started', 'usd', 4500, now() + interval '1 hour'),
+          ($2, $3, 'active', 'usd', 9000, now() + interval '1 hour')
+      `,
+      [staleCartId, activeCartId, userId],
+    );
+    await pool.query(
+      `
+        insert into orders (
+          id, public_order_number, user_id, cart_id, status, payment_status,
+          subtotal_cents, total_cents, currency
+        ) values (
+          $1, $2, $3, $4, 'pending_payment', 'failed', 4500, 4500, 'usd'
+        )
+      `,
+      [orderId, `CATALOG-${orderId}`, userId, staleCartId],
+    );
+
+    const disposition = await new CheckoutRepository(pool).markCatalogUnavailable(orderId);
+
+    expect(disposition).toEqual({
+      cartId: staleCartId,
+      cartStatus: "abandoned",
+      orderRetired: true
+    });
+    const carts = await pool.query<{ id: string; status: string }>(
+      "select id, status from carts where id = any($1::uuid[]) order by id",
+      [[staleCartId, activeCartId]],
+    );
+    expect(new Map(carts.rows.map((cart) => [cart.id, cart.status]))).toEqual(
+      new Map([
+        [staleCartId, "abandoned"],
+        [activeCartId, "active"]
+      ]),
+    );
+
+    const order = await pool.query<{ payment_status: string; status: string }>(
+      "select status, payment_status from orders where id = $1",
+      [orderId],
+    );
+    expect(order.rows).toEqual([{ payment_status: "failed", status: "cancelled" }]);
   });
 });

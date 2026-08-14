@@ -15,6 +15,7 @@ import {
   type CheckoutProviderSession
 } from "./checkout-provider.js";
 import type {
+  CatalogUnavailableDisposition,
   CheckoutContact,
   CheckoutCartOwner,
   CheckoutResult,
@@ -31,7 +32,7 @@ export interface CheckoutRepositoryPort {
       sessionId: string;
     },
   ): Promise<void>;
-  markCatalogUnavailable(orderId: string): Promise<void>;
+  markCatalogUnavailable(orderId: string): Promise<CatalogUnavailableDisposition>;
   markProviderFailure(orderId: string): Promise<void>;
   getCheckoutStatus(
     context: CheckoutCartOwner,
@@ -209,9 +210,13 @@ export class CheckoutService {
     try {
       const prepared = await this.repository.prepareCheckout(context, contact);
       this.observe("info", "checkout.preparation.succeeded", {
+        cartId: prepared.cartId,
+        cartRevision: prepared.cartRevision,
+        cartStatus: prepared.cartStatus,
         existingProviderSession: Boolean(prepared.existingStripeSessionId),
         lineItemCount: prepared.lines.length,
-        orderId: prepared.orderId
+        orderId: prepared.orderId,
+        reusedOrder: prepared.reusedOrder
       });
       return prepared;
     } catch (error) {
@@ -272,7 +277,17 @@ export class CheckoutService {
 
       try {
         if (catalogUnavailable) {
-          await this.repository.markCatalogUnavailable(prepared.orderId);
+          const disposition = await this.repository.markCatalogUnavailable(
+            prepared.orderId,
+          );
+          this.observe("warn", "checkout.catalog.retired", {
+            cartId: disposition.cartId ?? undefined,
+            cartStatus: disposition.cartStatus ?? undefined,
+            orderId: prepared.orderId,
+            resultCode: disposition.orderRetired
+              ? "CATALOG_ORDER_RETIRED"
+              : "CATALOG_ORDER_ALREADY_RETIRED"
+          });
         } else {
           await this.repository.markProviderFailure(prepared.orderId);
         }
