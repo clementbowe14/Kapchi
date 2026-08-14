@@ -101,6 +101,11 @@ type RetiredOrderRow = QueryResultRow & {
 
 type Queryable = Pick<PoolClient, "query">;
 
+const catalogUnavailableEventMetadata = Object.freeze({
+  reason: "missing_checkout_line_item_price",
+  source: "stripe_checkout_session"
+});
+
 function customizationLines(payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { fontOptionId: null, line1: "", line2: "", trimOptionId: null };
@@ -680,6 +685,42 @@ export class CheckoutRepository {
       `,
       [orderId],
     );
+  }
+
+  async markCatalogUnavailable(orderId: string) {
+    await this.withTransaction(async (client) => {
+      const failedOrder = await client.query<{ id: string }>(
+        `
+          update orders
+          set payment_status = 'failed'
+          where id = $1
+            and status = 'pending_payment'
+            and payment_status in ('unpaid', 'checkout_started', 'failed')
+          returning id
+        `,
+        [orderId],
+      );
+
+      if (failedOrder.rows.length !== 1) {
+        return;
+      }
+
+      await client.query(
+        `
+          insert into order_events (
+            order_id, actor_type, event_type, to_value, metadata
+          )
+          select $1, 'system', 'checkout.catalog_unavailable', 'failed', $2::jsonb
+          where not exists (
+            select 1
+            from order_events
+            where order_id = $1
+              and event_type = 'checkout.catalog_unavailable'
+          )
+        `,
+        [orderId, JSON.stringify(catalogUnavailableEventMetadata)],
+      );
+    });
   }
 
   async retireTerminalCheckout(

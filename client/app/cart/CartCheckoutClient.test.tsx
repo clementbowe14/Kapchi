@@ -331,6 +331,46 @@ describe("CartCheckoutClient", () => {
     await waitFor(() => expect(redirect).toHaveBeenCalledOnce());
   });
 
+  it("retains contact data without offering retry for a catalog failure", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(cartResponse()))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: "CHECKOUT_CATALOG_UNAVAILABLE",
+            message: "private provider catalog details",
+            statusCode: 503,
+          },
+          503,
+        ),
+      );
+
+    render(<CartCheckoutClient redirectToCheckout={vi.fn()} />);
+    await screen.findByText("Graduation Stole");
+    await user.type(screen.getByLabelText("Email"), "guest@example.com");
+    await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await user.click(
+      screen.getByRole("button", { name: "Continue to secure checkout" }),
+    );
+
+    expect(
+      await screen.findByText(/Secure checkout is unavailable for one or more items/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("private provider catalog details")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Try checkout again" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toHaveValue("guest@example.com");
+    expect(screen.getByLabelText("Phone")).toHaveValue("+15550101010");
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/payments/checkout-sessions",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("recovers an already-completed checkout through confirmation", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.mocked(fetch);

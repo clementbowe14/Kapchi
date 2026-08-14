@@ -60,6 +60,19 @@ API key. `STRIPE_WEBHOOK_SECRET` is only for webhook signature verification, and
 credentials created by `stripe login` belong to the Stripe CLI rather than the
 backend process.
 
+To use seeded listings with Stripe Checkout, provision their test catalog after
+seeding. This is an explicit development command and is never run by server
+startup:
+
+```bash
+npm run db:seed:local
+npm run stripe:catalog:sync:local
+```
+
+The command accepts only a local development/test database and a Stripe
+test-mode credential. See [Local seed data](docs/local-seed-data.md) for its
+safety, retry, and failed-checkout recovery behavior.
+
 ## Local PostgreSQL Setup
 
 The backend expects a PostgreSQL database available through `DATABASE_URL`. The
@@ -479,6 +492,7 @@ for the repository if the account plan supports them.
 npm install
 npm run dev
 npm run db:seed:local
+npm run stripe:catalog:sync:local
 npm test
 npm run test:watch
 npm run typecheck

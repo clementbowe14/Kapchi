@@ -44,7 +44,7 @@ vi.mock("stripe", () => ({
 
 const [
   { authPlugin },
-  { CheckoutNeedsReviewError },
+  { CheckoutCatalogUnavailableError, CheckoutNeedsReviewError },
   { createPaymentsPlugin, default: paymentsPlugin }
 ] = await Promise.all([
   import("../auth/index.js"),
@@ -97,6 +97,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus: vi.fn(),
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()
@@ -186,6 +187,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus: vi.fn(),
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()
@@ -255,6 +257,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus: vi.fn(),
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()
@@ -295,6 +298,65 @@ describe("paymentsPlugin Stripe webhooks", () => {
     await app.close();
   });
 
+  it("returns a safe non-retryable catalog-unavailable response", async () => {
+    mocks.verifyClerkToken.mockResolvedValue({
+      claims: {},
+      permissions: [],
+      roles: [],
+      sessionId: "sess_authenticated",
+      token: "verified-token",
+      userId: "user_123"
+    });
+    const startCheckout = vi.fn(async () => {
+      throw new CheckoutCatalogUnavailableError();
+    });
+    const repository = {
+      finalizeCheckout: vi.fn(),
+      getCheckoutStatus: vi.fn(),
+      markCatalogUnavailable: vi.fn(),
+      markProviderFailure: vi.fn(),
+      prepareCheckout: vi.fn(),
+      retireTerminalCheckout: vi.fn()
+    };
+    const app = fastify({ logger: false });
+    await app.register(authPlugin);
+    app.decorate("pg", {} as Pool);
+    await app.register(
+      createPaymentsPlugin({
+        checkoutRepositoryFactory: () => repository,
+        checkoutServiceFactory: () => ({ startCheckout }),
+        stripeClientFactory: () => ({
+          checkout: { sessions: {} },
+          webhooks: { constructEvent: mocks.constructEvent }
+        }) as never
+      }),
+      { prefix: "/payments" },
+    );
+
+    const response = await app.inject({
+      headers: { authorization: "Bearer verified-token" },
+      method: "POST",
+      payload: {
+        customerEmail: "customer@example.com",
+        preferredContactMethod: "email"
+      },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: "CHECKOUT_CATALOG_UNAVAILABLE",
+      message:
+        "Checkout is unavailable for one or more items. Please contact Kapchi support.",
+      statusCode: 503
+    });
+    const serializedResponse = JSON.stringify(response.json());
+    expect(serializedResponse).not.toContain("resource_missing");
+    expect(serializedResponse).not.toContain("stripe");
+    expect(serializedResponse).not.toContain("price_");
+    await app.close();
+  });
+
   it("returns the owned session token when an existing checkout completed", async () => {
     mocks.verifyClerkToken.mockResolvedValue({
       claims: {},
@@ -317,6 +379,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus: vi.fn(),
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()
@@ -562,6 +625,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus,
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()
@@ -619,6 +683,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const repository = {
       finalizeCheckout: vi.fn(),
       getCheckoutStatus,
+      markCatalogUnavailable: vi.fn(),
       markProviderFailure: vi.fn(),
       prepareCheckout: vi.fn(),
       retireTerminalCheckout: vi.fn()

@@ -7,8 +7,10 @@ expiration, and duplicate webhook delivery.
 
 ## Required Local Environment
 
-Use only local test-mode placeholder values in `backend/.env`. Never paste live
-Stripe secrets into local docs, shell history, or logs.
+Use only Stripe test-mode credentials in `backend/.env`. The values below show
+the required variable names; replace `STRIPE_SECRET_KEY` with a real test key
+before catalog synchronization. Never paste live Stripe secrets into local docs,
+shell history, or logs.
 
 ```bash
 PORT=4000
@@ -23,8 +25,25 @@ Start the backend from the backend workspace:
 
 ```bash
 cd backend
+npm run db:migrate:apply
+npm run db:seed:local
+npm run stripe:catalog:sync:local
 npm run dev
 ```
+
+The catalog sync must complete before using local seed listings with hosted
+Checkout. The database seed intentionally starts with local placeholders; they
+are not Stripe objects and cannot be passed as `line_items[].price`.
+If a seed pricing amount changes, rerunning the seed deliberately restores that
+variant to a placeholder until this sync succeeds; this prevents an old Stripe
+Price from being charged at a mismatched amount. A concurrent sync exits without
+waiting, so let the first command finish and then retry.
+
+Review the command's `pricesProtected` count. A non-zero count means cleanup left
+replaced test Prices active because unresolved, sessionless checkout orders still
+reference them without catalog-unavailable evidence. Resolve or retire those
+orders, then rerun the sync; the protected cleanup is retried without rewriting
+historical order items.
 
 In another terminal, start Stripe CLI forwarding to the local webhook route:
 

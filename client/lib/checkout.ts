@@ -379,6 +379,8 @@ export function checkoutErrorMessage(error: unknown) {
         return "This checkout may already be complete. Check its payment status before trying again.";
       case "CHECKOUT_PROVIDER_ERROR":
         return "Stripe is temporarily unavailable. Your details are still here, so you can try again.";
+      case "CHECKOUT_CATALOG_UNAVAILABLE":
+        return "Secure checkout is unavailable for one or more items. Please contact Kapchi support.";
       case "CART_CLAIM_CONFLICT":
         return "We could not merge your guest cart with your account. Your account cart has been loaded instead.";
       case "VALIDATION_ERROR":
@@ -404,7 +406,10 @@ export function checkoutErrorMessage(error: unknown) {
 
 export function isRetryableCheckoutError(error: unknown) {
   if (error instanceof CheckoutApiError) {
-    if (error.code === "INVALID_CHECKOUT_URL") {
+    if (
+      error.code === "INVALID_CHECKOUT_URL" ||
+      error.code === "CHECKOUT_CATALOG_UNAVAILABLE"
+    ) {
       return false;
     }
 

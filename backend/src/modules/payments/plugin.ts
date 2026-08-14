@@ -14,6 +14,7 @@ import { authMiddleware } from "../auth/index.js";
 import { getGuestCartSessionContext } from "../cart/guest-session.js";
 import {
   CheckoutAlreadyCompleteError,
+  CheckoutCatalogUnavailableError,
   CheckoutCartNotFoundError,
   CheckoutNeedsReviewError,
   CheckoutProviderError
@@ -331,6 +332,13 @@ export function createPaymentsPlugin(
               error: "CHECKOUT_PROVIDER_ERROR",
               message: checkoutError.message,
               statusCode: 502
+            });
+          }
+          if (checkoutError instanceof CheckoutCatalogUnavailableError) {
+            return reply.code(503).send({
+              error: checkoutError.code,
+              message: checkoutError.message,
+              statusCode: 503
             });
           }
           if (checkoutError instanceof CheckoutAlreadyCompleteError) {

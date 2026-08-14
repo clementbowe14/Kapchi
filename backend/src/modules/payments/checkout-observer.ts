@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from "fastify";
 export type CheckoutEventName =
   | "checkout.contact.accepted"
   | "checkout.contact.rejected"
+  | "checkout.catalog.unavailable"
   | "checkout.preparation.started"
   | "checkout.preparation.succeeded"
   | "checkout.preparation.failed"
@@ -28,7 +29,12 @@ export type CheckoutEventFields = {
   errorType?: string;
   existingProviderSession?: boolean;
   lineItemCount?: number;
-  operation?: "finalize" | "mark_provider_failure" | "prepare" | "retire";
+  operation?:
+    | "finalize"
+    | "mark_catalog_unavailable"
+    | "mark_provider_failure"
+    | "prepare"
+    | "retire";
   orderId?: string;
   providerOperation?: "create" | "retrieve";
   providerSessionId?: string;

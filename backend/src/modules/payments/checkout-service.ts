@@ -1,6 +1,7 @@
 import { safeErrorDetails } from "../../observability/safe-error.js";
 import {
   CheckoutAlreadyCompleteError,
+  CheckoutCatalogUnavailableError,
   CheckoutProviderError
 } from "./checkout-errors.js";
 import type {
@@ -8,9 +9,10 @@ import type {
   CheckoutEventName,
   CheckoutObserver
 } from "./checkout-observer.js";
-import type {
-  CheckoutProvider,
-  CheckoutProviderSession
+import {
+  CheckoutProviderPriceUnavailableError,
+  type CheckoutProvider,
+  type CheckoutProviderSession
 } from "./checkout-provider.js";
 import type {
   CheckoutContact,
@@ -29,6 +31,7 @@ export interface CheckoutRepositoryPort {
       sessionId: string;
     },
   ): Promise<void>;
+  markCatalogUnavailable(orderId: string): Promise<void>;
   markProviderFailure(orderId: string): Promise<void>;
   getCheckoutStatus(
     context: CheckoutCartOwner,
@@ -250,20 +253,40 @@ export class CheckoutService {
       });
       return session;
     } catch (error) {
-      this.observe("error", "checkout.provider.failed", {
-        ...fields,
-        ...safeErrorDetails(error)
-      });
+      const catalogUnavailable =
+        error instanceof CheckoutProviderPriceUnavailableError;
+      this.observe(
+        "error",
+        catalogUnavailable
+          ? "checkout.catalog.unavailable"
+          : "checkout.provider.failed",
+        {
+          ...fields,
+          ...safeErrorDetails(error)
+        },
+      );
+
+      const persistenceOperation = catalogUnavailable
+        ? "mark_catalog_unavailable"
+        : "mark_provider_failure";
 
       try {
-        await this.repository.markProviderFailure(prepared.orderId);
+        if (catalogUnavailable) {
+          await this.repository.markCatalogUnavailable(prepared.orderId);
+        } else {
+          await this.repository.markProviderFailure(prepared.orderId);
+        }
       } catch (persistenceError) {
         this.observe("error", "checkout.persistence.failed", {
           ...safeErrorDetails(persistenceError),
-          operation: "mark_provider_failure",
+          operation: persistenceOperation,
           orderId: prepared.orderId
         });
         throw persistenceError;
+      }
+
+      if (catalogUnavailable) {
+        throw new CheckoutCatalogUnavailableError();
       }
 
       throw new CheckoutProviderError();

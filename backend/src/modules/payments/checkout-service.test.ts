@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  CheckoutProvider,
-  CheckoutProviderSession
+import {
+  CheckoutProviderPriceUnavailableError,
+  type CheckoutProvider,
+  type CheckoutProviderSession
 } from "./checkout-provider.js";
 import {
   CheckoutService,
@@ -51,6 +52,7 @@ function createRepository(
   return {
     finalizeCheckout: vi.fn(),
     getCheckoutStatus: vi.fn(),
+    markCatalogUnavailable: vi.fn(),
     markProviderFailure: vi.fn(),
     prepareCheckout: vi.fn(async () =>
       preparedCheckout(orderId, existingStripeSessionId),
@@ -258,6 +260,8 @@ describe("CheckoutService", () => {
       name: "CheckoutProviderError"
     });
     expect(repository.markProviderFailure).toHaveBeenCalledWith(orderId);
+    expect(repository.markCatalogUnavailable).not.toHaveBeenCalled();
+    expect(repository.retireTerminalCheckout).not.toHaveBeenCalled();
     expect(observer.error).toHaveBeenCalledWith("checkout.provider.failed", {
       errorType: "Error",
       orderId,
@@ -266,6 +270,66 @@ describe("CheckoutService", () => {
     expect(JSON.stringify(observer.error.mock.calls)).not.toContain("sk_test_secret");
     expect(JSON.stringify(observer.error.mock.calls)).not.toContain(
       "customer@example.com",
+    );
+  });
+
+  it("converts a missing line item Price into a safe catalog failure", async () => {
+    const repository = createRepository();
+    const observer = createObserver();
+    createSession.mockRejectedValue(
+      new CheckoutProviderPriceUnavailableError(),
+    );
+    const { service } = createService({ observer, repository });
+
+    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+      code: "CHECKOUT_CATALOG_UNAVAILABLE",
+      message:
+        "Checkout is unavailable for one or more items. Please contact Kapchi support.",
+      name: "CheckoutCatalogUnavailableError"
+    });
+    expect(repository.markCatalogUnavailable).toHaveBeenCalledWith(orderId);
+    expect(repository.markProviderFailure).not.toHaveBeenCalled();
+    expect(repository.retireTerminalCheckout).not.toHaveBeenCalled();
+    expect(observer.error).toHaveBeenCalledWith(
+      "checkout.catalog.unavailable",
+      {
+        errorCode: "resource_missing",
+        errorType: "CheckoutProviderPriceUnavailableError",
+        orderId,
+        providerOperation: "create"
+      },
+    );
+    const observed = JSON.stringify(observer.error.mock.calls);
+    expect(observed).not.toContain(contact.customerEmail);
+    expect(observed).not.toContain("price_test_stole");
+    expect(observed).not.toContain("checkout.stripe.com");
+  });
+
+  it("reports catalog marker persistence failures without leaking details", async () => {
+    const repository = createRepository();
+    const observer = createObserver();
+    const persistenceError = Object.assign(
+      new Error("postgres://private-catalog-host"),
+      { code: "40001" },
+    );
+    createSession.mockRejectedValue(
+      new CheckoutProviderPriceUnavailableError(),
+    );
+    repository.markCatalogUnavailable.mockRejectedValue(persistenceError);
+    const { service } = createService({ observer, repository });
+
+    await expect(service.startCheckout(context, contact)).rejects.toBe(
+      persistenceError,
+    );
+    expect(repository.markProviderFailure).not.toHaveBeenCalled();
+    expect(observer.error).toHaveBeenCalledWith("checkout.persistence.failed", {
+      errorCode: "40001",
+      errorType: "Error",
+      operation: "mark_catalog_unavailable",
+      orderId
+    });
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain(
+      "private-catalog-host",
     );
   });
 

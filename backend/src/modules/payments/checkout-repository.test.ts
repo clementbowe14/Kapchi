@@ -712,4 +712,64 @@ describe("CheckoutRepository", () => {
       "payment_status in ('unpaid', 'checkout_started', 'failed')",
     );
   });
+
+  it("atomically records one privacy-safe catalog-unavailable marker", async () => {
+    const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("update orders") && sql.includes("returning id")) {
+        return { rows: [{ id: orderId }] };
+      }
+      return { rows: [] };
+    });
+
+    await new CheckoutRepository(pool).markCatalogUnavailable(orderId);
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    const updateIndex = statements.findIndex((sql) =>
+      sql.includes("update orders"),
+    );
+    const eventIndex = statements.findIndex((sql) =>
+      sql.includes("insert into order_events"),
+    );
+    expect(statements[0]).toBe("begin");
+    expect(statements.at(-1)).toBe("commit");
+    expect(updateIndex).toBeGreaterThan(0);
+    expect(eventIndex).toBeGreaterThan(updateIndex);
+    expect(statements[updateIndex]).toContain("payment_status = 'failed'");
+    expect(statements[updateIndex]).toContain("returning id");
+    expect(statements[eventIndex]).toContain("'system'");
+    expect(statements[eventIndex]).toContain("'checkout.catalog_unavailable'");
+    expect(statements[eventIndex]).toContain("where not exists");
+    expect(statements[eventIndex]).not.toContain("cart_items");
+
+    const eventValues = query.mock.calls[eventIndex][1];
+    expect(eventValues?.[0]).toBe(orderId);
+    expect(JSON.parse(String(eventValues?.[1]))).toEqual({
+      reason: "missing_checkout_line_item_price",
+      source: "stripe_checkout_session"
+    });
+  });
+
+  it("does not record a catalog event for an ineligible order", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    await new CheckoutRepository(pool).markCatalogUnavailable(
+      "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+    );
+
+    expect(
+      query.mock.calls.some(([sql]) =>
+        String(sql).includes("insert into order_events"),
+      ),
+    ).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
 });

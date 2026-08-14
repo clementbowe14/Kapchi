@@ -5,7 +5,7 @@ loadBackendEnvironment();
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
-type SeedListing = {
+export type SeedListing = {
   basePriceCents: number;
   description: string;
   imageAlt: string;
@@ -340,7 +340,14 @@ async function seedFabricInventory(db: Queryable) {
   }
 }
 
-async function seedListing(db: Queryable, listing: SeedListing) {
+export async function seedListing(db: Queryable, listing: SeedListing) {
+  const defaultVariant = listing.priceVariants[0];
+  if (!defaultVariant || defaultVariant.unitAmountCents !== listing.basePriceCents) {
+    throw new Error(
+      `Local seed listing ${listing.slug} must use its first price variant as the base price.`,
+    );
+  }
+
   const catalogImageContentType = listing.imageUrl.endsWith(".webp")
     ? "image/webp"
     : "image/png";
@@ -370,8 +377,40 @@ async function seedListing(db: Queryable, listing: SeedListing) {
         base_price_cents = excluded.base_price_cents,
         currency = excluded.currency,
         requires_fabric = excluded.requires_fabric,
-        stripe_product_id = excluded.stripe_product_id,
-        default_stripe_price_id = excluded.default_stripe_price_id,
+        stripe_product_id = case
+          when listings.base_price_cents = excluded.base_price_cents
+            and listings.currency = excluded.currency
+            and listings.stripe_product_id not like 'prod_local_seed_%'
+            and listings.default_stripe_price_id not like 'price_local_seed_%'
+            and exists (
+              select 1
+              from listing_price_variants default_variant
+              where default_variant.listing_id = listings.id
+                and default_variant.active = true
+                and default_variant.stripe_price_id = listings.default_stripe_price_id
+                and default_variant.unit_amount_cents = excluded.base_price_cents
+                and default_variant.currency = excluded.currency
+            )
+          then listings.stripe_product_id
+          else excluded.stripe_product_id
+        end,
+        default_stripe_price_id = case
+          when listings.base_price_cents = excluded.base_price_cents
+            and listings.currency = excluded.currency
+            and listings.stripe_product_id not like 'prod_local_seed_%'
+            and listings.default_stripe_price_id not like 'price_local_seed_%'
+            and exists (
+              select 1
+              from listing_price_variants default_variant
+              where default_variant.listing_id = listings.id
+                and default_variant.active = true
+                and default_variant.stripe_price_id = listings.default_stripe_price_id
+                and default_variant.unit_amount_cents = excluded.base_price_cents
+                and default_variant.currency = excluded.currency
+            )
+          then listings.default_stripe_price_id
+          else excluded.default_stripe_price_id
+        end,
         archived_at = null
       returning id
     `,
@@ -479,13 +518,6 @@ async function seedListing(db: Queryable, listing: SeedListing) {
     "update listing_customization_sets set enabled = false where listing_id = $1",
     [listingRow.id],
   );
-  await db.query(
-    `update listing_price_variants
-     set active = false, replaced_at = coalesce(replaced_at, now())
-     where listing_id = $1 and active = true`,
-    [listingRow.id],
-  );
-
   for (const variant of listing.priceVariants) {
     const customizationRow = await queryOne<{ id: string }>(
       db,
@@ -558,14 +590,40 @@ async function seedListing(db: Queryable, listing: SeedListing) {
 
     await db.query(
       `
+        update listing_price_variants collision
+        set stripe_price_id =
+          'price_local_seed_retired_' || replace(collision.id::text, '-', '')
+        where collision.listing_id = $1
+          and collision.stripe_price_id = $2
+          and not (collision.variant_key = $3 and collision.active = true)
+      `,
+      [listingRow.id, variant.stripePriceId, variant.variantKey],
+    );
+
+    await db.query(
+      `
         update listing_price_variants
         set
           listing_customization_set_id = $2,
           trim_option_id = null,
           unit_amount_cents = $4,
           currency = 'usd',
-          stripe_product_id = $5,
-          stripe_price_id = $6,
+          stripe_product_id = case
+            when unit_amount_cents = $4
+              and currency = 'usd'
+              and stripe_product_id not like 'prod_local_seed_%'
+              and stripe_price_id not like 'price_local_seed_%'
+            then stripe_product_id
+            else $5
+          end,
+          stripe_price_id = case
+            when unit_amount_cents = $4
+              and currency = 'usd'
+              and stripe_product_id not like 'prod_local_seed_%'
+              and stripe_price_id not like 'price_local_seed_%'
+            then stripe_price_id
+            else $6
+          end,
           active = true,
           replaced_at = null
         where listing_id = $1 and variant_key = $3 and active = true
@@ -620,6 +678,15 @@ async function seedListing(db: Queryable, listing: SeedListing) {
       ],
     );
   }
+
+  await db.query(
+    `update listing_price_variants
+     set active = false, replaced_at = coalesce(replaced_at, now())
+     where listing_id = $1
+       and active = true
+       and not (variant_key = any($2::text[]))`,
+    [listingRow.id, listing.priceVariants.map((variant) => variant.variantKey)],
+  );
 }
 
 async function seedCartAndOrder(db: Queryable) {
