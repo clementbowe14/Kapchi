@@ -1,17 +1,12 @@
-import type { FastifyBaseLogger } from "fastify";
+import { createHash } from "node:crypto";
 import type { Pool } from "pg";
-import type { RedisClientType } from "redis";
 import {
   hashSessionId,
-  readGuestCartItems,
-  serializeGuestCartItems,
-  writeGuestCartItems,
   type GuestCartContext
 } from "./guest-session.js";
+import { CartIdempotencyConflictError, CartValidationError } from "./errors.js";
 import { CartRepository } from "./repository.js";
-import type { CartItemInput, CartMutationResult, GuestCartView } from "./types.js";
-
-type SafeLogger = Pick<FastifyBaseLogger, "warn">;
+import type { CartItemInput } from "./types.js";
 
 function durableContext(context: GuestCartContext): GuestCartContext {
   return {
@@ -20,67 +15,79 @@ function durableContext(context: GuestCartContext): GuestCartContext {
   };
 }
 
-function remainingTtlSeconds(expiresAt: Date | string) {
-  const expiry = expiresAt instanceof Date ? expiresAt.getTime() : Date.parse(expiresAt);
-  return Math.floor((expiry - Date.now()) / 1000);
-}
+export function fingerprintCartItemInput(input: CartItemInput) {
+  const canonical: CartItemInput = {
+    fabricId: input.fabricId,
+    fontOptionId: input.fontOptionId,
+    imageAssetId: input.imageAssetId,
+    line1: input.line1,
+    line2: input.line2,
+    listingCustomizationSetId: input.listingCustomizationSetId,
+    listingId: input.listingId,
+    listingPriceVariantId: input.listingPriceVariantId,
+    quantity: input.quantity,
+    trimOptionId: input.trimOptionId
+  };
 
-function safeCacheError(error: unknown) {
-  return error instanceof Error ? { name: error.name } : { name: "UnknownError" };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 export class CartService {
   private readonly repository: CartRepository;
 
-  constructor(
-    private readonly pool: Pick<Pool, "connect" | "query">,
-    private readonly redis: RedisClientType,
-    private readonly logger: SafeLogger,
-  ) {
+  constructor(pool: Pick<Pool, "connect" | "query">) {
     this.repository = new CartRepository(pool);
   }
 
   async getGuestCart(context: GuestCartContext) {
-    const cart = await this.repository.loadGuestCartShell(durableContext(context));
-
-    try {
-      const cached = await readGuestCartItems(this.redis, cart.id);
-
-      if (cached.hit) {
-        // Display projections may be stale until the next mutation. Checkout never trusts them.
-        return {
-          cartId: cart.id,
-          expiresAt: cart.expires_at,
-          items: cached.items,
-          subtotalCents: cart.subtotal_cents
-        };
-      }
-    } catch (error) {
-      this.logger.warn(
-        { cartId: cart.id, cacheError: safeCacheError(error) },
-        "Guest cart projection read failed",
-      );
-    }
-
-    const view = {
-      cartId: cart.id,
-      expiresAt: cart.expires_at,
-      items: await this.repository.loadProjection(this.pool, cart.id),
-      subtotalCents: cart.subtotal_cents
-    };
-
-    serializeGuestCartItems(view.items);
-    await this.refreshAfterMutation(view);
-    return view;
+    return this.repository.loadGuestView(durableContext(context));
   }
 
   async getAuthenticatedCart(authSubject: string) {
     return this.repository.loadAuthenticatedView(authSubject);
   }
 
-  async addGuestItem(context: GuestCartContext, input: CartItemInput) {
+  async getGuestCartSummary(context: GuestCartContext | null) {
+    if (!context) {
+      return { lineItemCount: 0, revision: 0, totalQuantity: 0 };
+    }
+
+    return this.repository.loadGuestSummary(durableContext(context));
+  }
+
+  async getAuthenticatedCartSummary(authSubject: string) {
+    return this.repository.loadAuthenticatedSummary(authSubject);
+  }
+
+  async addGuestItem(
+    context: GuestCartContext,
+    input: CartItemInput,
+    idempotencyKey: string,
+  ) {
+    if (idempotencyKey.length < 1 || idempotencyKey.length > 128) {
+      throw new CartValidationError("A valid idempotency key is required.");
+    }
+
+    const requestFingerprint = fingerprintCartItemInput(input);
     const result = await this.repository.withTransaction(async (client) => {
       const cart = await this.repository.lockGuestCart(client, durableContext(context));
+      const replay = await this.repository.loadAddIdempotency(
+        client,
+        cart.id,
+        idempotencyKey,
+      );
+
+      if (replay) {
+        if (replay.request_fingerprint !== requestFingerprint) {
+          throw new CartIdempotencyConflictError();
+        }
+
+        return {
+          ...(await this.repository.loadLockedGuestView(client, cart)),
+          cartItemId: replay.cart_item_id
+        };
+      }
+
       await this.repository.assertLineCapacity(client, cart.id);
       const selection = await this.repository.validateSelection(client, cart, input);
       const cartItemId = await this.repository.insertItem(
@@ -101,6 +108,13 @@ export class CartService {
         );
       }
       await this.repository.attachAsset(client, cart.id, input);
+      await this.repository.recordAddIdempotency(
+        client,
+        cart.id,
+        idempotencyKey,
+        requestFingerprint,
+        cartItemId,
+      );
 
       return {
         ...(await this.repository.finishMutation(client, cart)),
@@ -108,7 +122,6 @@ export class CartService {
       };
     });
 
-    await this.refreshAfterMutation(result);
     return result;
   }
 
@@ -165,7 +178,6 @@ export class CartService {
       };
     });
 
-    await this.refreshAfterMutation(result);
     return result;
   }
 
@@ -186,24 +198,6 @@ export class CartService {
       return this.repository.finishMutation(client, cart);
     });
 
-    await this.refreshAfterMutation(result);
     return result;
   }
-
-  private async refreshAfterMutation(result: CartMutationResult | GuestCartView) {
-    try {
-      await writeGuestCartItems(
-        this.redis,
-        result.cartId,
-        result.items,
-        remainingTtlSeconds(result.expiresAt),
-      );
-    } catch (error) {
-      this.logger.warn(
-        { cartId: result.cartId, cacheError: safeCacheError(error) },
-        "Guest cart projection refresh failed",
-      );
-    }
-  }
-
 }

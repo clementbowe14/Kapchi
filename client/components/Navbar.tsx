@@ -1,18 +1,19 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MobileMenu } from "@/components/MobileMenu";
 import { NavbarAuth } from "@/components/NavbarAuth";
 import { CartIcon } from "@/components/NavIcons";
+import {
+  parseCartSummary,
+  subscribeToCartInvalidations,
+} from "@/lib/cart-state";
 import { NAV_ITEMS } from "@/lib/navigation";
-
-type NavbarProps = {
-  cartCount?: number;
-};
 
 function Brand() {
   return (
@@ -103,15 +104,19 @@ function DesktopNavLink({
 
 function CartLink({
   active,
-  cartCount = 0,
+  cartCount,
 }: {
   active?: boolean;
-  cartCount?: number;
+  cartCount: number | null;
 }) {
   return (
     <Link
       href="/cart"
-      aria-label={cartCount > 0 ? `Cart with ${cartCount} items` : "Cart"}
+      aria-label={
+        cartCount !== null && cartCount > 0
+          ? `Cart with ${cartCount} ${cartCount === 1 ? "item" : "items"}`
+          : "Cart"
+      }
       aria-current={active ? "page" : undefined}
       className={`relative inline-flex h-11 items-center gap-2 rounded-full px-4 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2 ${
         active
@@ -121,7 +126,7 @@ function CartLink({
     >
       <CartIcon className="h-5 w-5" />
       <span>Cart</span>
-      {cartCount > 0 ? (
+      {cartCount !== null && cartCount > 0 ? (
         <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-[#b49872] px-1.5 py-0.5 text-[11px] font-semibold text-white">
           {cartCount}
         </span>
@@ -130,27 +135,111 @@ function CartLink({
   );
 }
 
-export function Navbar({ cartCount = 0 }: NavbarProps) {
+export function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [visibleCartCount, setVisibleCartCount] = useState(cartCount);
+  const [cartCountSnapshot, setCartCountSnapshot] = useState<{
+    count: number;
+    identity: string;
+  } | null>(null);
+  const { getToken, isLoaded: authLoaded, isSignedIn, userId } = useAuth();
   const pathname = usePathname();
   const menuId = useId();
+  const requestSequence = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const authIdentity = authLoaded
+    ? isSignedIn
+      ? `account:${userId ?? "unknown"}`
+      : "guest"
+    : "loading";
+  const visibleCartCount =
+    cartCountSnapshot?.identity === authIdentity
+      ? cartCountSnapshot.count
+      : null;
+
+  const refreshCartCount = useCallback(async () => {
+    if (!authLoaded) {
+      return;
+    }
+
+    const sequence = ++requestSequence.current;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+
+    try {
+      const headers: HeadersInit = {};
+      if (isSignedIn) {
+        const token = await getToken();
+        if (!token || controller.signal.aborted || sequence !== requestSequence.current) {
+          return;
+        }
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const response = await fetch("/api/cart/summary", {
+        cache: "no-store",
+        credentials: "include",
+        headers,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const summary = parseCartSummary(await response.json());
+      if (!controller.signal.aborted && sequence === requestSequence.current) {
+        setCartCountSnapshot({
+          count: summary.totalQuantity,
+          identity: authIdentity,
+        });
+      }
+    } catch {
+      // Retain the last confirmed count when the summary cannot be read.
+    }
+  }, [authIdentity, authLoaded, getToken, isSignedIn]);
 
   useEffect(() => {
-    const updateCartCount = (event: Event) => {
-      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
-      if (
-        typeof detail?.count === "number" &&
-        Number.isInteger(detail.count) &&
-        detail.count >= 0
-      ) {
-        setVisibleCartCount(detail.count);
+    if (!authLoaded) {
+      return;
+    }
+
+    const initialRefresh = window.setTimeout(() => {
+      void refreshCartCount();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      requestSequence.current += 1;
+      activeRequest.current?.abort();
+    };
+  }, [authIdentity, authLoaded, refreshCartCount]);
+
+  useEffect(() => {
+    if (!authLoaded) {
+      return;
+    }
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refreshCartCount();
       }
     };
+    const refreshOnPageShow = () => void refreshCartCount();
+    const unsubscribe = subscribeToCartInvalidations(() => {
+      void refreshCartCount();
+    });
 
-    window.addEventListener("kapchi:cart-updated", updateCartCount);
-    return () => window.removeEventListener("kapchi:cart-updated", updateCartCount);
-  }, []);
+    window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener("pageshow", refreshOnPageShow);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener("pageshow", refreshOnPageShow);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [authLoaded, refreshCartCount]);
 
   useEffect(() => {
     if (!menuOpen) {

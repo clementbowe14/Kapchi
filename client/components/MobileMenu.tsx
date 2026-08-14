@@ -7,7 +7,7 @@ import { CartIcon } from "@/components/NavIcons";
 import { NAV_ITEMS } from "@/lib/navigation";
 
 type MobileMenuProps = {
-  cartCount?: number;
+  cartCount?: number | null;
   menuId: string;
   onClose: () => void;
   open: boolean;
@@ -86,7 +86,7 @@ export function MobileMenu({
               <CartIcon className="h-5 w-5" />
               Cart
             </span>
-            {cartCount > 0 ? (
+            {cartCount !== null && cartCount > 0 ? (
               <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#b49872] px-2 py-1 text-xs font-semibold text-white">
                 {cartCount}
               </span>

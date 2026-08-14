@@ -2,7 +2,6 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 import {
   MAX_CART_SUBTOTAL_CENTS,
   MAX_GUEST_CART_ITEMS,
-  serializeGuestCartItems,
   type GuestCartContext,
   type GuestCartDisplayItem,
   type GuestCartValidationStatus
@@ -14,13 +13,24 @@ import {
   CartValidationError
 } from "./errors.js";
 import type { AuthenticatedCartView, CartWarning } from "./claim-types.js";
-import type { CartItemInput, CartMutationResult, GuestCartView } from "./types.js";
+import type {
+  CartItemInput,
+  CartMutationResult,
+  CartSummary,
+  GuestCartView
+} from "./types.js";
 
 type CartRow = QueryResultRow & {
   currency: string;
-  expires_at: Date | string;
+  expires_at: Date | string | null;
   id: string;
+  revision: number;
   subtotal_cents: number;
+};
+
+type AddIdempotencyRow = QueryResultRow & {
+  cart_item_id: string;
+  request_fingerprint: string;
 };
 
 type SelectionRow = QueryResultRow & {
@@ -126,6 +136,13 @@ function mapProjection(rows: ProjectionRow[]): GuestCartDisplayItem[] {
   });
 }
 
+function projectionCounts(items: GuestCartDisplayItem[]) {
+  return {
+    lineItemCount: items.length,
+    totalQuantity: items.reduce((total, item) => total + item.quantity, 0)
+  };
+}
+
 function validateText(input: CartItemInput, selection: SelectionRow) {
   const textLength = Array.from(`${input.line1}${input.line2}`).length;
 
@@ -198,10 +215,26 @@ export class CartRepository {
     }
   }
 
+  async withReadSnapshot<T>(callback: (client: PoolClient) => Promise<T>) {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query("begin transaction isolation level repeatable read read only");
+      const result = await callback(client);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async lockGuestCart(client: Queryable, context: GuestCartContext) {
     const result = await client.query<CartRow>(
       `
-        select id, currency, subtotal_cents, expires_at
+        select id, currency, subtotal_cents, expires_at, revision
         from carts
         where id = $1
           and guest_token_hash = $2
@@ -218,6 +251,41 @@ export class CartRepository {
     }
 
     return cart;
+  }
+
+  async loadAddIdempotency(
+    client: Queryable,
+    cartId: string,
+    idempotencyKey: string,
+  ) {
+    const result = await client.query<AddIdempotencyRow>(
+      `
+        select cart_item_id, request_fingerprint
+        from cart_add_idempotency_keys
+        where cart_id = $1 and idempotency_key = $2
+        for update
+      `,
+      [cartId, idempotencyKey],
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  async recordAddIdempotency(
+    client: Queryable,
+    cartId: string,
+    idempotencyKey: string,
+    requestFingerprint: string,
+    cartItemId: string,
+  ) {
+    await client.query(
+      `
+        insert into cart_add_idempotency_keys (
+          cart_id, idempotency_key, request_fingerprint, cart_item_id
+        ) values ($1, $2, $3, $4)
+      `,
+      [cartId, idempotencyKey, requestFingerprint, cartItemId],
+    );
   }
 
   async validateSelection(
@@ -652,24 +720,38 @@ export class CartRepository {
       throw new CartConflictError("Cart total exceeds the supported maximum.");
     }
 
-    const subtotal = await client.query<{ subtotal_cents: number }>(
+    const subtotal = await client.query<{ revision: number; subtotal_cents: number }>(
       `
         update carts
-        set subtotal_cents = $2
+        set subtotal_cents = $2, revision = revision + 1
         where id = $1
-        returning subtotal_cents
+        returning subtotal_cents, revision
       `,
       [cart.id, Number(subtotalCents)],
     );
     const items = await this.loadProjection(client, cart.id);
-
-    serializeGuestCartItems(items);
+    const counts = projectionCounts(items);
 
     return {
       cartId: cart.id,
-      expiresAt: cart.expires_at,
+      expiresAt: cart.expires_at!,
       items,
+      ...counts,
+      revision: subtotal.rows[0]?.revision ?? cart.revision + 1,
       subtotalCents: subtotal.rows[0]?.subtotal_cents ?? 0
+    };
+  }
+
+  async loadLockedGuestView(client: Queryable, cart: CartRow): Promise<GuestCartView> {
+    const items = await this.loadProjection(client, cart.id);
+
+    return {
+      cartId: cart.id,
+      expiresAt: cart.expires_at!,
+      items,
+      ...projectionCounts(items),
+      revision: cart.revision,
+      subtotalCents: cart.subtotal_cents
     };
   }
 
@@ -701,20 +783,19 @@ export class CartRepository {
   }
 
   async loadGuestView(context: GuestCartContext): Promise<GuestCartView> {
-    const cart = await this.loadGuestCartShell(context);
-
-    return {
-      cartId: cart.id,
-      expiresAt: cart.expires_at,
-      items: await this.loadProjection(this.pool, cart.id),
-      subtotalCents: cart.subtotal_cents
-    };
+    return this.withReadSnapshot(async (client) => {
+      const cart = await this.loadGuestCartShell(context, client);
+      return this.loadLockedGuestView(client, cart);
+    });
   }
 
-  async loadGuestCartShell(context: GuestCartContext) {
-    const cartResult = await this.pool.query<CartRow>(
+  async loadGuestCartShell(
+    context: GuestCartContext,
+    queryable: Queryable = this.pool,
+  ) {
+    const cartResult = await queryable.query<CartRow>(
       `
-        select id, currency, subtotal_cents, expires_at
+        select id, currency, subtotal_cents, expires_at, revision
         from carts
         where id = $1
           and guest_token_hash = $2
@@ -734,9 +815,71 @@ export class CartRepository {
   }
 
   async loadAuthenticatedView(authSubject: string): Promise<AuthenticatedCartView> {
-    const cartResult = await this.pool.query<CartRow>(
+    return this.withReadSnapshot(async (client) => {
+      const cart = await this.loadAuthenticatedCart(client, authSubject);
+
+      if (!cart) {
+        return {
+          items: [],
+          lineItemCount: 0,
+          revision: 0,
+          subtotalCents: 0,
+          totalQuantity: 0,
+          warnings: []
+        };
+      }
+
+      const warnings = await client.query<{
+        id: string;
+        validation_message: string | null;
+        validation_status: CartWarning["status"];
+      }>(
+        `
+          select id, validation_status, validation_message
+          from cart_items
+          where cart_id = $1 and validation_status <> 'valid'
+          order by created_at asc, id asc
+        `,
+        [cart.id],
+      );
+      const items = await this.loadProjection(client, cart.id);
+
+      return {
+        cartId: cart.id,
+        items,
+        ...projectionCounts(items),
+        revision: cart.revision,
+        subtotalCents: cart.subtotal_cents,
+        warnings: warnings.rows.map((row) => ({
+          cartItemId: row.id,
+          message:
+            row.validation_message ?? authenticatedWarning(row.validation_status),
+          status: row.validation_status
+        }))
+      };
+    });
+  }
+
+  async loadGuestSummary(context: GuestCartContext): Promise<CartSummary> {
+    return this.withReadSnapshot(async (client) => {
+      const cart = await this.loadGuestCartShell(context, client);
+      return this.loadSummary(client, cart);
+    });
+  }
+
+  async loadAuthenticatedSummary(authSubject: string): Promise<CartSummary> {
+    return this.withReadSnapshot(async (client) => {
+      const cart = await this.loadAuthenticatedCart(client, authSubject);
+      return cart
+        ? this.loadSummary(client, cart)
+        : { lineItemCount: 0, revision: 0, totalQuantity: 0 };
+    });
+  }
+
+  private async loadAuthenticatedCart(client: Queryable, authSubject: string) {
+    const cartResult = await client.query<CartRow>(
       `
-        select c.id, c.currency, c.subtotal_cents, c.expires_at
+        select c.id, c.currency, c.subtotal_cents, c.expires_at, c.revision
         from carts c
         left join users u on u.id = c.authenticated_user_id
         where c.status = 'active'
@@ -752,36 +895,29 @@ export class CartRepository {
       `,
       [authSubject],
     );
-    const cart = cartResult.rows[0];
+    return cartResult.rows[0] ?? null;
+  }
 
-    if (!cart) {
-      return { items: [], subtotalCents: 0, warnings: [] };
-    }
-
-    const warnings = await this.pool.query<{
-      id: string;
-      validation_message: string | null;
-      validation_status: CartWarning["status"];
+  private async loadSummary(client: Queryable, cart: CartRow): Promise<CartSummary> {
+    const result = await client.query<{
+      line_item_count: number;
+      total_quantity: string;
     }>(
       `
-        select id, validation_status, validation_message
+        select
+          count(*)::integer as line_item_count,
+          coalesce(sum(quantity::bigint), 0::bigint)::text as total_quantity
         from cart_items
-        where cart_id = $1 and validation_status <> 'valid'
-        order by created_at asc, id asc
+        where cart_id = $1
       `,
       [cart.id],
     );
 
     return {
       cartId: cart.id,
-      items: await this.loadProjection(this.pool, cart.id),
-      subtotalCents: cart.subtotal_cents,
-      warnings: warnings.rows.map((row) => ({
-        cartItemId: row.id,
-        message:
-          row.validation_message ?? authenticatedWarning(row.validation_status),
-        status: row.validation_status
-      }))
+      lineItemCount: result.rows[0]?.line_item_count ?? 0,
+      revision: cart.revision,
+      totalQuantity: Number(result.rows[0]?.total_quantity ?? "0")
     };
   }
 }

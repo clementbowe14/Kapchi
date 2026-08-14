@@ -17,6 +17,9 @@ export type CartWarning = {
 export type AuthenticatedCartView = {
   cartId?: string;
   items: GuestCartDisplayItem[];
+  lineItemCount: number;
+  revision: number;
   subtotalCents: number;
+  totalQuantity: number;
   warnings: CartWarning[];
 };

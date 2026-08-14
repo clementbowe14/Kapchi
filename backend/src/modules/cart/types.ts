@@ -17,9 +17,19 @@ export type GuestCartView = {
   cartId: string;
   expiresAt: Date | string;
   items: GuestCartDisplayItem[];
+  lineItemCount: number;
+  revision: number;
   subtotalCents: number;
+  totalQuantity: number;
 };
 
 export type CartMutationResult = GuestCartView & {
   cartItemId?: string;
+};
+
+export type CartSummary = {
+  cartId?: string;
+  lineItemCount: number;
+  revision: number;
+  totalQuantity: number;
 };

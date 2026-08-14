@@ -54,6 +54,7 @@ const cart = {
   id: ids.cart,
   currency: "usd",
   expires_at: "2027-08-01T12:00:00.000Z",
+  revision: 4,
   subtotal_cents: 0
 };
 
@@ -124,7 +125,9 @@ describe("CartRepository subtotal bounds", () => {
       .mockResolvedValueOnce({
         rows: [{ subtotal_cents: String(MAX_CART_SUBTOTAL_CENTS) }]
       })
-      .mockResolvedValueOnce({ rows: [{ subtotal_cents: MAX_CART_SUBTOTAL_CENTS }] })
+      .mockResolvedValueOnce({
+        rows: [{ revision: 5, subtotal_cents: MAX_CART_SUBTOTAL_CENTS }]
+      })
       .mockResolvedValueOnce({ rows: [] });
     const client = { query } as unknown as PoolClient;
 
@@ -133,6 +136,9 @@ describe("CartRepository subtotal bounds", () => {
     expect(String(query.mock.calls[0][0])).toContain("ci.quantity::bigint");
     expect(query.mock.calls[1][1]).toEqual([ids.cart, MAX_CART_SUBTOTAL_CENTS]);
     expect(result.subtotalCents).toBe(MAX_CART_SUBTOTAL_CENTS);
+    expect(result.revision).toBe(5);
+    expect(result).toMatchObject({ lineItemCount: 0, totalQuantity: 0 });
+    expect(String(query.mock.calls[1][0])).toContain("revision = revision + 1");
   });
 
   it("rejects overflow before issuing the subtotal update", async () => {

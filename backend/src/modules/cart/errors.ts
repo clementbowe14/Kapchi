@@ -25,3 +25,10 @@ export class CartConflictError extends Error {
     this.name = "CartConflictError";
   }
 }
+
+export class CartIdempotencyConflictError extends CartConflictError {
+  constructor() {
+    super("This idempotency key was already used for a different cart item.");
+    this.name = "CartIdempotencyConflictError";
+  }
+}
