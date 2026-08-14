@@ -56,6 +56,7 @@ function cartRow() {
     customer_contact_id: null,
     customer_id: null,
     id: ids.cart,
+    revision: 3,
     status: "active",
     subtotal_cents: 8500,
     user_id: null
@@ -545,8 +546,63 @@ describe("CheckoutRepository", () => {
     );
     expect(String(ownerLock?.[0])).toContain("left join users");
     expect(String(ownerLock?.[0])).toContain("c.user_id = $1");
+    expect(String(ownerLock?.[0])).toContain("c.status = 'active'");
+    expect(String(ownerLock?.[0])).toContain("c.id = $2::uuid");
     expect(String(ownerLock?.[0])).toContain("for update of c");
     expect(String(ownerLock?.[0])).not.toContain("guest_token_hash");
+    expect(ownerLock?.[1]).toEqual(["user_clerk_123", null]);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
+  });
+
+  it("locks the exact authenticated cart requested by the client", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts c")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(
+        { authSubject: "user_clerk_123", cartId: ids.cart },
+        contact,
+      ),
+    ).rejects.toMatchObject({ name: "CheckoutCartNotFoundError" });
+
+    const ownerLock = query.mock.calls.find(([sql]) =>
+      String(sql).includes("from carts c"),
+    );
+    expect(ownerLock?.[1]).toEqual(["user_clerk_123", ids.cart]);
+  });
+
+  it("rejects checkout when the reviewed cart revision is stale", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts c")) {
+        return { rows: [{ ...cartRow(), revision: 4 }] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(
+        {
+          authSubject: "user_clerk_123",
+          cartId: ids.cart,
+          expectedRevision: 3
+        },
+        contact,
+      ),
+    ).rejects.toMatchObject({ name: "CheckoutNeedsReviewError" });
+
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("from orders")),
+    ).toBe(false);
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
   });
 
@@ -588,14 +644,24 @@ describe("CheckoutRepository", () => {
     const result = await new CheckoutRepository(pool).prepareCheckout(context, contact);
 
     expect(result).toMatchObject({
+      cartId: ids.cart,
+      cartRevision: 3,
+      cartStatus: "checkout_started",
       customerEmail: "original@example.com",
       existingStripeSessionId: "cs_test_existing",
       orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
-      publicOrderNumber: "KAP-ORIGINAL1001"
+      publicOrderNumber: "KAP-ORIGINAL1001",
+      reusedOrder: true
     });
     expect(
       query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
     ).toBe(false);
+    const existingOrderQuery = query.mock.calls.find(([sql]) =>
+      String(sql).includes("from orders") && String(sql).includes("order_events"),
+    );
+    expect(String(existingOrderQuery?.[0])).toContain(
+      "catalog_failure.event_type = 'checkout.catalog_unavailable'",
+    );
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
   });
 
@@ -719,13 +785,32 @@ describe("CheckoutRepository", () => {
       if (["begin", "commit", "rollback"].includes(sql)) {
         return { rows: [] };
       }
-      if (sql.includes("update orders") && sql.includes("returning id")) {
-        return { rows: [{ id: orderId }] };
+      if (sql.includes("from orders o")) {
+        return {
+          rows: [{
+            cart_id: ids.cart,
+            payment_status: "checkout_started",
+            status: "pending_payment"
+          }]
+        };
+      }
+      if (sql.includes("from carts") && sql.includes("cart_recoverable")) {
+        return {
+          rows: [{
+            authenticated_user_id: null,
+            cart_recoverable: true,
+            guest_token_hash: "guest-hash",
+            status: "checkout_started",
+            user_id: null
+          }]
+        };
       }
       return { rows: [] };
     });
 
-    await new CheckoutRepository(pool).markCatalogUnavailable(orderId);
+    const disposition = await new CheckoutRepository(pool).markCatalogUnavailable(
+      orderId,
+    );
 
     const statements = query.mock.calls.map(([sql]) => String(sql));
     const updateIndex = statements.findIndex((sql) =>
@@ -738,8 +823,13 @@ describe("CheckoutRepository", () => {
     expect(statements.at(-1)).toBe("commit");
     expect(updateIndex).toBeGreaterThan(0);
     expect(eventIndex).toBeGreaterThan(updateIndex);
+    expect(statements[updateIndex]).toContain("status = 'cancelled'");
     expect(statements[updateIndex]).toContain("payment_status = 'failed'");
-    expect(statements[updateIndex]).toContain("returning id");
+    expect(
+      query.mock.calls.some(([sql, values]) =>
+        String(sql).includes("update carts") && values?.[1] === "active",
+      ),
+    ).toBe(true);
     expect(statements[eventIndex]).toContain("'system'");
     expect(statements[eventIndex]).toContain("'checkout.catalog_unavailable'");
     expect(statements[eventIndex]).toContain("where not exists");
@@ -750,6 +840,11 @@ describe("CheckoutRepository", () => {
     expect(JSON.parse(String(eventValues?.[1]))).toEqual({
       reason: "missing_checkout_line_item_price",
       source: "stripe_checkout_session"
+    });
+    expect(disposition).toEqual({
+      cartId: ids.cart,
+      cartStatus: "active",
+      orderRetired: true
     });
   });
 
@@ -771,5 +866,58 @@ describe("CheckoutRepository", () => {
       ),
     ).toBe(false);
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
+
+  it("abandons a stale checkout cart when an active replacement exists", async () => {
+    const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from orders o")) {
+        return {
+          rows: [{
+            cart_id: ids.cart,
+            payment_status: "failed",
+            status: "pending_payment"
+          }]
+        };
+      }
+      if (sql.includes("from carts") && sql.includes("cart_recoverable")) {
+        return {
+          rows: [{
+            authenticated_user_id: "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61",
+            cart_recoverable: true,
+            guest_token_hash: null,
+            status: "checkout_started",
+            user_id: "user_clerk_123"
+          }]
+        };
+      }
+      if (sql.includes("from carts sibling")) {
+        return { rows: [{ id: "7ad85754-c339-4214-af6e-519eabc38501" }] };
+      }
+      return { rows: [] };
+    });
+
+    const disposition = await new CheckoutRepository(pool).markCatalogUnavailable(
+      orderId,
+    );
+
+    expect(disposition).toEqual({
+      cartId: ids.cart,
+      cartStatus: "abandoned",
+      orderRetired: true
+    });
+    expect(
+      query.mock.calls.some(([sql, values]) =>
+        String(sql).includes("update carts") && values?.[1] === "abandoned",
+      ),
+    ).toBe(true);
+    expect(
+      query.mock.calls.some(([sql]) =>
+        String(sql).includes("with released as"),
+      ),
+    ).toBe(true);
   });
 });

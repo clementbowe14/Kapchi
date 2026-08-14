@@ -4,6 +4,7 @@ export type CheckoutEventName =
   | "checkout.contact.accepted"
   | "checkout.contact.rejected"
   | "checkout.catalog.unavailable"
+  | "checkout.catalog.retired"
   | "checkout.preparation.started"
   | "checkout.preparation.succeeded"
   | "checkout.preparation.failed"
@@ -24,6 +25,9 @@ export type CheckoutEventName =
 
 export type CheckoutEventFields = {
   authMode?: "authenticated" | "guest";
+  cartId?: string;
+  cartRevision?: number;
+  cartStatus?: "abandoned" | "active" | "checkout_started";
   disposition?: "complete" | "expired" | "reusable" | "unusable";
   errorCode?: string;
   errorType?: string;
@@ -39,6 +43,7 @@ export type CheckoutEventFields = {
   providerOperation?: "create" | "retrieve";
   providerSessionId?: string;
   resultCode?: string;
+  reusedOrder?: boolean;
   reviewIssueCount?: number;
   webhookEventId?: string;
   webhookEventType?: string;

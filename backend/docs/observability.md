@@ -48,14 +48,15 @@ Checkout logs use the following event names:
 | `checkout.provider.failed` | Stripe create or retrieve failed. |
 | `checkout.provider.session_reused` | An existing open Checkout Session was reused. |
 | `checkout.session.terminal` | A complete, expired, or unusable session was handled. |
+| `checkout.catalog.retired` | A deterministic catalog failure retired its order and reactivated or abandoned its cart. |
 | `checkout.persistence.failed` | A checkout repository operation failed. |
 | `checkout.succeeded` | The provider session was persisted and returned to the caller. |
 
-Depending on the event, safe fields include `orderId`, `providerSessionId`,
-`providerOperation`, `operation`, `disposition`, `lineItemCount`,
-`existingProviderSession`, `errorType`, and `errorCode`. Checkout events use the
-request logger, so they carry the HTTP `requestId` without passing HTTP objects
-into the service.
+Depending on the event, safe fields include `orderId`, `cartId`, `cartRevision`,
+`cartStatus`, `reusedOrder`, `providerSessionId`, `providerOperation`, `operation`,
+`disposition`, `lineItemCount`, `existingProviderSession`, `errorType`, and
+`errorCode`. Checkout events use the request logger, so they carry the HTTP
+`requestId` without passing HTTP objects into the service.
 
 ## Cart Events
 
@@ -131,6 +132,9 @@ structured identifiers or bounded state fields instead.
    health metrics or database logs.
 8. For terminal sessions, inspect `disposition` and `providerSessionId`, then
    confirm durable order state before retrying.
+9. For `checkout.catalog.retired`, use `cartId`, `cartStatus`, and `orderId` to
+   confirm whether checkout reactivated the failed cart or preserved a newer
+   active cart by abandoning the stale one.
 
 The observer is intentionally vendor-neutral. A telemetry exporter can be
 added later behind the observer interface without changing checkout behavior.

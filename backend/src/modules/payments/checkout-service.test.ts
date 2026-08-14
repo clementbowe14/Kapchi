@@ -31,6 +31,9 @@ function preparedCheckout(
   existingStripeSessionId: string | null = null,
 ) {
   return {
+    cartId: context.cartId,
+    cartRevision: 3,
+    cartStatus: "active" as const,
     customerEmail: contact.customerEmail,
     existingStripeSessionId,
     lines: [
@@ -42,7 +45,8 @@ function preparedCheckout(
       }
     ],
     orderId: id,
-    publicOrderNumber: `KAP-${id.replace(/-/g, "").slice(0, 12).toUpperCase()}`
+    publicOrderNumber: `KAP-${id.replace(/-/g, "").slice(0, 12).toUpperCase()}`,
+    reusedOrder: existingStripeSessionId !== null
   };
 }
 
@@ -52,7 +56,11 @@ function createRepository(
   return {
     finalizeCheckout: vi.fn(),
     getCheckoutStatus: vi.fn(),
-    markCatalogUnavailable: vi.fn(),
+    markCatalogUnavailable: vi.fn(async () => ({
+      cartId: context.cartId,
+      cartStatus: "active" as const,
+      orderRetired: true
+    })),
     markProviderFailure: vi.fn(),
     prepareCheckout: vi.fn(async () =>
       preparedCheckout(orderId, existingStripeSessionId),
@@ -299,6 +307,12 @@ describe("CheckoutService", () => {
         providerOperation: "create"
       },
     );
+    expect(observer.warn).toHaveBeenCalledWith("checkout.catalog.retired", {
+      cartId: context.cartId,
+      cartStatus: "active",
+      orderId,
+      resultCode: "CATALOG_ORDER_RETIRED"
+    });
     const observed = JSON.stringify(observer.error.mock.calls);
     expect(observed).not.toContain(contact.customerEmail);
     expect(observed).not.toContain("price_test_stole");

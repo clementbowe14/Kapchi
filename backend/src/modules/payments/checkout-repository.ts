@@ -3,6 +3,7 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { hashSessionId } from "../cart/guest-session.js";
 import { CheckoutCartNotFoundError, CheckoutNeedsReviewError } from "./checkout-errors.js";
 import type {
+  CatalogUnavailableDisposition,
   CheckoutCartOwner,
   CheckoutContact,
   CheckoutLine,
@@ -17,6 +18,7 @@ type CartRow = QueryResultRow & {
   customer_contact_id: string | null;
   customer_id: string | null;
   id: string;
+  revision: number;
   status: "active" | "checkout_started";
   subtotal_cents: number;
   user_id: string | null;
@@ -97,6 +99,20 @@ type RetiredOrderRow = QueryResultRow & {
   payment_status: string;
   status: string;
   stripe_checkout_session_id: string | null;
+};
+
+type CatalogFailureOrderRow = QueryResultRow & {
+  cart_id: string | null;
+  payment_status: string;
+  status: string;
+};
+
+type CatalogFailureCartRow = QueryResultRow & {
+  authenticated_user_id: string | null;
+  cart_recoverable: boolean;
+  guest_token_hash: string | null;
+  status: string;
+  user_id: string | null;
 };
 
 type Queryable = Pick<PoolClient, "query">;
@@ -293,11 +309,15 @@ export class CheckoutRepository {
       const existing = await this.findExistingOrder(client, cart.id);
       if (existing) {
         return {
+          cartId: cart.id,
+          cartRevision: cart.revision,
+          cartStatus: cart.status,
           customerEmail: existing.customer_email ?? contact.customerEmail,
           existingStripeSessionId: existing.stripe_checkout_session_id,
           lines: await this.loadOrderLines(client, existing.id),
           orderId: existing.id,
-          publicOrderNumber: existing.public_order_number
+          publicOrderNumber: existing.public_order_number,
+          reusedOrder: true
         };
       }
 
@@ -509,11 +529,15 @@ export class CheckoutRepository {
       );
 
       return {
+        cartId: cart.id,
+        cartRevision: cart.revision,
+        cartStatus: cart.status,
         customerEmail: contact.customerEmail,
         existingStripeSessionId: null,
         lines,
         orderId,
-        publicOrderNumber: orderNumber(orderId)
+        publicOrderNumber: orderNumber(orderId),
+        reusedOrder: false
       };
     });
 
@@ -629,7 +653,8 @@ export class CheckoutRepository {
             c.customer_contact_id,
             c.status,
             c.currency,
-            c.subtotal_cents
+            c.subtotal_cents,
+            c.revision
           from carts c
           left join users u on u.id = c.authenticated_user_id
           where c.status in ('active', 'checkout_started')
@@ -637,16 +662,20 @@ export class CheckoutRepository {
               c.user_id = $1
               or (u.auth_provider = 'clerk' and u.auth_subject = $1)
             )
+            and ($2::uuid is null or c.id = $2::uuid)
           order by
+            (c.status = 'active') desc,
             (u.auth_provider = 'clerk' and u.auth_subject = $1) desc,
             c.created_at asc,
             c.id asc
           limit 1
           for update of c
         `,
-        [owner.authSubject],
+        [owner.authSubject, owner.cartId ?? null],
       );
-      return result.rows[0] ?? null;
+      const cart = result.rows[0] ?? null;
+      this.assertExpectedRevision(owner.expectedRevision, cart);
+      return cart;
     }
 
     const result = await client.query<CartRow>(
@@ -659,7 +688,8 @@ export class CheckoutRepository {
           customer_contact_id,
           status,
           currency,
-          subtotal_cents
+          subtotal_cents,
+          revision
         from carts
         where id = $1
           and guest_token_hash = $2
@@ -671,7 +701,24 @@ export class CheckoutRepository {
       `,
       [owner.cartId, hashSessionId(owner.sessionId)],
     );
-    return result.rows[0] ?? null;
+    const cart = result.rows[0] ?? null;
+    this.assertExpectedRevision(owner.expectedRevision, cart);
+    return cart;
+  }
+
+  private assertExpectedRevision(
+    expectedRevision: number | undefined,
+    cart: CartRow | null,
+  ) {
+    if (
+      cart &&
+      expectedRevision !== undefined &&
+      cart.revision !== expectedRevision
+    ) {
+      throw new CheckoutNeedsReviewError(
+        "The cart changed after it was reviewed. Refresh it before checking out.",
+      );
+    }
   }
 
   async markProviderFailure(orderId: string) {
@@ -687,22 +734,126 @@ export class CheckoutRepository {
     );
   }
 
-  async markCatalogUnavailable(orderId: string) {
-    await this.withTransaction(async (client) => {
-      const failedOrder = await client.query<{ id: string }>(
+  async markCatalogUnavailable(
+    orderId: string,
+  ): Promise<CatalogUnavailableDisposition> {
+    return this.withTransaction(async (client) => {
+      const orderResult = await client.query<CatalogFailureOrderRow>(
+        `
+          select
+            o.cart_id,
+            o.status,
+            o.payment_status
+          from orders o
+          where o.id = $1
+          for update
+        `,
+        [orderId],
+      );
+      const order = orderResult.rows[0];
+
+      if (
+        !order ||
+        order.status !== "pending_payment" ||
+        !["unpaid", "checkout_started", "failed"].includes(order.payment_status)
+      ) {
+        return { cartId: order?.cart_id ?? null, cartStatus: null, orderRetired: false };
+      }
+
+      let cartStatus: "abandoned" | "active" | null = null;
+      const cart = order.cart_id
+        ? (
+            await client.query<CatalogFailureCartRow>(
+              `
+                select
+                  status,
+                  user_id,
+                  authenticated_user_id,
+                  guest_token_hash,
+                  (expires_at is null or expires_at > now()) as cart_recoverable
+                from carts
+                where id = $1
+                for update
+              `,
+              [order.cart_id],
+            )
+          ).rows[0] ?? null
+        : null;
+
+      if (order.cart_id && cart?.status === "checkout_started") {
+        const sibling = await client.query<{ id: string }>(
+          `
+            select sibling.id
+            from carts sibling
+            where sibling.id <> $1
+              and sibling.status = 'active'
+              and (
+                ($2::text is not null and sibling.user_id = $2)
+                or ($3::uuid is not null and sibling.authenticated_user_id = $3)
+                or ($4::text is not null and sibling.guest_token_hash = $4)
+              )
+            order by sibling.created_at asc, sibling.id asc
+            limit 1
+            for update
+          `,
+          [
+            order.cart_id,
+            cart.user_id,
+            cart.authenticated_user_id,
+            cart.guest_token_hash
+          ],
+        );
+        cartStatus =
+          cart.cart_recoverable && sibling.rows.length === 0
+            ? "active"
+            : "abandoned";
+      }
+
+      await client.query(
         `
           update orders
-          set payment_status = 'failed'
+          set
+            status = 'cancelled',
+            payment_status = 'failed',
+            cancelled_at = coalesce(cancelled_at, now())
           where id = $1
             and status = 'pending_payment'
             and payment_status in ('unpaid', 'checkout_started', 'failed')
-          returning id
         `,
         [orderId],
       );
 
-      if (failedOrder.rows.length !== 1) {
-        return;
+      if (order.cart_id && cartStatus) {
+        await client.query(
+          `
+            update carts
+            set status = $2
+            where id = $1 and status = 'checkout_started'
+          `,
+          [order.cart_id, cartStatus],
+        );
+      }
+
+      if (cartStatus === "abandoned") {
+        await client.query(
+          `
+            with released as (
+              update fabric_reservations
+              set status = 'released', expires_at = now()
+              where order_id = $1 and status = 'active'
+              returning fabric_id, quantity
+            ), totals as (
+              select fabric_id, sum(quantity)::integer as quantity
+              from released
+              group by fabric_id
+            )
+            update fabrics f
+            set quantity_reserved = greatest(0, f.quantity_reserved - totals.quantity)
+            from totals
+            where f.id = totals.fabric_id
+          `,
+          [orderId],
+        );
       }
 
       await client.query(
@@ -720,6 +871,12 @@ export class CheckoutRepository {
         `,
         [orderId, JSON.stringify(catalogUnavailableEventMetadata)],
       );
+
+      return {
+        cartId: order.cart_id,
+        cartStatus,
+        orderRetired: true
+      };
     });
   }
 
@@ -843,6 +1000,12 @@ export class CheckoutRepository {
         where cart_id = $1
           and status = 'pending_payment'
           and payment_status in ('unpaid', 'checkout_started', 'failed')
+          and not exists (
+            select 1
+            from order_events catalog_failure
+            where catalog_failure.order_id = orders.id
+              and catalog_failure.event_type = 'checkout.catalog_unavailable'
+          )
         order by created_at desc, id desc
         limit 1
         for update

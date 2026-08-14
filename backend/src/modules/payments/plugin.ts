@@ -42,6 +42,7 @@ import {
 import type {
   CheckoutCartOwner,
   CheckoutContact,
+  CheckoutRequest,
   CheckoutResult
 } from "./checkout-types.js";
 import { createStripeClient } from "./stripe-client.js";
@@ -74,7 +75,9 @@ function normalizedPhone(value: string) {
   return value.startsWith("+") ? `+${digits}` : digits;
 }
 
-const checkoutSchema = Joi.object<CheckoutContact>({
+const checkoutSchema = Joi.object<CheckoutRequest>({
+  cartId: Joi.string().guid().optional(),
+  cartRevision: Joi.number().integer().min(0).optional(),
   customerEmail: Joi.string().trim().lowercase().email().required(),
   customerPhone: Joi.string()
     .trim()
@@ -87,12 +90,14 @@ const checkoutSchema = Joi.object<CheckoutContact>({
   preferredContactMethod: Joi.string()
     .valid(...preferredContactMethods)
     .required()
-}).required();
+})
+  .and("cartId", "cartRevision")
+  .required();
 
 function validateCheckoutContact(
   body: unknown,
   authenticated: boolean,
-): { error?: Joi.ValidationError; value: CheckoutContact } {
+): { error?: Joi.ValidationError; value: CheckoutRequest } {
   const result = checkoutSchema.validate(parseJsonBody(body), {
     abortEarly: false,
     allowUnknown: false,
@@ -102,11 +107,11 @@ function validateCheckoutContact(
   if (result.error) {
     return {
       error: result.error,
-      value: result.value as CheckoutContact
+      value: result.value as CheckoutRequest
     };
   }
 
-  const contact = result.value as CheckoutContact;
+  const contact = result.value as CheckoutRequest;
   const phoneRequired =
     !authenticated || contact.preferredContactMethod !== "email";
 
@@ -181,10 +186,34 @@ const checkoutSessionParamsSchema = Joi.object({
     .required()
 }).required();
 
-async function resolveCheckoutOwner(request: FastifyRequest) {
-  return request.auth
-    ? { authSubject: request.auth.userId }
-    : await getGuestCartSessionContext(request);
+async function resolveCheckoutOwner(
+  request: FastifyRequest,
+  checkoutRequest: Pick<CheckoutRequest, "cartId" | "cartRevision"> = {},
+) {
+  if (request.auth) {
+    return {
+      authSubject: request.auth.userId,
+      ...(checkoutRequest.cartId ? { cartId: checkoutRequest.cartId } : {}),
+      ...(checkoutRequest.cartRevision === undefined
+        ? {}
+        : { expectedRevision: checkoutRequest.cartRevision })
+    } satisfies CheckoutCartOwner;
+  }
+
+  const context = await getGuestCartSessionContext(request);
+  if (
+    !context ||
+    (checkoutRequest.cartId && checkoutRequest.cartId !== context.cartId)
+  ) {
+    return null;
+  }
+
+  return {
+    ...context,
+    ...(checkoutRequest.cartRevision === undefined
+      ? {}
+      : { expectedRevision: checkoutRequest.cartRevision })
+  } satisfies CheckoutCartOwner;
 }
 
 async function withPoolClient<T>(
@@ -291,7 +320,8 @@ export function createPaymentsPlugin(
           resultCode: "VALID"
         });
 
-        const owner = await resolveCheckoutOwner(request);
+        const checkoutRequest = value as CheckoutRequest;
+        const owner = await resolveCheckoutOwner(request, checkoutRequest);
         if (!owner) {
           return reply.code(404).send({
             error: "CART_NOT_FOUND",
@@ -303,7 +333,11 @@ export function createPaymentsPlugin(
         try {
           const result = await serviceFor(request.log).startCheckout(
             owner,
-            value as CheckoutContact,
+            {
+              customerEmail: checkoutRequest.customerEmail,
+              customerPhone: checkoutRequest.customerPhone,
+              preferredContactMethod: checkoutRequest.preferredContactMethod
+            },
           );
           return reply.code(201).send(result);
         } catch (checkoutError) {

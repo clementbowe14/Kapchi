@@ -113,7 +113,9 @@ Expected ledger behavior:
 
 ## Scenario 1: Successful Payment
 
-1. Create or select a test cart/order and start checkout through the backend.
+1. Create or select a test cart and start checkout through the backend. New
+   clients send the displayed `cartId` and `cartRevision`; the backend verifies
+   ownership and rejects a cart that changed after review.
 2. Open the returned Stripe Checkout URL.
 3. Pay with Stripe test card `4242 4242 4242 4242`, any future expiration date,
    any CVC, and any valid postal code.
@@ -131,6 +133,12 @@ Expected database state:
 - `orders.stripe_checkout_session_id` and `orders.stripe_payment_intent_id`
   match the Stripe objects.
 - The webhook event ledger contains the successful Stripe event exactly once.
+
+If Stripe reports that a configured Price does not exist, the checkout order is
+cancelled and receives one `checkout.catalog_unavailable` event. Its cart is
+reactivated for a corrected retry unless the owner already has a newer active
+cart, in which case the stale cart is abandoned. Checkout never silently switches
+from the cart reviewed by a new client to another cart.
 
 ## Scenario 2: Failed Payment
 

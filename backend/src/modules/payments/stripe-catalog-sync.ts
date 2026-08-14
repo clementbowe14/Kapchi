@@ -807,23 +807,6 @@ export async function recoverLocalPlaceholderOrders(
                 )
               )
           )
-          and not exists (
-            select 1
-            from carts competing_cart
-            where competing_cart.id <> c.id
-              and competing_cart.status = 'active'
-              and (
-                (c.user_id is not null and competing_cart.user_id = c.user_id)
-                or (
-                  c.authenticated_user_id is not null
-                  and competing_cart.authenticated_user_id = c.authenticated_user_id
-                )
-                or (
-                  c.guest_token_hash is not null
-                  and competing_cart.guest_token_hash = c.guest_token_hash
-                )
-              )
-          )
         for update of o, c
       ), recovered as (
         update orders o
@@ -849,19 +832,61 @@ export async function recoverLocalPlaceholderOrders(
           '{"reason":"local_seed_catalog_mapping","source":"stripe_test_catalog_sync"}'::jsonb
         from recovered
         returning order_id
-      ), reactivated_carts as (
+      ), cart_dispositions as (
         update carts c
-        set status = 'active'
+        set status = case
+          when exists (
+            select 1
+            from carts competing_cart
+            where competing_cart.id <> c.id
+              and competing_cart.status = 'active'
+              and (
+                (c.user_id is not null and competing_cart.user_id = c.user_id)
+                or (
+                  c.authenticated_user_id is not null
+                  and competing_cart.authenticated_user_id = c.authenticated_user_id
+                )
+                or (
+                  c.guest_token_hash is not null
+                  and competing_cart.guest_token_hash = c.guest_token_hash
+                )
+              )
+          ) then 'abandoned'::cart_status
+          else 'active'::cart_status
+        end
         from recovered
         where c.id = recovered.cart_id
-        returning c.id
+        returning c.id, c.status
+      ), released_reservations as (
+        update fabric_reservations reservation
+        set status = 'released', expires_at = now()
+        from recovered
+        join cart_dispositions disposition
+          on disposition.id = recovered.cart_id
+        where reservation.order_id = recovered.id
+          and reservation.status = 'active'
+          and disposition.status = 'abandoned'
+        returning reservation.fabric_id, reservation.quantity
+      ), reservation_totals as (
+        select fabric_id, sum(quantity)::integer as quantity
+        from released_reservations
+        group by fabric_id
+      ), updated_fabrics as (
+        update fabrics fabric
+        set quantity_reserved = greatest(
+          0,
+          fabric.quantity_reserved - reservation_totals.quantity
+        )
+        from reservation_totals
+        where fabric.id = reservation_totals.fabric_id
+        returning fabric.id
       )
       select
         recovered.id as order_id,
         recovered.cart_id,
-        true as cart_reactivated
+        (cart_dispositions.status = 'active') as cart_reactivated
       from recovered
-      join reactivated_carts on reactivated_carts.id = recovered.cart_id
+      join cart_dispositions on cart_dispositions.id = recovered.cart_id
       order by recovered.id
     `,
     [

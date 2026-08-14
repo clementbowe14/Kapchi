@@ -143,6 +143,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       headers: { authorization: "Bearer verified-token" },
       method: "POST",
       payload: {
+        cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
+        cartRevision: 7,
         customerEmail: " Customer@Example.com ",
         preferredContactMethod: "email"
       },
@@ -162,7 +164,11 @@ describe("paymentsPlugin Stripe webhooks", () => {
       repository
     });
     expect(startCheckout).toHaveBeenCalledWith(
-      { authSubject: "user_123" },
+      {
+        authSubject: "user_123",
+        cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
+        expectedRevision: 7
+      },
       {
         customerEmail: "customer@example.com",
         customerPhone: null,
@@ -215,6 +221,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       cookies: { session_id: sessionId },
       method: "POST",
       payload: {
+        cartId,
+        cartRevision: 2,
         customerEmail: "Guest@Example.com",
         customerPhone: "+1 (555) 010-1010",
         preferredContactMethod: "phone"
@@ -224,13 +232,55 @@ describe("paymentsPlugin Stripe webhooks", () => {
 
     expect(response.statusCode).toBe(201);
     expect(startCheckout).toHaveBeenCalledWith(
-      { cartId, sessionId },
+      { cartId, expectedRevision: 2, sessionId },
       {
         customerEmail: "guest@example.com",
         customerPhone: "+15550101010",
         preferredContactMethod: "phone"
       },
     );
+    await app.close();
+  });
+
+  it("rejects a guest checkout for a cart that does not match the session", async () => {
+    const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
+    const ownedCartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
+    const startCheckout = vi.fn();
+    const app = fastify({ logger: false });
+    await app.register(cookie);
+    await app.register(authPlugin);
+    app.decorate("pg", {
+      connect: vi.fn(),
+      query: vi.fn(async () => ({ rows: [{ id: ownedCartId }] }))
+    } as unknown as Pool);
+    await app.register(
+      createPaymentsPlugin({
+        checkoutRepositoryFactory: () => ({}) as never,
+        checkoutServiceFactory: () => ({ startCheckout }),
+        stripeClientFactory: () => ({
+          checkout: { sessions: {} },
+          webhooks: { constructEvent: mocks.constructEvent }
+        }) as never
+      }),
+      { prefix: "/payments" },
+    );
+
+    const response = await app.inject({
+      cookies: { session_id: sessionId },
+      method: "POST",
+      payload: {
+        cartId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+        cartRevision: 2,
+        customerEmail: "guest@example.com",
+        customerPhone: "+15550101010",
+        preferredContactMethod: "phone"
+      },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: "CART_NOT_FOUND" });
+    expect(startCheckout).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -497,6 +547,24 @@ describe("paymentsPlugin Stripe webhooks", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe("VALIDATION_ERROR");
 
+    await app.close();
+  });
+
+  it("requires cart id and revision to be supplied together", async () => {
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
+        customerEmail: "customer@example.com",
+        customerPhone: "+15550101010",
+        preferredContactMethod: "email"
+      },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe("VALIDATION_ERROR");
     await app.close();
   });
 

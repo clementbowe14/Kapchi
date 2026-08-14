@@ -242,17 +242,32 @@ integrationDescribe("Stripe local catalog recovery", () => {
     );
 
     const recovered = await recoverLocalPlaceholderOrders(client);
+    const testOrderIdSet = new Set(orderIds);
+    const recoveredTestRows = recovered.filter((row) => testOrderIdSet.has(row.order_id));
     const recoveredKinds = [...records]
       .filter(([, record]) =>
-        recovered.some((row) => row.order_id === record.orderId),
+        recoveredTestRows.some((row) => row.order_id === record.orderId),
       )
       .map(([kind]) => kind);
     expect(recoveredKinds.sort()).toEqual([
+      "active-sibling",
       "eligible",
       "mixed-catalog-event",
       "real-catalog-event"
     ]);
-    expect(recovered.every((row) => row.cart_reactivated === true)).toBe(true);
+    const recoveredDispositions = recoveredKinds.map((kind) => ({
+      cartReactivated: recoveredTestRows.find(
+        (row) => row.order_id === records.get(kind)?.orderId,
+      )?.cart_reactivated,
+      kind
+    }));
+    expect(recoveredDispositions).toEqual([
+      { cartReactivated: false, kind: "active-sibling" },
+      { cartReactivated: true, kind: "eligible" },
+      { cartReactivated: true, kind: "mixed-catalog-event" },
+      { cartReactivated: true, kind: "real-catalog-event" }
+    ]);
+    const activeSiblingOrderId = records.get("active-sibling")?.orderId;
 
     const states = await client.query<{
       cart_status: string;
@@ -267,11 +282,11 @@ integrationDescribe("Stripe local catalog recovery", () => {
       `,
       [orderIds],
     );
-    const recoveredSet = new Set(recovered.map((row) => row.order_id));
+    const recoveredSet = new Set(recoveredTestRows.map((row) => row.order_id));
     for (const state of states.rows) {
       if (recoveredSet.has(state.id)) {
         expect(state).toMatchObject({
-          cart_status: "active",
+          cart_status: state.id === activeSiblingOrderId ? "abandoned" : "active",
           order_status: "cancelled"
         });
       } else {
