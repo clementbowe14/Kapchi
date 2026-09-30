@@ -29,6 +29,9 @@ See [Backend observability](docs/observability.md) for request-ID behavior,
 structured HTTP and checkout event fields, redaction rules, and operational
 troubleshooting.
 
+See [Admin sales analytics](docs/admin-sales-analytics.md) for the bounded,
+single-currency reporting contract and metric definitions.
+
 ## Requirements
 
 - Node.js `>= 20.9.0`

@@ -5,6 +5,7 @@ import sensible from "@fastify/sensible";
 import * as fastify from "fastify";
 import { config } from "./config/index.js";
 import { closeDatabasePool } from "./database/index.js";
+import adminAnalyticsPlugin from "./modules/admin-analytics/plugin.js";
 import { authPlugin } from "./modules/auth/index.js";
 import assetsPlugin from "./modules/assets/plugin.js";
 import cartPlugin from "./modules/cart/plugin.js";
@@ -50,6 +51,7 @@ export async function buildServer() {
   await app.register(authPlugin);
   await app.register(healthPlugin);
 
+  await app.register(adminAnalyticsPlugin, { prefix: "/admin/analytics" });
   await app.register(assetsPlugin, { prefix: "/assets" });
   await app.register(usersPlugin, { prefix: "/users" });
   await app.register(listingsPlugin, { prefix: "/listings" });
