@@ -32,6 +32,9 @@ troubleshooting.
 See [Admin sales analytics](docs/admin-sales-analytics.md) for the bounded,
 single-currency reporting contract and metric definitions.
 
+Refund API, recovery-worker, and operational behavior is documented in
+[Refund ledger and reconciliation](docs/refunds.md).
+
 ## Requirements
 
 - Node.js `>= 20.9.0`
