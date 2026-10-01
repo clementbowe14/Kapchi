@@ -878,9 +878,16 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
     let paid = false;
     let paidEventCount = 0;
-    const query = vi.fn(async (sql: string) => {
+    const receivedWebhookIds = new Set<string>();
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
       if (["begin", "commit", "rollback"].includes(sql)) {
         return { rows: [] };
+      }
+      if (sql.includes("insert into stripe_webhook_events")) {
+        const eventId = String(values?.[0]);
+        if (receivedWebhookIds.has(eventId)) return { rows: [] };
+        receivedWebhookIds.add(eventId);
+        return { rows: [{ stripe_event_id: eventId }] };
       }
       if (sql.includes("from orders")) {
         return {
@@ -907,7 +914,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const client = { query, release } as unknown as PoolClient;
     const pool = {
       connect: vi.fn(async () => client),
-      query: vi.fn()
+      query
     } as unknown as Pool;
     mocks.constructEvent
       .mockReturnValueOnce({
@@ -960,7 +967,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     }
 
     expect(paidEventCount).toBe(1);
-    expect(release).toHaveBeenCalledTimes(3);
+    expect(release).toHaveBeenCalledTimes(2);
     await app.close();
   });
 
@@ -978,7 +985,9 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const client = { query, release } as unknown as PoolClient;
     const pool = {
       connect: vi.fn(async () => client),
-      query: vi.fn()
+      query: vi.fn(async () => {
+        throw databaseError;
+      })
     } as unknown as Pool;
     const observer = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
     mocks.constructEvent.mockReturnValue({
@@ -1019,7 +1028,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json().error).toBe("WEBHOOK_PROCESSING_ERROR");
-    expect(release).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
     expect(observer.error).toHaveBeenCalledWith("stripe.webhook.failed", {
       errorCode: "ECONNRESET",
       errorType: "Error",

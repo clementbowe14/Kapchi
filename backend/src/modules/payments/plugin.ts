@@ -46,6 +46,11 @@ import type {
   CheckoutResult
 } from "./checkout-types.js";
 import { createStripeClient } from "./stripe-client.js";
+import { StripeRefundProvider } from "../refunds/provider.js";
+import {
+  StripeWebhookInbox,
+  type StripeWebhookInboxPort
+} from "../refunds/webhook-inbox.js";
 
 function badRequest(reply: FastifyReply, message: string) {
   return reply.code(400).send({
@@ -252,6 +257,7 @@ export type PaymentsPluginDependencies = {
   ) => CheckoutObserver;
   paymentConfig?: PaymentsRuntimeConfig;
   stripeClientFactory?: () => StripePaymentsClient;
+  webhookInboxFactory?: (pool: Pool) => StripeWebhookInboxPort;
 };
 
 const systemClock: Clock = { now: () => new Date() };
@@ -262,6 +268,14 @@ export function createPaymentsPlugin(
   const plugin: FastifyPluginAsync = async (fastify) => {
     const paymentConfig = dependencies.paymentConfig ?? config.payments;
     const stripe = dependencies.stripeClientFactory?.() ?? createStripeClient();
+    const webhookInbox =
+      dependencies.webhookInboxFactory?.(fastify.pg) ??
+      (typeof (fastify as unknown as { pg?: { query?: unknown } }).pg?.query === "function"
+        ? new StripeWebhookInbox(
+            fastify.pg,
+            new StripeRefundProvider(stripe as unknown as Stripe),
+          )
+        : null);
     const repository =
       dependencies.checkoutRepositoryFactory?.(fastify.pg) ??
       new CheckoutRepository(fastify.pg);
@@ -469,6 +483,18 @@ export function createPaymentsPlugin(
       observeSafely(observer, "info", "stripe.webhook.verified", eventFields);
 
       try {
+        if (webhookInbox) {
+          const received = await webhookInbox.receive(event, request.body);
+          observeSafely(observer, "info", "stripe.webhook.processed", {
+            ...eventFields,
+            resultCode: received.processingStatus
+          });
+          return reply.send({
+            event_type: event.type,
+            received: true
+          });
+        }
+
         let outcome:
           | Awaited<ReturnType<typeof handleCheckoutSessionCompleted>>
           | null = null;
