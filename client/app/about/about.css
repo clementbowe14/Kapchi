@@ -408,6 +408,31 @@ html:has(.kapchi-about) {
   letter-spacing: -0.5px;
   color: #9d8561;
 }
+.about-footer {
+  border-top: 1px solid var(--about-border);
+  max-width: 1136px;
+  margin: 25px auto 0;
+  padding: 26px 0 30px;
+  display: flex;
+  align-items: center;
+  gap: 25px;
+  font-size: 11px;
+  color: #73725e;
+}
+.about-footer > a:first-child {
+  font-size: 18px;
+  letter-spacing: -0.5px;
+  font-weight: 600;
+  color: #9d8561;
+}
+.about-footer > a:last-child {
+  margin-left: auto;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  color: #806440;
+}
 @media (min-width: 1440px) {
   .about-founder-copy > p:not(.about-founder-name) {
     font-size: 15px;
@@ -466,6 +491,10 @@ html:has(.kapchi-about) {
   }
   .about-future-directions h3 {
     font-size: 21px;
+  }
+  .about-footer {
+    margin-left: 38px;
+    margin-right: 38px;
   }
 }
 @media (max-width: 760px) {
@@ -621,6 +650,21 @@ html:has(.kapchi-about) {
   }
   .about-closing p {
     font-size: 23px;
+  }
+  .about-footer {
+    margin: 0 24px;
+    padding: 22px 0;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .about-footer > span {
+    font-size: 10px;
+    margin-left: auto;
+  }
+  .about-footer > a:last-child {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
   }
   .about-desktop-break {
     display: none;
