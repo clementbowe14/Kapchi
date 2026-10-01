@@ -36,7 +36,11 @@ for (const [key, value] of Object.entries(envDefaults)) {
   process.env[key] = value;
 }
 
-const [{ authPlugin }, { CartIdempotencyConflictError }, cartPluginModule] =
+const [
+  { authPlugin },
+  { CartIdempotencyConflictError, InvalidProductionPriorityError },
+  cartPluginModule,
+] =
   await Promise.all([
     import("../auth/index.js"),
     import("./errors.js"),
@@ -68,6 +72,7 @@ function cartItemPayload() {
     listingCustomizationSetId: ids.customizationSet,
     listingId: ids.listing,
     listingPriceVariantId: ids.variant,
+    priorityCode: "standard",
     quantity: 1,
     trimOptionId: null
   };
@@ -195,6 +200,19 @@ function createMutationDatabaseMock(deleting = false) {
           {
             id: ids.cartItem,
             fabric_id: null,
+            listing_customization_set_id: ids.customizationSet,
+            listing_id: ids.listing,
+            production_estimate_snapshot: {
+              maximumBusinessDays: 7,
+              minimumBusinessDays: 5,
+              priorityCode: "standard",
+              priorityLabel: "Standard",
+              quotedAt: "2026-10-01T16:00:00.000Z",
+              ruleId: "00000000-0000-4000-8000-000000000093",
+              ruleRevision: 1,
+              schemaVersion: 1,
+            },
+            production_priority_code: "standard",
             quantity: 1,
             customization_asset_id: null
           }
@@ -203,6 +221,18 @@ function createMutationDatabaseMock(deleting = false) {
     }
     if (text.includes("from fabric_reservations")) {
       return { rows: [] };
+    }
+    if (text.includes("from listing_production_estimate_rules")) {
+      return {
+        rows: [{
+          id: "00000000-0000-4000-8000-000000000093",
+          label: "Standard",
+          maximum_business_days: 7,
+          minimum_business_days: 5,
+          priority_code: "standard",
+          revision: 1,
+        }],
+      };
     }
     if (text.includes("from listings l")) {
       return {
@@ -246,6 +276,17 @@ function createMutationDatabaseMock(deleting = false) {
                 fabric_id: null,
                 customization_set_id: ids.customizationSet,
                 listing_price_variant_id: ids.variant,
+                production_priority_code: "standard",
+                production_estimate_snapshot: {
+                  maximumBusinessDays: 7,
+                  minimumBusinessDays: 5,
+                  priorityCode: "standard",
+                  priorityLabel: "Standard",
+                  quotedAt: "2026-10-01T16:00:00.000Z",
+                  ruleId: "00000000-0000-4000-8000-000000000093",
+                  ruleRevision: 1,
+                  schemaVersion: 1,
+                },
                 customization_payload: cartItemPayload(),
                 customization_asset_id: null,
                 validation_status: "valid"
@@ -693,6 +734,7 @@ describe("cartPlugin", () => {
         listingCustomizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
         listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
         listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+        priorityCode: "standard",
         quantity: 1
       }
     });
@@ -726,6 +768,7 @@ describe("cartPlugin", () => {
         listingCustomizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
         listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
         listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+        priorityCode: "standard",
         quantity: 1,
         unitAmountCents: 1
       }
@@ -935,6 +978,30 @@ describe("cartPlugin", () => {
       statusCode: 409
     });
 
+    await app.close();
+  });
+
+  it("maps an unavailable production option to INVALID_PRODUCTION_PRIORITY", async () => {
+    const { database } = createMutationDatabaseMock();
+    const { redis } = createRedisMock();
+    const service = createCartServiceDouble({
+      addGuestItem: vi.fn().mockRejectedValue(new InvalidProductionPriorityError()),
+    });
+    const app = fastify({ logger: false });
+    await registerInjectedCartPlugin({ app, database, redis, service });
+
+    const response = await app.inject({
+      headers: { "idempotency-key": "invalid-production-option-1" },
+      method: "POST",
+      payload: cartItemPayload(),
+      url: "/items",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "INVALID_PRODUCTION_PRIORITY",
+      message: "The selected production priority is unavailable.",
+    });
     await app.close();
   });
 

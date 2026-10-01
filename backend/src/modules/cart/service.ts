@@ -6,7 +6,29 @@ import {
 } from "./guest-session.js";
 import { CartIdempotencyConflictError, CartValidationError } from "./errors.js";
 import { CartRepository } from "./repository.js";
-import type { CartItemInput } from "./types.js";
+import type {
+  CartItemInput,
+  ProductionEstimateDiagnostics,
+} from "./types.js";
+import {
+  parseProductionEstimateSnapshot,
+  type ProductionEstimateSnapshot,
+} from "../production-estimates.js";
+
+function productionEstimateDiagnostics(
+  input: CartItemInput,
+  snapshot: ProductionEstimateSnapshot,
+  outcome: ProductionEstimateDiagnostics["outcome"],
+): ProductionEstimateDiagnostics {
+  return {
+    customizationPackageId: input.listingCustomizationSetId,
+    listingId: input.listingId,
+    outcome,
+    priorityCode: snapshot.priorityCode,
+    ruleId: snapshot.ruleId,
+    ruleRevision: snapshot.ruleRevision,
+  };
+}
 
 function durableContext(context: GuestCartContext): GuestCartContext {
   return {
@@ -25,6 +47,7 @@ export function fingerprintCartItemInput(input: CartItemInput) {
     listingCustomizationSetId: input.listingCustomizationSetId,
     listingId: input.listingId,
     listingPriceVariantId: input.listingPriceVariantId,
+    priorityCode: input.priorityCode,
     quantity: input.quantity,
     trimOptionId: input.trimOptionId
   };
@@ -82,9 +105,23 @@ export class CartService {
           throw new CartIdempotencyConflictError();
         }
 
+        const replaySnapshot = await this.repository.loadItemProductionEstimate(
+          client,
+          cart.id,
+          replay.cart_item_id,
+        );
         return {
           ...(await this.repository.loadLockedGuestView(client, cart)),
-          cartItemId: replay.cart_item_id
+          cartItemId: replay.cart_item_id,
+          ...(replaySnapshot
+            ? {
+                productionEstimateDiagnostics: productionEstimateDiagnostics(
+                  input,
+                  replaySnapshot,
+                  "replayed",
+                ),
+              }
+            : {}),
         };
       }
 
@@ -95,6 +132,7 @@ export class CartService {
         cart,
         input,
         selection.unit_amount_cents,
+        selection.productionEstimateSnapshot,
       );
 
       if (input.fabricId) {
@@ -118,7 +156,12 @@ export class CartService {
 
       return {
         ...(await this.repository.finishMutation(client, cart)),
-        cartItemId
+        cartItemId,
+        productionEstimateDiagnostics: productionEstimateDiagnostics(
+          input,
+          selection.productionEstimateSnapshot,
+          "accepted",
+        ),
       };
     });
 
@@ -134,11 +177,22 @@ export class CartService {
       const cart = await this.repository.lockGuestCart(client, durableContext(context));
       const current = await this.repository.loadItem(client, cart.id, cartItemId);
       const reservation = await this.repository.loadReservation(client, cartItemId);
+      const currentProductionEstimate = parseProductionEstimateSnapshot(
+        current.production_estimate_snapshot,
+      );
+      const preservedProductionEstimate =
+        current.listing_id === input.listingId &&
+        current.listing_customization_set_id === input.listingCustomizationSetId &&
+        current.production_priority_code === input.priorityCode &&
+        currentProductionEstimate?.priorityCode === current.production_priority_code
+          ? currentProductionEstimate
+          : undefined;
       const selection = await this.repository.validateSelection(
         client,
         cart,
         input,
         cartItemId,
+        preservedProductionEstimate,
       );
 
       if (reservation && reservation.fabric_id !== input.fabricId) {
@@ -161,6 +215,7 @@ export class CartService {
         cartItemId,
         input,
         selection.unit_amount_cents,
+        selection.productionEstimateSnapshot,
       );
       await this.repository.attachAsset(client, cart.id, input);
 
@@ -174,7 +229,12 @@ export class CartService {
 
       return {
         ...(await this.repository.finishMutation(client, cart)),
-        cartItemId
+        cartItemId,
+        productionEstimateDiagnostics: productionEstimateDiagnostics(
+          input,
+          selection.productionEstimateSnapshot,
+          preservedProductionEstimate ? "preserved" : "accepted",
+        ),
       };
     });
 

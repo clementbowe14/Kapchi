@@ -9,6 +9,7 @@ export type CartItemInput = {
   listingCustomizationSetId: string;
   listingId: string;
   listingPriceVariantId: string;
+  priorityCode: string;
   quantity: number;
   trimOptionId: string | null;
 };
@@ -24,7 +25,17 @@ export type GuestCartView = {
 };
 
 export type CartMutationResult = GuestCartView & {
+  productionEstimateDiagnostics?: ProductionEstimateDiagnostics;
   cartItemId?: string;
+};
+
+export type ProductionEstimateDiagnostics = {
+  customizationPackageId: string;
+  listingId: string;
+  outcome: "accepted" | "preserved" | "replayed";
+  priorityCode: string;
+  ruleId: string;
+  ruleRevision: number;
 };
 
 export type CartSummary = {

@@ -7,6 +7,10 @@ import type {
   CartWarning,
   VerifiedCartIdentity
 } from "./claim-types.js";
+import {
+  parseProductionEstimateSnapshot,
+  productionEstimateFingerprint
+} from "../production-estimates.js";
 
 type Queryable = Pick<PoolClient, "query">;
 
@@ -37,6 +41,8 @@ type MergeLineRow = QueryResultRow & {
   listing_customization_set_id: string;
   listing_id: string;
   listing_price_variant_id: string;
+  production_estimate_snapshot: unknown;
+  production_priority_code: string | null;
   quantity: number;
   unit_amount_cents: number;
   validation_message: string | null;
@@ -75,6 +81,23 @@ function canonicalLines(payload: unknown) {
 function linesMatch(left: MergeLineRow, right: MergeLineRow) {
   const leftLines = canonicalLines(left.customization_payload);
   const rightLines = canonicalLines(right.customization_payload);
+  const leftEstimate = parseProductionEstimateSnapshot(
+    left.production_estimate_snapshot,
+  );
+  const rightEstimate = parseProductionEstimateSnapshot(
+    right.production_estimate_snapshot,
+  );
+  const estimateMatches =
+    leftEstimate &&
+    rightEstimate &&
+    leftEstimate.priorityCode === left.production_priority_code &&
+    rightEstimate.priorityCode === right.production_priority_code
+      ? productionEstimateFingerprint(leftEstimate) ===
+        productionEstimateFingerprint(rightEstimate)
+      : !leftEstimate &&
+        !rightEstimate &&
+        left.production_priority_code === null &&
+        right.production_priority_code === null;
 
   return (
     left.listing_id === right.listing_id &&
@@ -85,7 +108,9 @@ function linesMatch(left: MergeLineRow, right: MergeLineRow) {
     leftLines.line2 === rightLines.line2 &&
     leftLines.fontOptionId === rightLines.fontOptionId &&
     leftLines.trimOptionId === rightLines.trimOptionId &&
-    left.customization_asset_id === right.customization_asset_id
+    left.customization_asset_id === right.customization_asset_id &&
+    left.production_priority_code === right.production_priority_code &&
+    estimateMatches
   );
 }
 
@@ -423,6 +448,8 @@ export class CartClaimRepository {
           currency,
           customization_payload,
           customization_asset_id,
+          production_priority_code,
+          production_estimate_snapshot,
           validation_status,
           validation_message
         from cart_items

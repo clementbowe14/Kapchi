@@ -46,6 +46,7 @@ const input = {
   listingCustomizationSetId: ids.customizationSet,
   listingId: ids.listing,
   listingPriceVariantId: ids.variant,
+  priorityCode: "standard",
   quantity: 1,
   trimOptionId: null
 };
@@ -84,6 +85,18 @@ describe("CartRepository asset ownership", () => {
         ]
       })
       .mockResolvedValueOnce({ rows: [{ id: ids.asset }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "00000000-0000-4000-8000-000000000093",
+            label: "Standard",
+            maximum_business_days: 7,
+            minimum_business_days: 5,
+            priority_code: "standard",
+            revision: 1
+          }
+        ]
+      })
       .mockResolvedValueOnce({ rows: [{ id: ids.asset }] });
     const client = { query } as unknown as PoolClient;
     const subject = repository();
@@ -92,11 +105,11 @@ describe("CartRepository asset ownership", () => {
     await subject.attachAsset(client, ids.cart, input);
 
     expect(String(query.mock.calls[1][0])).toContain("for update of a");
-    expect(String(query.mock.calls[2][0])).toContain(
+    expect(String(query.mock.calls[3][0])).toContain(
       "status in ('uploaded', 'attached')",
     );
-    expect(String(query.mock.calls[2][0])).toContain("returning id");
-    expect(query.mock.calls[2][1]).toEqual([
+    expect(String(query.mock.calls[3][0])).toContain("returning id");
+    expect(query.mock.calls[3][1]).toEqual([
       ids.asset,
       ids.cart,
       ids.listing,
@@ -115,6 +128,76 @@ describe("CartRepository asset ownership", () => {
         name: "CartConflictError"
       },
     );
+  });
+
+  it("returns a specific error when the selected production priority is unavailable", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          currency: "usd",
+          customization_enabled: true,
+          listing_status: "active",
+          max_chars: 120,
+          min_chars: 0,
+          price_variant_active: true,
+          requires_fabric: false,
+          requires_image: true,
+          requires_text: true,
+          requires_trim: false,
+          unit_amount_cents: 8500,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ id: ids.asset }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const client = { query } as unknown as PoolClient;
+
+    await expect(repository().validateSelection(client, cart, input)).rejects.toMatchObject({
+      name: "InvalidProductionPriorityError",
+    });
+    expect(String(query.mock.calls[2][0])).toContain(
+      "from listing_production_estimate_rules",
+    );
+  });
+
+  it("preserves a valid snapshot without consulting a newer rule revision", async () => {
+    const snapshot = {
+      maximumBusinessDays: 7,
+      minimumBusinessDays: 5,
+      priorityCode: "standard",
+      priorityLabel: "Standard",
+      quotedAt: "2026-10-01T16:00:00.000Z",
+      ruleId: "00000000-0000-4000-8000-000000000093",
+      ruleRevision: 1,
+      schemaVersion: 1 as const,
+    };
+    const query = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        currency: "usd",
+        customization_enabled: true,
+        listing_status: "active",
+        max_chars: 120,
+        min_chars: 0,
+        price_variant_active: true,
+        requires_fabric: false,
+        requires_image: false,
+        requires_text: true,
+        requires_trim: false,
+        unit_amount_cents: 8500,
+      }],
+    });
+    const client = { query } as unknown as PoolClient;
+
+    const selection = await repository().validateSelection(
+      client,
+      cart,
+      { ...input, imageAssetId: null },
+      "cart-item-1",
+      snapshot,
+    );
+
+    expect(selection.productionEstimateSnapshot).toEqual(snapshot);
+    expect(query).toHaveBeenCalledOnce();
   });
 });
 

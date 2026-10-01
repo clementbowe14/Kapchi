@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { hashSessionId } from "../cart/guest-session.js";
+import { parseProductionEstimateSnapshot } from "../production-estimates.js";
 import { CheckoutCartNotFoundError, CheckoutNeedsReviewError } from "./checkout-errors.js";
 import type {
   CatalogUnavailableDisposition,
@@ -61,6 +62,8 @@ type CartItemRow = QueryResultRow & {
   listing_title: string;
   max_chars: number | null;
   min_chars: number;
+  production_estimate_snapshot: unknown;
+  production_priority_code: string | null;
   quantity: number;
   requires_image: boolean;
   requires_text: boolean;
@@ -79,6 +82,8 @@ type CartItemLockRow = QueryResultRow & {
   listing_customization_set_id: string;
   listing_id: string;
   listing_price_variant_id: string;
+  production_estimate_snapshot: unknown;
+  production_priority_code: string | null;
 };
 
 type ExistingOrderRow = QueryResultRow & {
@@ -171,6 +176,19 @@ function parseV1Customization(payload: unknown) {
 }
 
 function validationFailure(item: CartItemRow) {
+  const productionEstimate = parseProductionEstimateSnapshot(
+    item.production_estimate_snapshot,
+  );
+  if (
+    !productionEstimate ||
+    productionEstimate.priorityCode !== item.production_priority_code
+  ) {
+    return {
+      message: "This item's production estimate must be reviewed.",
+      status: "invalid" as const
+    };
+  }
+
   if (
     item.unit_amount_cents !== item.current_unit_amount_cents ||
     item.currency !== item.current_currency
@@ -307,21 +325,7 @@ export class CheckoutRepository {
       }
 
       const existing = await this.findExistingOrder(client, cart.id);
-      if (existing) {
-        return {
-          cartId: cart.id,
-          cartRevision: cart.revision,
-          cartStatus: cart.status,
-          customerEmail: existing.customer_email ?? contact.customerEmail,
-          existingStripeSessionId: existing.stripe_checkout_session_id,
-          lines: await this.loadOrderLines(client, existing.id),
-          orderId: existing.id,
-          publicOrderNumber: existing.public_order_number,
-          reusedOrder: true
-        };
-      }
-
-      if (cart.status !== "active") {
+      if (cart.status !== "active" && !existing) {
         throw new CheckoutNeedsReviewError("The cart checkout state cannot be recovered.");
       }
 
@@ -357,6 +361,20 @@ export class CheckoutRepository {
           )
             ? "The cart price changed and must be reviewed."
             : "The cart contains items that must be reviewed."
+        };
+      }
+
+      if (existing) {
+        return {
+          cartId: cart.id,
+          cartRevision: cart.revision,
+          cartStatus: cart.status,
+          customerEmail: existing.customer_email ?? contact.customerEmail,
+          existingStripeSessionId: existing.stripe_checkout_session_id,
+          lines: await this.loadOrderLines(client, existing.id),
+          orderId: existing.id,
+          publicOrderNumber: existing.public_order_number,
+          reusedOrder: true
         };
       }
 
@@ -441,10 +459,13 @@ export class CheckoutRepository {
               listing_snapshot,
               fabric_snapshot,
               customization_snapshot,
-              customization_asset_id
+              customization_asset_id,
+              production_priority_code,
+              production_estimate_snapshot
             ) values (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15
+              $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15,
+              $16, $17::jsonb
             )
           `,
           [
@@ -472,7 +493,9 @@ export class CheckoutRepository {
               line2: customization.line2,
               trimOptionId: customization.trimOptionId
             }),
-            item.customization_asset_id
+            item.customization_asset_id,
+            item.production_priority_code,
+            JSON.stringify(item.production_estimate_snapshot)
           ],
         );
 
@@ -1047,7 +1070,9 @@ export class CheckoutRepository {
           listing_customization_set_id,
           listing_price_variant_id,
           fabric_id,
-          customization_asset_id
+          customization_asset_id,
+          production_priority_code,
+          production_estimate_snapshot
         from cart_items
         where cart_id = $1
         order by created_at asc, id asc
@@ -1161,6 +1186,8 @@ export class CheckoutRepository {
           ci.currency,
           ci.customization_payload,
           ci.customization_asset_id,
+          ci.production_priority_code,
+          ci.production_estimate_snapshot,
           l.slug as listing_slug,
           l.title as listing_title,
           l.status as listing_status,

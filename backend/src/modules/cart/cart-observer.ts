@@ -20,9 +20,15 @@ export type CartEventFields = {
   actorType: CartActorType;
   cartId?: string;
   cartItemId?: string;
+  customizationPackageId?: string;
+  estimateOutcome?: "accepted" | "preserved" | "replayed";
   lineItemCount?: number;
+  listingId?: string;
   operation: CartOperation;
+  priorityCode?: string;
   revision?: number;
+  ruleId?: string;
+  ruleRevision?: number;
   subtotalCents?: number;
   totalQuantity?: number;
 };
@@ -43,6 +49,7 @@ type SafeLogger = Pick<FastifyBaseLogger, "error" | "info" | "warn">;
 
 const SAFE_ERROR_CODE = /^[A-Z0-9_.-]{1,64}$/i;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_PRIORITY_CODE = /^[a-z][a-z0-9_]{0,31}$/;
 const systemClock: CartClock = { now: () => performance.now() };
 
 function durationSince(clock: CartClock, startedAt: number) {
@@ -67,12 +74,40 @@ export function observableCartFields(value: unknown) {
   }
 
   const result = value as Record<string, unknown>;
+  const diagnostics =
+    result.productionEstimateDiagnostics &&
+    typeof result.productionEstimateDiagnostics === "object" &&
+    !Array.isArray(result.productionEstimateDiagnostics)
+      ? result.productionEstimateDiagnostics as Record<string, unknown>
+      : result;
+  const estimateOutcome = ["accepted", "preserved", "replayed"].includes(
+    String(diagnostics.outcome ?? diagnostics.estimateOutcome),
+  )
+    ? String(diagnostics.outcome ?? diagnostics.estimateOutcome)
+    : undefined;
   return {
     ...(boundedIdentifier(result.cartId)
       ? { cartId: boundedIdentifier(result.cartId) }
       : {}),
     ...(boundedIdentifier(result.cartItemId)
       ? { cartItemId: boundedIdentifier(result.cartItemId) }
+      : {}),
+    ...(boundedIdentifier(diagnostics.customizationPackageId)
+      ? { customizationPackageId: boundedIdentifier(diagnostics.customizationPackageId) }
+      : {}),
+    ...(estimateOutcome ? { estimateOutcome } : {}),
+    ...(boundedIdentifier(diagnostics.listingId)
+      ? { listingId: boundedIdentifier(diagnostics.listingId) }
+      : {}),
+    ...(typeof diagnostics.priorityCode === "string" &&
+    SAFE_PRIORITY_CODE.test(diagnostics.priorityCode)
+      ? { priorityCode: diagnostics.priorityCode }
+      : {}),
+    ...(boundedIdentifier(diagnostics.ruleId)
+      ? { ruleId: boundedIdentifier(diagnostics.ruleId) }
+      : {}),
+    ...(nonNegativeInteger(diagnostics.ruleRevision) !== undefined
+      ? { ruleRevision: nonNegativeInteger(diagnostics.ruleRevision) }
       : {}),
     ...(nonNegativeInteger(result.revision) !== undefined
       ? { revision: nonNegativeInteger(result.revision) }
@@ -141,6 +176,7 @@ export function createCartObserver(
           ...(errorCode ? { errorCode } : {}),
           errorType: details.errorType,
           operation: fields.operation,
+          retryable: fields.statusCode >= 500,
           statusCode: fields.statusCode
         };
         const level = fields.statusCode >= 500 ? "error" : "warn";

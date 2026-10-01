@@ -39,6 +39,16 @@ const ids = {
   variant: "661f833a-41c5-4ec9-8232-e1883f6be7ed"
 };
 const otherListingId = "7bcf3e94-f414-4fe8-b0fd-977b41a42a84";
+const productionEstimateSnapshot = {
+  maximumBusinessDays: 7,
+  minimumBusinessDays: 5,
+  priorityCode: "standard",
+  priorityLabel: "Standard",
+  quotedAt: "2026-10-01T16:00:00.000Z",
+  ruleId: "00000000-0000-4000-8000-000000000093",
+  ruleRevision: 1,
+  schemaVersion: 1
+};
 const context = {
   cartId: ids.cart,
   sessionId: "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789"
@@ -107,6 +117,8 @@ function itemRow(overrides: Record<string, unknown> = {}) {
     listing_title: "Graduation Stole",
     max_chars: 120,
     min_chars: 0,
+    production_estimate_snapshot: productionEstimateSnapshot,
+    production_priority_code: "standard",
     quantity: 1,
     requires_image: false,
     requires_text: true,
@@ -137,7 +149,9 @@ function mutableStateResult(
           id: row.cart_item_id,
           listing_customization_set_id: row.listing_customization_set_id,
           listing_id: row.listing_id,
-          listing_price_variant_id: row.listing_price_variant_id
+          listing_price_variant_id: row.listing_price_variant_id,
+          production_estimate_snapshot: row.production_estimate_snapshot,
+          production_priority_code: row.production_priority_code,
         }
       ]
     };
@@ -229,6 +243,19 @@ describe("CheckoutRepository", () => {
   });
 
   it.each([
+    [
+      "a pre-feature line without a production estimate",
+      {
+        production_estimate_snapshot: null,
+        production_priority_code: null,
+      },
+      "invalid"
+    ],
+    [
+      "a production snapshot whose code does not match its indexed code",
+      { production_priority_code: "rush" },
+      "invalid"
+    ],
     [
       "an optional image with invalid durable ownership",
       {
@@ -613,6 +640,13 @@ describe("CheckoutRepository", () => {
       }
       if (sql.includes("from carts")) {
         return { rows: [{ ...cartRow(), status: "checkout_started" }] };
+      }
+      const mutableState = mutableStateResult(sql, itemRow());
+      if (mutableState) {
+        return mutableState;
+      }
+      if (sql.includes("from cart_items ci")) {
+        return { rows: [itemRow()] };
       }
       if (sql.includes("from orders")) {
         return {
