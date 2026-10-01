@@ -67,6 +67,14 @@ type VariantRow = QueryResultRow & {
   unit_amount_cents: number;
   variant_key: string;
 };
+type ProductionPriorityRow = QueryResultRow & {
+  is_default: boolean;
+  label: string;
+  listing_customization_set_id: string;
+  maximum_business_days: number;
+  minimum_business_days: number;
+  priority_code: string;
+};
 
 const PUBLIC_ASSET_FILTER = `
   a.visibility = 'public_catalog'
@@ -223,7 +231,15 @@ export class ListingsRepository {
     const row = listingResult.rows[0];
     if (!row) return null;
 
-    const [galleryResult, fabricResult, packageResult, fontResult, trimResult, variantResult] =
+    const [
+      galleryResult,
+      fabricResult,
+      packageResult,
+      fontResult,
+      trimResult,
+      variantResult,
+      productionPriorityResult
+    ] =
       await Promise.all([
         this.pool.query<MediaRow>(
           `select a.url, nullif(a.metadata ->> 'alt', '') as alt
@@ -306,6 +322,19 @@ export class ListingsRepository {
            where lpv.listing_id = $1 and lpv.active = true and lpv.replaced_at is null
            order by lpv.unit_amount_cents, lpv.variant_key, lpv.id`,
           [row.id],
+        ),
+        this.pool.query<ProductionPriorityRow>(
+          `select
+             listing_customization_set_id,
+             priority_code,
+             label,
+             minimum_business_days,
+             maximum_business_days,
+             is_default
+           from listing_production_estimate_rules
+           where listing_id = $1 and active = true
+           order by listing_customization_set_id, sort_order, priority_code, id`,
+          [row.id],
         )
       ]);
 
@@ -342,6 +371,28 @@ export class ListingsRepository {
           },
           name: item.label,
           priceDeltaCents: item.price_delta_cents,
+          productionPriorities: (() => {
+            const priorities = productionPriorityResult.rows
+              .filter(
+                (priority) =>
+                  priority.listing_customization_set_id === item.id,
+              );
+
+            if (
+              priorities.length > 8 ||
+              priorities.filter((priority) => priority.is_default).length !== 1
+            ) {
+              return [];
+            }
+
+            return priorities.map((priority) => ({
+              code: priority.priority_code,
+              isDefault: priority.is_default,
+              label: priority.label,
+              maximumBusinessDays: priority.maximum_business_days,
+              minimumBusinessDays: priority.minimum_business_days
+            }));
+          })(),
           priceVariants: variantResult.rows
             .filter((variant) => variant.listing_customization_set_id === item.id)
             .map((variant) => ({

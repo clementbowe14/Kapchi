@@ -71,6 +71,28 @@ describe("ListingsRepository public catalog contract", () => {
           listing_customization_set_id: "package-1", trim_option_id: "trim-1",
           unit_amount_cents: 10500, variant_key: "image-gold" }] };
       }
+      if (sql.includes("from listing_production_estimate_rules")) {
+        return {
+          rows: [
+            {
+              is_default: true,
+              label: "Standard",
+              listing_customization_set_id: "package-1",
+              maximum_business_days: 18,
+              minimum_business_days: 14,
+              priority_code: "standard",
+            },
+            {
+              is_default: false,
+              label: "Rush",
+              listing_customization_set_id: "package-1",
+              maximum_business_days: 12,
+              minimum_business_days: 10,
+              priority_code: "rush",
+            },
+          ],
+        };
+      }
       return { rows: [] };
     });
     const repository = new ListingsRepository({ query } as unknown as Pool);
@@ -82,7 +104,21 @@ describe("ListingsRepository public catalog contract", () => {
       customizationPackages: [{
         capabilities: { image: true, text: true, trim: true },
         limits: { imageMaxBytes: 5000000, maxChars: 120 },
-        priceVariants: [{ id: "variant-1", unitAmountCents: 10500 }]
+        priceVariants: [{ id: "variant-1", unitAmountCents: 10500 }],
+        productionPriorities: [
+          {
+            code: "standard",
+            isDefault: true,
+            maximumBusinessDays: 18,
+            minimumBusinessDays: 14,
+          },
+          {
+            code: "rush",
+            isDefault: false,
+            maximumBusinessDays: 12,
+            minimumBusinessDays: 10,
+          },
+        ],
       }]
     });
     const sql = query.mock.calls.map(([text]) => String(text)).join("\n");

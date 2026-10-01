@@ -12,6 +12,14 @@ export type ListingMedia = {
   url: string;
 };
 
+export type ProductionPriority = {
+  code: string;
+  isDefault: boolean;
+  label: string;
+  maximumBusinessDays: number;
+  minimumBusinessDays: number;
+};
+
 export type GraduationStoleSummary = {
   availability: ListingAvailability;
   basePriceCents: number;
@@ -44,6 +52,7 @@ export type GraduationStoleDetail = GraduationStoleSummary & {
     };
     name: string;
     priceDeltaCents: number;
+    productionPriorities: ProductionPriority[];
     priceVariants: Array<{
       currency: string;
       fontOptionId: null;
