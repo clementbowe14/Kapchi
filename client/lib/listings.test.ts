@@ -40,6 +40,15 @@ describe("graduation stole parsers", () => {
           limits: { maxChars: 24 },
           name: "Text",
           priceDeltaCents: 3000,
+          productionPriorities: [
+            {
+              code: "standard",
+              isDefault: true,
+              label: "Standard",
+              maximumBusinessDays: 7,
+              minimumBusinessDays: 5,
+            },
+          ],
           priceVariants: [
             {
               currency: "usd",

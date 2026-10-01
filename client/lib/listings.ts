@@ -71,6 +71,14 @@ export type ListingPriceVariant = {
   variantKey: string | null;
 };
 
+export type ProductionPriority = {
+  code: string;
+  isDefault: boolean;
+  label: string;
+  maximumBusinessDays: number;
+  minimumBusinessDays: number;
+};
+
 export type CustomizationPackage = {
   capabilities: CustomizationCapabilities;
   fonts: FontOption[];
@@ -79,6 +87,7 @@ export type CustomizationPackage = {
   limits: CustomizationLimits;
   name: string;
   priceDeltaCents: number;
+  productionPriorities: ProductionPriority[];
   priceVariants: ListingPriceVariant[];
   requirements: CustomizationCapabilities;
   trims: TrimOption[];
@@ -378,6 +387,53 @@ function parsePriceVariant(
   };
 }
 
+function parseProductionPriorities(value: unknown, path: string) {
+  const priorities = array(value, path);
+  if (priorities.length > 8) {
+    throw new ListingContractError(`${path} must contain at most 8 options.`);
+  }
+
+  const parsed = priorities.map((value, index): ProductionPriority => {
+    const optionPath = `${path}[${index}]`;
+    const option = record(value, optionPath);
+    const code = string(option.code, `${optionPath}.code`);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(code)) {
+      throw new ListingContractError(`${optionPath}.code is invalid.`);
+    }
+
+    const minimumBusinessDays = integer(
+      option.minimumBusinessDays,
+      `${optionPath}.minimumBusinessDays`,
+    );
+    const maximumBusinessDays = integer(
+      option.maximumBusinessDays,
+      `${optionPath}.maximumBusinessDays`,
+    );
+    if (maximumBusinessDays < minimumBusinessDays) {
+      throw new ListingContractError(
+        `${optionPath}.maximumBusinessDays must not precede the minimum.`,
+      );
+    }
+
+    return {
+      code,
+      isDefault: boolean(option.isDefault, `${optionPath}.isDefault`),
+      label: string(option.label, `${optionPath}.label`),
+      maximumBusinessDays,
+      minimumBusinessDays,
+    };
+  });
+
+  if (new Set(parsed.map((option) => option.code)).size !== parsed.length) {
+    throw new ListingContractError(`${path} contains duplicate codes.`);
+  }
+  if (parsed.length && parsed.filter((option) => option.isDefault).length !== 1) {
+    throw new ListingContractError(`${path} must contain exactly one default.`);
+  }
+
+  return parsed;
+}
+
 function parsePackage(value: unknown, path: string): CustomizationPackage {
   const customizationPackage = record(value, path);
 
@@ -396,6 +452,10 @@ function parsePackage(value: unknown, path: string): CustomizationPackage {
     priceDeltaCents: integer(
       customizationPackage.priceDeltaCents,
       `${path}.priceDeltaCents`,
+    ),
+    productionPriorities: parseProductionPriorities(
+      customizationPackage.productionPriorities,
+      `${path}.productionPriorities`,
     ),
     priceVariants: array(
       customizationPackage.priceVariants,

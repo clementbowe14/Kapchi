@@ -43,6 +43,13 @@ export type GuestCartDisplayItem = {
   fabricId: string | null;
   customizationSetId: string;
   listingPriceVariantId: string;
+  productionEstimate: {
+    maximumBusinessDays: number;
+    minimumBusinessDays: number;
+    priorityCode: string;
+    priorityLabel: string;
+    qualifier: string;
+  } | null;
   customizationSummary: GuestCartCustomizationSummary;
   validationStatus: GuestCartValidationStatus;
 };

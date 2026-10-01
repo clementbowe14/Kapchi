@@ -17,6 +17,8 @@ import type {
 export const CUSTOMIZATION_POLICY_NOTICE =
   "Only customizations included in your selected package will be produced. Requests for unpaid additions will be rejected; update your package before checkout.";
 const CART_REQUEST_TIMEOUT_MS = 15_000;
+const PRODUCTION_ESTIMATE_QUALIFIER =
+  "This is an estimate, not a guaranteed delivery date. Shipping time is additional; weekends, holidays, destination, and carrier delays may affect timing.";
 
 function createIdempotencyKey() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -32,6 +34,7 @@ type ConfiguratorState = {
   imageAssetId: string | null;
   imageName: string | null;
   packageId: string | null;
+  priorityCode: string | null;
   text: string;
   trimId: string | null;
 };
@@ -45,6 +48,7 @@ type Action =
       value: { assetId: string; filename: string } | null;
     }
   | { type: "set_text"; value: string }
+  | { type: "set_priority"; value: string }
   | { type: "set_trim"; value: string };
 
 export const initialConfiguratorState: ConfiguratorState = {
@@ -53,6 +57,7 @@ export const initialConfiguratorState: ConfiguratorState = {
   imageAssetId: null,
   imageName: null,
   packageId: null,
+  priorityCode: null,
   text: "",
   trimId: null,
 };
@@ -92,6 +97,9 @@ export function configuratorReducer(
             ? state.imageName
             : null,
         packageId: action.package.id,
+        priorityCode:
+          action.package.productionPriorities.find((option) => option.isDefault)
+            ?.code ?? null,
         text: action.package.capabilities.text ? state.text : "",
         trimId:
           action.package.capabilities.trim &&
@@ -111,6 +119,8 @@ export function configuratorReducer(
       };
     case "set_text":
       return { ...state, text: action.value };
+    case "set_priority":
+      return { ...state, priorityCode: action.value };
     case "set_trim":
       return { ...state, trimId: action.value };
   }
@@ -242,6 +252,10 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
       ) ?? selectedPackage.priceVariants[0] ?? null
     );
   }, [selectedPackage, state.trimId]);
+  const selectedPriority =
+    selectedPackage?.productionPriorities.find(
+      (option) => option.code === state.priorityCode,
+    ) ?? null;
   const listingGallery = listing.gallery.length
     ? listing.gallery
     : listing.primaryImage
@@ -261,6 +275,9 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
   const configurationError = (() => {
     if (!state.fabricId) return "Choose an available fabric.";
     if (!selectedPackage) return "Choose a customization level.";
+    if (!selectedPriority) {
+      return "This customization option is temporarily unavailable because we can't calculate its production time. Choose another option or contact Kapchi.";
+    }
     if (!selectedVariant) return "Finish choosing this customization.";
 
     const textLength = Array.from(state.text).length;
@@ -280,7 +297,7 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
     return null;
   })();
   const addPayload =
-    selectedPackage && selectedVariant
+    selectedPackage && selectedVariant && selectedPriority
       ? {
           fabricId: state.fabricId,
           fontOptionId: state.fontId,
@@ -290,6 +307,7 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
           listingCustomizationSetId: selectedPackage.id,
           listingId: listing.id,
           listingPriceVariantId: selectedVariant.id,
+          priorityCode: selectedPriority.code,
           quantity: 1,
           trimOptionId: state.trimId,
         }
@@ -515,6 +533,78 @@ export function StoleConfigurator({ listing }: { listing: GraduationStoleDetail 
               })}
             </div>
           </fieldset>
+
+          {selectedPackage ? (
+            selectedPackage.productionPriorities.length ? (
+              <fieldset
+                aria-describedby="production-estimate-qualifier"
+                className="space-y-3 border-t border-slate-200 pt-6"
+              >
+                <legend className="text-lg font-semibold text-slate-950">
+                  Choose production priority
+                </legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {selectedPackage.productionPriorities.map((priority) => (
+                    <label
+                      className={`flex min-h-12 cursor-pointer items-center justify-between gap-3 border px-4 py-3 focus-within:ring-2 focus-within:ring-[#b49872] ${
+                        state.priorityCode === priority.code
+                          ? "border-[#8f734f] bg-[#b49872]/5"
+                          : "border-slate-200"
+                      }`}
+                      key={priority.code}
+                    >
+                      <span className="flex items-center gap-3">
+                        <input
+                          checked={state.priorityCode === priority.code}
+                          name="production-priority"
+                          onChange={() =>
+                            dispatch({
+                              type: "set_priority",
+                              value: priority.code,
+                            })
+                          }
+                          type="radio"
+                          value={priority.code}
+                        />
+                        <span className="font-semibold text-slate-900">
+                          {priority.label}
+                        </span>
+                      </span>
+                      <span className="text-sm text-slate-600">
+                        {priority.minimumBusinessDays ===
+                        priority.maximumBusinessDays
+                          ? priority.minimumBusinessDays
+                          : `${priority.minimumBusinessDays}-${priority.maximumBusinessDays}`} {priority.maximumBusinessDays === 1 ? "business day" : "business days"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {selectedPriority ? (
+                  <p
+                    aria-live="polite"
+                    className="min-h-6 text-sm font-semibold text-slate-900"
+                  >
+                    Estimated production time: {selectedPriority.minimumBusinessDays === selectedPriority.maximumBusinessDays ? selectedPriority.minimumBusinessDays : `${selectedPriority.minimumBusinessDays}-${selectedPriority.maximumBusinessDays}`} {selectedPriority.maximumBusinessDays === 1 ? "business day" : "business days"}.
+                  </p>
+                ) : null}
+                <p
+                  className="text-xs leading-5 text-slate-600"
+                  id="production-estimate-qualifier"
+                >
+                  {PRODUCTION_ESTIMATE_QUALIFIER}
+                </p>
+              </fieldset>
+            ) : (
+              <p
+                className="border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"
+                role="alert"
+              >
+                This customization option is temporarily unavailable because we
+                can&apos;t calculate its production time. Choose another option or
+                contact Kapchi.
+              </p>
+            )
+          ) : null}
 
           <p className="border-l-4 border-[#b49872] bg-[#b49872]/8 px-4 py-3 text-sm leading-6 text-slate-700">
             {listing.policyNotice}

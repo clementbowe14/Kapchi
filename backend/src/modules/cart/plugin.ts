@@ -34,7 +34,8 @@ import {
   CartIdempotencyConflictError,
   CartItemNotFoundError,
   CartNotFoundError,
-  CartValidationError
+  CartValidationError,
+  InvalidProductionPriorityError
 } from "./errors.js";
 import { CartService } from "./service.js";
 import type { CartItemInput } from "./types.js";
@@ -50,6 +51,7 @@ const cartItemSchema = Joi.object<CartItemInput>({
   listingCustomizationSetId: Joi.string().guid().required(),
   listingId: Joi.string().guid().required(),
   listingPriceVariantId: Joi.string().guid().required(),
+  priorityCode: Joi.string().trim().lowercase().pattern(/^[a-z][a-z0-9_]{0,31}$/).required(),
   quantity: Joi.number().integer().min(1).max(999).required(),
   trimOptionId: Joi.string().guid().allow(null).default(null)
 }).required();
@@ -67,6 +69,7 @@ type CartViewResult = {
   subtotalCents: number;
   totalQuantity?: number;
   warnings?: unknown[];
+  productionEstimateDiagnostics?: unknown;
 };
 
 type CartSummaryResult = {
@@ -142,6 +145,13 @@ function requestError(reply: FastifyReply, apiError: ApiError) {
 }
 
 function cartApiError(error: unknown): ApiError | null {
+  if (error instanceof InvalidProductionPriorityError) {
+    return {
+      errorCode: "INVALID_PRODUCTION_PRIORITY",
+      message: error.message,
+      statusCode: 400
+    };
+  }
   if (error instanceof CartValidationError) {
     return { errorCode: "VALIDATION_ERROR", message: error.message, statusCode: 400 };
   }
@@ -212,8 +222,15 @@ function publicCartView(result: CartViewResult) {
   return {
     ...(result.cartId ? { cartId: result.cartId } : {}),
     items: result.items,
-    ...observableCartFields(result),
+    ...(result.cartItemId ? { cartItemId: result.cartItemId } : {}),
+    ...(result.lineItemCount !== undefined
+      ? { lineItemCount: result.lineItemCount }
+      : {}),
+    ...(result.revision !== undefined ? { revision: result.revision } : {}),
     subtotalCents: result.subtotalCents,
+    ...(result.totalQuantity !== undefined
+      ? { totalQuantity: result.totalQuantity }
+      : {}),
     ...(result.warnings ? { warnings: result.warnings } : {})
   };
 }
@@ -229,12 +246,14 @@ function completed(
   actor: CartActorType,
   result: unknown,
   startedAt: number,
+  identifiers: Partial<CartEventFields> = {},
 ) {
   observer.completed(
     event,
     {
       actorType: actor,
       operation,
+      ...identifiers,
       ...observableCartFields(result)
     } as CartEventFields,
     startedAt,
@@ -248,7 +267,7 @@ function failed(
   error: unknown,
   apiError: ApiError,
   startedAt: number,
-  identifiers: { cartId?: string; cartItemId?: string } = {},
+  identifiers: Partial<CartEventFields> = {},
 ) {
   observer.failed(
     {
@@ -269,7 +288,7 @@ function unexpectedFailure(
   actor: CartActorType,
   error: unknown,
   startedAt: number,
-  identifiers: { cartId?: string; cartItemId?: string } = {},
+  identifiers: Partial<CartEventFields> = {},
 ) {
   observer.failed(
     { actorType: actor, ...identifiers, operation, statusCode: 500 },
@@ -284,7 +303,7 @@ function validationFailure(
   actor: CartActorType,
   apiError: ApiError,
   startedAt: number,
-  identifiers: { cartId?: string; cartItemId?: string } = {},
+  identifiers: Partial<CartEventFields> = {},
 ) {
   const error = new Error(apiError.message);
   error.name = "CartRequestValidationError";
@@ -480,12 +499,21 @@ export function createCartPlugin(dependencies: CartPluginDependencies = {}) {
             parsed.value as CartItemInput,
             idempotency.value,
           );
-          completed(observer, "cart.item.added", "add", actor, result, startedAt);
+          completed(observer, "cart.item.added", "add", actor, result, startedAt, {
+            customizationPackageId: parsed.value.listingCustomizationSetId,
+            listingId: parsed.value.listingId,
+            priorityCode: parsed.value.priorityCode,
+          });
           return reply.code(201).send(publicCartView(result));
         } catch (error) {
           const apiError = cartApiError(error);
           if (apiError) {
-            failed(observer, "add", actor, error, apiError, startedAt, { cartId });
+            failed(observer, "add", actor, error, apiError, startedAt, {
+              cartId,
+              customizationPackageId: parsed.value.listingCustomizationSetId,
+              listingId: parsed.value.listingId,
+              priorityCode: parsed.value.priorityCode,
+            });
             return requestError(reply, apiError);
           }
           unexpectedFailure(observer, "add", actor, error, startedAt, { cartId });
@@ -558,13 +586,22 @@ export function createCartPlugin(dependencies: CartPluginDependencies = {}) {
             cartItemId,
             body.value as CartItemInput,
           );
-          completed(observer, "cart.item.updated", "update", actor, result, startedAt);
+          completed(observer, "cart.item.updated", "update", actor, result, startedAt, {
+            customizationPackageId: body.value.listingCustomizationSetId,
+            listingId: body.value.listingId,
+            priorityCode: body.value.priorityCode,
+          });
           return publicCartView(result);
         } catch (error) {
           const apiError = cartApiError(error);
           const identifiers = { cartId: context?.cartId, cartItemId };
           if (apiError) {
-            failed(observer, "update", actor, error, apiError, startedAt, identifiers);
+            failed(observer, "update", actor, error, apiError, startedAt, {
+              ...identifiers,
+              customizationPackageId: body.value.listingCustomizationSetId,
+              listingId: body.value.listingId,
+              priorityCode: body.value.priorityCode,
+            });
             return requestError(reply, apiError);
           }
           unexpectedFailure(observer, "update", actor, error, startedAt, identifiers);

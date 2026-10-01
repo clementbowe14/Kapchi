@@ -95,6 +95,22 @@ const basePackage = {
   },
   name: "Text (short)",
   priceDeltaCents: 5000,
+  productionPriorities: [
+    {
+      code: "standard",
+      isDefault: true,
+      label: "Standard",
+      maximumBusinessDays: 7,
+      minimumBusinessDays: 5,
+    },
+    {
+      code: "rush",
+      isDefault: false,
+      label: "Rush",
+      maximumBusinessDays: 4,
+      minimumBusinessDays: 3,
+    },
+  ],
   priceVariants: [
     {
       currency: "USD",
@@ -242,6 +258,45 @@ const listing: GraduationStoleDetail = {
   subtitle: "Honor your heritage",
   title: "Heritage Stole",
 };
+
+describe("production estimates", () => {
+  it("selects the package default and updates the complete live message for Rush", async () => {
+    const user = userEvent.setup();
+    render(<StoleConfigurator listing={listing} />);
+
+    await user.click(screen.getByRole("radio", { name: /Text \(short\)/ }));
+    expect(
+      screen.getByText("Estimated production time: 5-7 business days."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /Rush/ }));
+
+    expect(
+      screen.getByText("Estimated production time: 3-4 business days."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Rush/ })).toHaveFocus();
+  });
+
+  it("fails closed when a package has no production rules", async () => {
+    const user = userEvent.setup();
+    const unavailableListing = {
+      ...listing,
+      customizationPackages: listing.customizationPackages.map((item) =>
+        item.id === "text-short"
+          ? { ...item, productionPriorities: [] }
+          : item,
+      ),
+    };
+    render(<StoleConfigurator listing={unavailableListing} />);
+
+    await user.click(screen.getByRole("radio", { name: /Text \(short\)/ }));
+
+    expect(
+      screen.getByRole("alert"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to cart" })).toBeDisabled();
+  });
+});
 
 describe("StoleConfigurator", () => {
   beforeEach(() => {
@@ -472,6 +527,7 @@ describe("StoleConfigurator", () => {
         ...expected,
         line2: "",
         listingId: "listing-1",
+        priorityCode: "standard",
         quantity: 1,
       });
     },

@@ -51,6 +51,7 @@ function input() {
     listingCustomizationSetId: ids.customizationSet,
     listingId: ids.listing,
     listingPriceVariantId: ids.variant,
+    priorityCode: "standard",
     quantity: 2,
     trimOptionId: null
   };
@@ -68,6 +69,17 @@ function projectionRow() {
     fabric_id: null,
     customization_set_id: ids.customizationSet,
     listing_price_variant_id: ids.variant,
+    production_priority_code: "standard",
+    production_estimate_snapshot: {
+      maximumBusinessDays: 7,
+      minimumBusinessDays: 5,
+      priorityCode: "standard",
+      priorityLabel: "Standard",
+      quotedAt: "2026-10-01T16:00:00.000Z",
+      ruleId: "00000000-0000-4000-8000-000000000093",
+      ruleRevision: 1,
+      schemaVersion: 1
+    },
     customization_payload: {
       fontOptionId: null,
       imageAssetId: null,
@@ -92,6 +104,14 @@ function displayItem() {
     fabricId: null,
     customizationSetId: ids.customizationSet,
     listingPriceVariantId: ids.variant,
+    productionEstimate: {
+      maximumBusinessDays: 7,
+      minimumBusinessDays: 5,
+      priorityCode: "standard",
+      priorityLabel: "Standard",
+      qualifier:
+        "This is an estimate, not a guaranteed delivery date. Shipping time is additional; weekends, holidays, destination, and carrier delays may affect timing."
+    },
     customizationSummary: {
       fontOptionId: null,
       imageAssetId: null,
@@ -168,6 +188,20 @@ function createPool({
             requires_image: false,
             requires_text: true,
             unit_amount_cents: 8500
+          }
+        ]
+      };
+    }
+    if (sql.includes("from listing_production_estimate_rules")) {
+      return {
+        rows: [
+          {
+            id: "00000000-0000-4000-8000-000000000093",
+            label: "Standard",
+            maximum_business_days: 7,
+            minimum_business_days: 5,
+            priority_code: "standard",
+            revision: 1
           }
         ]
       };
@@ -256,6 +290,7 @@ describe("cart add fingerprint", () => {
       listingPriceVariantId: original.listingPriceVariantId,
       listingId: original.listingId,
       listingCustomizationSetId: original.listingCustomizationSetId,
+      priorityCode: original.priorityCode,
       line2: original.line2,
       line1: original.line1,
       imageAssetId: original.imageAssetId,
@@ -403,6 +438,18 @@ describe("CartService guest mutations", () => {
       if (sql.includes("select count(*)")) {
         return { rows: [{ count: 0 }] };
       }
+      if (sql.includes("from listing_production_estimate_rules")) {
+        return {
+          rows: [{
+            id: "00000000-0000-4000-8000-000000000093",
+            label: "Standard",
+            maximum_business_days: 7,
+            minimum_business_days: 5,
+            priority_code: "standard",
+            revision: 1,
+          }],
+        };
+      }
       if (sql.includes("from listings l")) {
         return {
           rows: [
@@ -472,6 +519,18 @@ describe("CartService guest mutations", () => {
       }
       if (sql.includes("select count(*)")) {
         return { rows: [{ count: 0 }] };
+      }
+      if (sql.includes("from listing_production_estimate_rules")) {
+        return {
+          rows: [{
+            id: "00000000-0000-4000-8000-000000000093",
+            label: "Standard",
+            maximum_business_days: 7,
+            minimum_business_days: 5,
+            priority_code: "standard",
+            revision: 1,
+          }],
+        };
       }
       if (sql.includes("from listings l")) {
         return {
@@ -630,6 +689,18 @@ describe("CartService guest mutations", () => {
               quantity: 1
             }
           ]
+        };
+      }
+      if (sql.includes("from listing_production_estimate_rules")) {
+        return {
+          rows: [{
+            id: "00000000-0000-4000-8000-000000000093",
+            label: "Standard",
+            maximum_business_days: 7,
+            minimum_business_days: 5,
+            priority_code: "standard",
+            revision: 1,
+          }],
         };
       }
       if (sql.includes("from listings l")) {

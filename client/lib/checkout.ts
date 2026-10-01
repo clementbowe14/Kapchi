@@ -25,6 +25,13 @@ export type CartLine = {
   listingId: string;
   listingPriceVariantId: string;
   listingSlug: string;
+  productionEstimate: {
+    maximumBusinessDays: number;
+    minimumBusinessDays: number;
+    priorityCode: string;
+    priorityLabel: string;
+    qualifier: string;
+  } | null;
   quantity: number;
   title: string;
   unitAmountCents: number;
@@ -142,9 +149,40 @@ function parseCartLine(value: unknown): CartLine {
   const customizationSetId = stringValue(value.customizationSetId);
   const listingId = stringValue(value.listingId);
   const listingPriceVariantId = stringValue(value.listingPriceVariantId);
+  const productionEstimateValue = isRecord(value.productionEstimate)
+    ? value.productionEstimate
+    : null;
+  const productionEstimate = productionEstimateValue
+    ? {
+        maximumBusinessDays: numberValue(
+          productionEstimateValue.maximumBusinessDays,
+        ),
+        minimumBusinessDays: numberValue(
+          productionEstimateValue.minimumBusinessDays,
+        ),
+        priorityCode: stringValue(productionEstimateValue.priorityCode),
+        priorityLabel: stringValue(productionEstimateValue.priorityLabel),
+        qualifier: stringValue(productionEstimateValue.qualifier),
+      }
+    : null;
 
   if (!customizationSetId || !listingId || !listingPriceVariantId) {
     throw new Error("Invalid cart response.");
+  }
+  if (
+    productionEstimate &&
+    (productionEstimate.minimumBusinessDays === null ||
+      !Number.isInteger(productionEstimate.minimumBusinessDays) ||
+      productionEstimate.minimumBusinessDays < 0 ||
+      productionEstimate.maximumBusinessDays === null ||
+      !Number.isInteger(productionEstimate.maximumBusinessDays) ||
+      productionEstimate.maximumBusinessDays <
+        productionEstimate.minimumBusinessDays ||
+      !productionEstimate.priorityCode ||
+      !productionEstimate.priorityLabel ||
+      !productionEstimate.qualifier)
+  ) {
+    throw new Error("Invalid cart production estimate.");
   }
 
   return {
@@ -174,6 +212,7 @@ function parseCartLine(value: unknown): CartLine {
     listingId,
     listingPriceVariantId,
     listingSlug: stringValue(value.listingSlug),
+    productionEstimate: productionEstimate as CartLine["productionEstimate"],
     quantity,
     title: stringValue(value.title, "Kapchi item"),
     unitAmountCents,
@@ -197,6 +236,7 @@ export function buildCartItemMutation(line: CartLine, quantity: number) {
     listingCustomizationSetId: line.customizationSetId,
     listingId: line.listingId,
     listingPriceVariantId: line.listingPriceVariantId,
+    priorityCode: line.productionEstimate?.priorityCode ?? "",
     quantity,
     trimOptionId: line.customizationSummary.trimOptionId,
   };

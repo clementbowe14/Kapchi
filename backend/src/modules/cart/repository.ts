@@ -10,9 +10,15 @@ import {
   CartConflictError,
   CartItemNotFoundError,
   CartNotFoundError,
-  CartValidationError
+  CartValidationError,
+  InvalidProductionPriorityError
 } from "./errors.js";
 import type { AuthenticatedCartView, CartWarning } from "./claim-types.js";
+import {
+  parseProductionEstimateSnapshot,
+  productionEstimateSummary,
+  type ProductionEstimateSnapshot
+} from "../production-estimates.js";
 import type {
   CartItemInput,
   CartMutationResult,
@@ -51,6 +57,15 @@ type SelectionRow = QueryResultRow & {
   variant_trim_option_id: string | null;
 };
 
+type ProductionRuleRow = QueryResultRow & {
+  id: string;
+  label: string;
+  maximum_business_days: number;
+  minimum_business_days: number;
+  priority_code: string;
+  revision: number;
+};
+
 type FabricRow = QueryResultRow & {
   id: string;
   listing_fabric_active: boolean;
@@ -63,6 +78,10 @@ type ExistingItemRow = QueryResultRow & {
   customization_asset_id: string | null;
   fabric_id: string | null;
   id: string;
+  listing_customization_set_id: string;
+  listing_id: string;
+  production_estimate_snapshot: unknown;
+  production_priority_code: string | null;
   quantity: number;
 };
 
@@ -82,6 +101,8 @@ type ProjectionRow = QueryResultRow & {
   fabric_id: string | null;
   listing_id: string;
   listing_slug: string;
+  production_estimate_snapshot: unknown;
+  production_priority_code: string | null;
   quantity: number;
   title: string;
   unit_amount_cents: number;
@@ -112,6 +133,13 @@ function payloadLines(payload: unknown) {
 function mapProjection(rows: ProjectionRow[]): GuestCartDisplayItem[] {
   return rows.map((row) => {
     const lines = payloadLines(row.customization_payload);
+    const parsedProductionEstimate = parseProductionEstimateSnapshot(
+      row.production_estimate_snapshot,
+    );
+    const productionEstimate =
+      parsedProductionEstimate?.priorityCode === row.production_priority_code
+        ? parsedProductionEstimate
+        : null;
 
     return {
       cartItemId: row.cart_item_id,
@@ -124,6 +152,9 @@ function mapProjection(rows: ProjectionRow[]): GuestCartDisplayItem[] {
       fabricId: row.fabric_id,
       customizationSetId: row.customization_set_id,
       listingPriceVariantId: row.listing_price_variant_id,
+      productionEstimate: productionEstimate
+        ? productionEstimateSummary(productionEstimate)
+        : null,
       customizationSummary: {
         fontOptionId: lines.fontOptionId,
         line1: lines.line1,
@@ -197,7 +228,10 @@ function authenticatedWarning(status: CartWarning["status"]) {
 }
 
 export class CartRepository {
-  constructor(private readonly pool: Pick<Pool, "connect" | "query">) {}
+  constructor(
+    private readonly pool: Pick<Pool, "connect" | "query">,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   async withTransaction<T>(callback: (client: PoolClient) => Promise<T>) {
     const client = await this.pool.connect();
@@ -293,6 +327,7 @@ export class CartRepository {
     cart: CartRow,
     input: CartItemInput,
     currentItemId?: string,
+    preservedProductionEstimateSnapshot?: ProductionEstimateSnapshot,
   ) {
     const result = await client.query<SelectionRow>(
       `
@@ -431,13 +466,64 @@ export class CartRepository {
       }
     }
 
-    return selection;
+    if (preservedProductionEstimateSnapshot) {
+      return {
+        ...selection,
+        productionEstimateSnapshot: preservedProductionEstimateSnapshot
+      };
+    }
+
+    const productionRuleResult = await client.query<ProductionRuleRow>(
+      `
+        select
+          id,
+          priority_code,
+          label,
+          minimum_business_days,
+          maximum_business_days,
+          revision
+        from listing_production_estimate_rules
+        where listing_id = $1
+          and listing_customization_set_id = $2
+          and priority_code = $3
+          and active = true
+        limit 1
+        for share
+      `,
+      [input.listingId, input.listingCustomizationSetId, input.priorityCode],
+    );
+    const productionRule = productionRuleResult.rows[0];
+    if (!productionRule) {
+      throw new InvalidProductionPriorityError();
+    }
+
+    return {
+      ...selection,
+      productionEstimateSnapshot: {
+        maximumBusinessDays: productionRule.maximum_business_days,
+        minimumBusinessDays: productionRule.minimum_business_days,
+        priorityCode: productionRule.priority_code,
+        priorityLabel: productionRule.label,
+        quotedAt: this.now().toISOString(),
+        ruleId: productionRule.id,
+        ruleRevision: productionRule.revision,
+        schemaVersion: 1
+      } satisfies ProductionEstimateSnapshot
+    };
   }
 
   async loadItem(client: Queryable, cartId: string, cartItemId: string) {
     const result = await client.query<ExistingItemRow>(
       `
-        select id, fabric_id, quantity, customization_asset_id
+        select
+          id,
+          listing_id,
+          listing_customization_set_id,
+          fabric_id,
+          quantity,
+          customization_asset_id,
+          production_priority_code,
+          production_estimate_snapshot
         from cart_items
         where id = $1 and cart_id = $2
         for update
@@ -451,6 +537,33 @@ export class CartRepository {
     }
 
     return item;
+  }
+
+  async loadItemProductionEstimate(
+    client: Queryable,
+    cartId: string,
+    cartItemId: string,
+  ) {
+    const result = await client.query<{
+      production_estimate_snapshot: unknown;
+      production_priority_code: string | null;
+    }>(
+      `
+        select production_priority_code, production_estimate_snapshot
+        from cart_items
+        where id = $1 and cart_id = $2
+        limit 1
+      `,
+      [cartItemId, cartId],
+    );
+    const row = result.rows[0];
+    const snapshot = parseProductionEstimateSnapshot(
+      row?.production_estimate_snapshot,
+    );
+
+    return snapshot?.priorityCode === row?.production_priority_code
+      ? snapshot
+      : null;
   }
 
   async loadReservation(client: Queryable, cartItemId: string) {
@@ -482,6 +595,7 @@ export class CartRepository {
     cart: CartRow,
     input: CartItemInput,
     unitAmountCents: number,
+    productionEstimateSnapshot: ProductionEstimateSnapshot,
   ) {
     const result = await client.query<{ id: string }>(
       `
@@ -496,8 +610,12 @@ export class CartRepository {
           currency,
           customization_payload,
           customization_asset_id,
+          production_priority_code,
+          production_estimate_snapshot,
           validation_status
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, 'valid')
+        ) values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, 'valid'
+        )
         returning id
       `,
       [
@@ -516,7 +634,9 @@ export class CartRepository {
           line2: input.line2,
           trimOptionId: input.trimOptionId
         }),
-        input.imageAssetId
+        input.imageAssetId,
+        productionEstimateSnapshot.priorityCode,
+        JSON.stringify(productionEstimateSnapshot)
       ],
     );
     return result.rows[0].id;
@@ -528,6 +648,7 @@ export class CartRepository {
     cartItemId: string,
     input: CartItemInput,
     unitAmountCents: number,
+    productionEstimateSnapshot: ProductionEstimateSnapshot,
   ) {
     await client.query(
       `
@@ -542,6 +663,8 @@ export class CartRepository {
           currency = $9,
           customization_payload = $10::jsonb,
           customization_asset_id = $11,
+          production_priority_code = $12,
+          production_estimate_snapshot = $13::jsonb,
           validation_status = 'valid',
           validation_message = null
         where id = $1 and cart_id = $2
@@ -563,7 +686,9 @@ export class CartRepository {
           line2: input.line2,
           trimOptionId: input.trimOptionId
         }),
-        input.imageAssetId
+        input.imageAssetId,
+        productionEstimateSnapshot.priorityCode,
+        JSON.stringify(productionEstimateSnapshot)
       ],
     );
   }
@@ -771,6 +896,8 @@ export class CartRepository {
           ci.listing_price_variant_id,
           ci.customization_payload,
           ci.customization_asset_id,
+          ci.production_priority_code,
+          ci.production_estimate_snapshot,
           ci.validation_status
         from cart_items ci
         join listings l on l.id = ci.listing_id

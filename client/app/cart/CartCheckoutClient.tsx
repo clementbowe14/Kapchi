@@ -215,6 +215,28 @@ function CartLineCard({
         </p>
       )}
 
+      {line.productionEstimate ? (
+        <section
+          aria-label="Production estimate"
+          className="mt-4 border-l-4 border-[#b49872] bg-[#b49872]/8 px-4 py-3"
+        >
+          <p className="text-sm font-semibold text-slate-900">
+            Estimated production time: {line.productionEstimate.minimumBusinessDays}
+            {line.productionEstimate.minimumBusinessDays ===
+            line.productionEstimate.maximumBusinessDays
+              ? ""
+              : `-${line.productionEstimate.maximumBusinessDays}`} {line.productionEstimate.maximumBusinessDays === 1 ? "business day" : "business days"}
+          </p>
+          <p className="mt-1 text-xs text-slate-600">
+            {line.productionEstimate.priorityLabel}. {line.productionEstimate.qualifier}
+          </p>
+        </section>
+      ) : (
+        <p className="mt-4 text-sm text-amber-800" role="alert">
+          Choose this item again to add a production estimate before checkout.
+        </p>
+      )}
+
       {issue ? (
         <div
           className="mt-4 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"

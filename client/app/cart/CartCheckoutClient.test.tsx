@@ -43,6 +43,14 @@ function cartResponse(
       listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
       listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
       listingSlug: "graduation-stole",
+      productionEstimate: {
+        maximumBusinessDays: 7,
+        minimumBusinessDays: 5,
+        priorityCode: "standard",
+        priorityLabel: "Standard",
+        qualifier:
+          "This is an estimate, not a guaranteed delivery date. Shipping time is additional; weekends, holidays, destination, and carrier delays may affect timing.",
+      },
       quantity: 1,
       title: "Graduation Stole",
       unitAmountCents: 8500,
@@ -296,6 +304,7 @@ describe("CartCheckoutClient", () => {
       listingCustomizationSetId: "fba94989-b950-4087-bac1-8c1ad4970655",
       listingId: "396256fa-68f9-4882-934a-5cedffbd8204",
       listingPriceVariantId: "661f833a-41c5-4ec9-8232-e1883f6be7ed",
+      priorityCode: "standard",
       quantity: 2,
       trimOptionId: "trim-1",
     });

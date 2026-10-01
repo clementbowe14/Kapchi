@@ -19,6 +19,13 @@ export class CartValidationError extends Error {
   }
 }
 
+export class InvalidProductionPriorityError extends CartValidationError {
+  constructor() {
+    super("The selected production priority is unavailable.");
+    this.name = "InvalidProductionPriorityError";
+  }
+}
+
 export class CartConflictError extends Error {
   constructor(message: string) {
     super(message);

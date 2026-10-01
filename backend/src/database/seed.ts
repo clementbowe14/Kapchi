@@ -42,6 +42,17 @@ const localHostnames = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
 const seededAtIso = "2026-01-01T00:00:00.000Z";
 const seededAt = new Date(seededAtIso);
 
+const localProductionEstimateDays: Record<
+  string,
+  { rush: [number, number]; standard: [number, number] }
+> = {
+  blank: { rush: [1, 2], standard: [3, 5] },
+  text_short: { rush: [3, 4], standard: [5, 7] },
+  text_long: { rush: [4, 6], standard: [7, 10] },
+  text_image: { rush: [7, 9], standard: [10, 14] },
+  text_image_trim: { rush: [10, 12], standard: [14, 18] }
+};
+
 export const localSeedFixtures = {
   asset: {
     id: "00000000-0000-4000-8000-000000000061",
@@ -559,6 +570,42 @@ export async function seedListing(db: Queryable, listing: SeedListing) {
         variant.customizationKind
       ],
     );
+
+    const productionDays = localProductionEstimateDays[variant.customizationKind];
+    if (listing.listingType === "graduation_stole" && productionDays) {
+      for (const [sortOrder, priorityCode] of ["standard", "rush"].entries()) {
+        const [minimumBusinessDays, maximumBusinessDays] =
+          productionDays[priorityCode as "standard" | "rush"];
+        await db.query(
+          `
+            insert into listing_production_estimate_rules (
+              listing_id,
+              listing_customization_set_id,
+              priority_code,
+              label,
+              minimum_business_days,
+              maximum_business_days,
+              revision,
+              is_default,
+              active,
+              sort_order
+            ) values ($1, $2, $3, $4, $5, $6, 1, $7, true, $8)
+            on conflict (listing_customization_set_id, priority_code, revision)
+            do nothing
+          `,
+          [
+            listingRow.id,
+            customizationRow.id,
+            priorityCode,
+            priorityCode === "standard" ? "Standard" : "Rush",
+            minimumBusinessDays,
+            maximumBusinessDays,
+            priorityCode === "standard",
+            sortOrder
+          ],
+        );
+      }
+    }
 
     await db.query(
       `

@@ -218,6 +218,7 @@ integrationDescribe("guest cart database lifecycle", () => {
           listingCustomizationSetId: customization.listing_customization_set_id,
           listingId,
           listingPriceVariantId: variant!.listing_price_variant_id,
+          priorityCode: "standard",
           quantity: 1,
           trimOptionId,
         };

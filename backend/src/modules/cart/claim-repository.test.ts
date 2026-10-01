@@ -45,6 +45,16 @@ const ids = {
 };
 const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
 const guestContext = { cartId: ids.guestCart, sessionId };
+const productionEstimateSnapshot = {
+  maximumBusinessDays: 7,
+  minimumBusinessDays: 5,
+  priorityCode: "standard",
+  priorityLabel: "Standard",
+  quotedAt: "2026-10-01T16:00:00.000Z",
+  ruleId: "00000000-0000-4000-8000-000000000093",
+  ruleRevision: 1,
+  schemaVersion: 1,
+};
 const identity = {
   authSubject: "user_clerk_123",
   avatarUrl: null,
@@ -85,6 +95,8 @@ function line(
     listing_customization_set_id: ids.customizationSet,
     listing_id: ids.listing,
     listing_price_variant_id: ids.variant,
+    production_estimate_snapshot: productionEstimateSnapshot,
+    production_priority_code: "standard",
     quantity: 1,
     unit_amount_cents: 8500,
     validation_message: null,
@@ -104,6 +116,8 @@ function projection(id: string, quantity = 1, status = "valid") {
     currency: "usd",
     fabric_id: null,
     customization_set_id: ids.customizationSet,
+    production_estimate_snapshot: productionEstimateSnapshot,
+    production_priority_code: "standard",
     customization_payload: {
       imageAssetId: null,
       line1: "Class of 2027",
