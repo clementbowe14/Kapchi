@@ -106,6 +106,7 @@ function itemRow(overrides: Record<string, unknown> = {}) {
     fabric_reservation_id: null,
     fabric_reservation_fabric_id: null,
     fabric_reservation_quantity: null,
+    fabric_reservation_unexpired: null,
     fabric_sku: null,
     fabric_status: null,
     listing_customization_set_id: ids.customizationSet,
@@ -297,6 +298,22 @@ describe("CheckoutRepository", () => {
       "invalid"
     ],
     [
+      "an expired fabric hold",
+      {
+        fabric_id: ids.fabric,
+        fabric_listing_active: true,
+        fabric_quantity_on_hand: 20,
+        fabric_quantity_reserved: 0,
+        fabric_reservation_fabric_id: ids.fabric,
+        fabric_reservation_id: ids.reservation,
+        fabric_reservation_quantity: 1,
+        fabric_reservation_unexpired: false,
+        fabric_status: "active",
+        listing_requires_fabric: true
+      },
+      "unavailable"
+    ],
+    [
       "a price variant associated with another listing",
       { variant_listing_id: otherListingId },
       "unavailable"
@@ -358,6 +375,7 @@ describe("CheckoutRepository", () => {
       fabric_reservation_fabric_id: ids.fabric,
       fabric_reservation_id: ids.reservation,
       fabric_reservation_quantity: 1,
+      fabric_reservation_unexpired: true,
       fabric_sku: "FAB-BLUE",
       fabric_status: "active",
       listing_requires_fabric: true
@@ -491,6 +509,7 @@ describe("CheckoutRepository", () => {
       fabric_reservation_fabric_id: ids.fabric,
       fabric_reservation_id: ids.reservation,
       fabric_reservation_quantity: 1,
+      fabric_reservation_unexpired: true,
       fabric_status: "active",
       listing_requires_fabric: true
     });

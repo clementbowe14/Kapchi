@@ -51,6 +51,7 @@ type CartItemRow = QueryResultRow & {
   fabric_reservation_id: string | null;
   fabric_reservation_quantity: number | null;
   fabric_reservation_fabric_id: string | null;
+  fabric_reservation_unexpired: boolean | null;
   fabric_sku: string | null;
   fabric_status: string | null;
   listing_customization_set_id: string;
@@ -278,6 +279,7 @@ function validationFailure(item: CartItemRow) {
       !item.fabric_listing_active ||
       item.fabric_reservation_fabric_id !== item.fabric_id ||
       item.fabric_reservation_quantity !== item.quantity ||
+      item.fabric_reservation_unexpired !== true ||
       available < item.quantity
     ) {
       return {
@@ -1211,11 +1213,12 @@ export class CheckoutRepository {
           f.material as fabric_material,
           f.status as fabric_status,
           f.quantity_on_hand as fabric_quantity_on_hand,
-          f.quantity_reserved as fabric_quantity_reserved,
+          availability.counted_reserved_quantity as fabric_quantity_reserved,
           lf.active as fabric_listing_active,
           fr.quantity as fabric_reservation_quantity,
           fr.id as fabric_reservation_id,
           fr.fabric_id as fabric_reservation_fabric_id,
+          fr.expires_at > now() as fabric_reservation_unexpired,
           a.cart_id as asset_cart_id,
           a.listing_id as asset_listing_id,
           a.listing_customization_set_id as asset_listing_customization_set_id,
@@ -1229,6 +1232,7 @@ export class CheckoutRepository {
         join customization_sets cs on cs.id = lcs.customization_set_id
         join listing_price_variants lpv on lpv.id = ci.listing_price_variant_id
         left join fabrics f on f.id = ci.fabric_id
+        left join fabric_inventory_availability availability on availability.id = f.id
         left join listing_fabrics lf
           on lf.listing_id = ci.listing_id and lf.fabric_id = ci.fabric_id
         left join fabric_reservations fr
