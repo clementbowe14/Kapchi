@@ -109,6 +109,66 @@ integrationDescribe("RefundRepository database invariants", () => {
     expect(await repository.claimRecoveryCandidates(10, randomUUID())).toEqual([]);
   });
 
+  it("persists ambiguous provider failures without releasing the reserve", async () => {
+    const { actor, orderId } = await fixture();
+    const reserved = await repository.reserve(
+      orderId,
+      actor,
+      request,
+      "ambiguous-provider-error",
+      refundRequestFingerprint(orderId, actor, request),
+    );
+
+    const updated = await repository.markProviderError(reserved.id, "ETIMEDOUT", true);
+
+    expect(updated).toMatchObject({
+      failureCode: "ETIMEDOUT",
+      pendingReason: "unknown_outcome",
+      status: "pending"
+    });
+    expect(await repository.summary(orderId)).toMatchObject({
+      pendingAmountCents: 4000,
+      remainingRefundableAmountCents: 1000
+    });
+  });
+
+  it("quarantines a provider response that does not match the reservation", async () => {
+    const { actor, orderId, snapshot } = await fixture();
+    const reserved = await repository.reserve(
+      orderId,
+      actor,
+      request,
+      "mismatched-provider-response",
+      refundRequestFingerprint(orderId, actor, request),
+    );
+
+    const updated = await repository.applyProviderResult(reserved.id, {
+      amountCents: request.amountCents! + 1,
+      chargeId: snapshot.latestChargeId,
+      createdAt: new Date(),
+      currency: request.currency,
+      failureCode: null,
+      id: `re_mismatch_${randomUUID()}`,
+      livemode: snapshot.livemode,
+      metadata: { operationId: reserved.id, orderId },
+      paymentIntentId: snapshot.paymentIntentId,
+      status: "succeeded"
+    });
+
+    expect(updated).toMatchObject({
+      failureCode: "provider_response_amount_mismatch",
+      manualReviewRequired: true,
+      pendingReason: "provider_conflict",
+      providerRefundId: null,
+      status: "pending"
+    });
+    expect(await repository.summary(orderId)).toMatchObject({
+      pendingAmountCents: 4000,
+      reconciliationStatus: "conflicted",
+      succeededAmountCents: 0
+    });
+  });
+
   it("imports provider truth and fails an unattempted conflicting reservation", async () => {
     const { actor, orderId, snapshot } = await fixture();
     const fullRequest = { ...request, amountCents: 5000 };

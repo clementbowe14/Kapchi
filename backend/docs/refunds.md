@@ -42,6 +42,12 @@ may retrieve Stripe state at any age, but an operation older than 23 hours is
 not automatically sent to `refunds.create` because Stripe can eventually prune
 idempotency records.
 
+Provider responses are accepted only when their payment intent, amount,
+currency, live/test mode, and any returned operation/order metadata match the
+persisted reservation. A mismatch remains reserved, is marked
+`provider_conflict`, and requires manual review; it is never counted as a
+successful refund.
+
 Manual review compares the operation UUID, PaymentIntent, amount, currency,
 Stripe account/mode, provider refund metadata, and Dashboard state. Resolving
 an ambiguity requires immutable evidence and `orders:refund:resolve`. A
@@ -67,4 +73,3 @@ are recorded separately; execution remains unsupported until issues #32 and
 Database CI must provision clean PostgreSQL, apply every forward migration, set
 `RUN_DATABASE_INTEGRATION_TESTS=true`, and fail if the refund integration suite
 is skipped. Stripe CLI verification uses test mode only.
-

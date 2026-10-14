@@ -58,7 +58,6 @@ export class RefundService {
           "IDEMPOTENCY_CONFLICT",
           "This idempotency key was already used for a different refund request.",
           409,
-          existing.id,
         );
       }
       if (existing.status !== "pending") {
@@ -140,7 +139,7 @@ export class RefundService {
   private async recover(current: StoredRefundOperation) {
     if (current.providerRefundId) {
       try {
-        const refund = await this.provider.retrieveRefund(current.providerRefundId);
+        const refund = await this.provider.retrieveRefund(current.providerRefundId, current.livemode);
         return this.repository.applyProviderResult(current.id, refund);
       } catch (error) {
         if (error instanceof RefundProviderError) {
@@ -182,17 +181,25 @@ export class RefundService {
         amountCents: claimed.amountCents,
         currency: claimed.currency,
         idempotencyKey: claimed.providerIdempotencyKey,
+        livemode: claimed.livemode,
         operationId: claimed.id,
         orderId: claimed.orderId,
         paymentIntentId: claimed.paymentIntentId,
         reasonCode: claimed.reasonCode
       });
       const updated = await this.repository.applyProviderResult(claimed.id, refund);
-      this.observer.info("refund.provider.completed", {
-        operationId: claimed.id,
-        orderId: claimed.orderId,
-        resultCode: updated.status.toUpperCase()
-      });
+      this.observer[updated.pendingReason === "provider_conflict" ? "warn" : "info"](
+        updated.pendingReason === "provider_conflict"
+          ? "refund.provider.response_rejected"
+          : "refund.provider.completed",
+        {
+          operationId: claimed.id,
+          orderId: claimed.orderId,
+          resultCode: updated.pendingReason === "provider_conflict"
+            ? updated.failureCode
+            : updated.status.toUpperCase()
+        },
+      );
       return updated;
     } catch (error) {
       if (error instanceof RefundProviderError) {
