@@ -157,6 +157,146 @@ describe("assetsPlugin", () => {
     await app.close();
   });
 
+  it("does not accept broad permission claims without the store admin role", async () => {
+    mocks.auth = {
+      permissions: ["assets:write", "catalog:write", "listings:write"],
+      roles: ["org:admin"],
+      userId: "organization-admin"
+    };
+    const app = await buildTestServer();
+    const response = await app.inject({
+      headers: { authorization: "Bearer permission-token" },
+      method: "POST",
+      payload: {
+        byteSize: 1024,
+        contentType: "image/png",
+        context: "catalog_listing_image",
+        filename: "catalog.png",
+        listingId: ids.listing
+      },
+      url: "/upload-intents"
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(mocks.query).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("requires an active local actor and audits admin asset intents", async () => {
+    mocks.auth = {
+      permissions: [],
+      roles: ["admin"],
+      userId: "store-admin"
+    };
+    const actorId = "c33f2b22-2af9-4d03-b24b-f86e9b9b98a5";
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ id: actorId }] })
+      .mockResolvedValueOnce({
+        rows: [assetRow({
+          authenticated_user_id: actorId,
+          cart_id: null,
+          context: "catalog_listing_image",
+          created_by_auth_subject: "store-admin",
+          listing_customization_set_id: null,
+          visibility: "public_catalog"
+        })]
+      });
+    const app = await buildTestServer();
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "catalog-upload-1"
+      },
+      method: "POST",
+      payload: {
+        byteSize: 2048,
+        contentType: "image/png",
+        context: "catalog_listing_image",
+        filename: "catalog.png",
+        listingId: ids.listing
+      },
+      url: "/upload-intents"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.query.mock.calls[0][0]).toContain("disabled_at is null");
+    expect(mocks.query.mock.calls[1][0]).toContain("insert into admin_audit_events");
+    expect(mocks.query.mock.calls[1][1]).toEqual(expect.arrayContaining([
+      actorId,
+      "store-admin",
+      "catalog-upload-1"
+    ]));
+    await app.close();
+  });
+
+  it("requires idempotency identity for an admin asset mutation", async () => {
+    mocks.auth = {
+      permissions: [],
+      roles: ["admin"],
+      userId: "store-admin"
+    };
+    mocks.query.mockResolvedValueOnce({
+      rows: [{ id: "c33f2b22-2af9-4d03-b24b-f86e9b9b98a5" }]
+    });
+    const app = await buildTestServer();
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "POST",
+      payload: {
+        byteSize: 2048,
+        contentType: "image/png",
+        context: "catalog_listing_image",
+        filename: "catalog.png",
+        listingId: ids.listing
+      },
+      url: "/upload-intents"
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain("Idempotency-Key");
+    expect(mocks.query).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("returns a structured conflict for a replayed admin asset key", async () => {
+    mocks.auth = {
+      permissions: [],
+      roles: ["admin"],
+      userId: "store-admin"
+    };
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [{ id: "c33f2b22-2af9-4d03-b24b-f86e9b9b98a5" }]
+      })
+      .mockRejectedValueOnce(Object.assign(new Error("duplicate"), {
+        code: "23505",
+        constraint: "admin_audit_events_idempotency_idx"
+      }));
+    const app = await buildTestServer();
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "catalog-upload-1"
+      },
+      method: "POST",
+      payload: {
+        byteSize: 2048,
+        contentType: "image/png",
+        context: "catalog_listing_image",
+        filename: "catalog.png",
+        listingId: ids.listing
+      },
+      url: "/upload-intents"
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: "IDEMPOTENCY_CONFLICT",
+      statusCode: 409
+    });
+    await app.close();
+  });
+
   it("creates a private pending asset intent for a matching guest cart customization", async () => {
     mocks.guestCart = {
       cartId: ids.cart,

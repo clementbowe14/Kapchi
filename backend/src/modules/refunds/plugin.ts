@@ -2,13 +2,13 @@ import fp from "fastify-plugin";
 import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
 import type { Pool } from "pg";
-import { authMiddleware, requirePermission } from "../auth/index.js";
+import { adminRoute } from "../admin-auth/index.js";
 import { createStripeClient } from "../payments/stripe-client.js";
 import { RefundError } from "./errors.js";
 import { StripeRefundProvider, type RefundProvider } from "./provider.js";
 import { RefundRepository } from "./repository.js";
 import { RefundService, type RefundObserver, type RefundRepositoryPort } from "./service.js";
-import { REFUND_PERMISSION, type RefundRequest } from "./types.js";
+import type { RefundRequest } from "./types.js";
 
 const orderParams = Joi.object({ orderId: Joi.string().guid().required() }).required();
 const operationParams = Joi.object({ operationId: Joi.string().guid().required() }).required();
@@ -61,11 +61,11 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
     const serviceFor = (logger: FastifyBaseLogger) =>
       dependencies.serviceFactory?.(repository, provider, observer(logger)) ??
       new RefundService(repository, provider, observer(logger));
-    const protectedRoute = [authMiddleware, requirePermission(REFUND_PERMISSION)];
+    const protectedRoute = adminRoute("refunds:write");
 
     fastify.get<{ Params: { orderId: string } }>(
       "/orders/:orderId/refunds/summary",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const parsed = orderParams.validate(request.params, { allowUnknown: false });
         if (parsed.error) return reply.code(400).send({ error: "VALIDATION_ERROR", message: parsed.error.message, statusCode: 400 });
@@ -79,7 +79,7 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 
     fastify.post<{ Params: { orderId: string } }>(
       "/orders/:orderId/refunds",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const params = orderParams.validate(request.params, { allowUnknown: false });
         const body = bodySchema.validate(request.body, { allowUnknown: false, abortEarly: false });
@@ -113,7 +113,7 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 
     fastify.get<{ Params: { operationId: string } }>(
       "/refunds/:operationId",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const parsed = operationParams.validate(request.params, { allowUnknown: false });
         if (parsed.error) return reply.code(400).send({ error: "VALIDATION_ERROR", message: parsed.error.message, statusCode: 400 });
@@ -129,4 +129,3 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 }
 
 export default createRefundPlugin();
-

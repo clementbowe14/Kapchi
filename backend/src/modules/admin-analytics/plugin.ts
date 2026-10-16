@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
-import { authMiddleware, requireRole } from "../auth/index.js";
+import { adminRoute } from "../admin-auth/index.js";
 import {
   SalesAnalyticsRepository,
   type SalesAnalyticsReader
@@ -87,9 +87,7 @@ export function createAdminAnalyticsPlugin(
 
     fastify.get(
       "/sales",
-      {
-        preHandler: [authMiddleware, requireRole("admin")]
-      },
+      adminRoute("reports:read"),
       async (request, reply) => {
         const { error, value } = querySchema.validate(request.query, {
           abortEarly: false,

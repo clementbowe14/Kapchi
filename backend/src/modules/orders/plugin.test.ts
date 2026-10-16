@@ -213,6 +213,8 @@ describe("ordersPlugin", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().orders).toHaveLength(1);
     expect(response.json().orders[0].publicOrderNumber).toBe("KAP-1001");
+    expect(response.body).not.toContain("production_notes");
+    expect(response.body).not.toContain("adminNotes");
     expect(mocks.query.mock.calls[0][1]).toEqual(["user_123"]);
 
     await app.close();
