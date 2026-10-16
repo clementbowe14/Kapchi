@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
+import { safeErrorDetails } from "../../observability/safe-error.js";
 import { verifyClerkToken } from "./jwt.js";
 
 function extractBearerToken(request: FastifyRequest) {
@@ -8,42 +9,55 @@ function extractBearerToken(request: FastifyRequest) {
     return null;
   }
 
-  const [scheme, token] = authorization.split(" ");
-
-  if (scheme?.toLowerCase() !== "bearer" || !token) {
-    return null;
-  }
-
-  return token;
+  const match = authorization.trim().match(/^Bearer\s+([^\s]+)$/i);
+  return match?.[1] ?? null;
 }
 
-export const authMiddleware: preHandlerHookHandler = async (request) => {
+export const authMiddleware: preHandlerHookHandler = async (request, reply) => {
   request.auth = null;
 
+  const authorization = request.headers.authorization;
   const token = extractBearerToken(request);
 
   if (!token) {
+    if (authorization) {
+      return unauthorized(
+        request,
+        reply,
+        "Authorization must use a valid Bearer token.",
+      );
+    }
     return;
   }
 
-  request.auth = await verifyClerkToken(token);
+  try {
+    request.auth = await verifyClerkToken(token);
+  } catch (error) {
+    request.log.warn(
+      {
+        event: "auth.token.rejected",
+        ...safeErrorDetails(error)
+      },
+      "Bearer token was rejected",
+    );
+    return unauthorized(request, reply, "Bearer token is invalid or expired.");
+  }
 };
 
 export const requireAuth: preHandlerHookHandler = async (request, reply) => {
   if (!request.auth) {
-    void unauthorized(reply, "Authentication is required.");
+    return unauthorized(request, reply, "Authentication is required.");
   }
 };
 
 export function requireRole(role: string): preHandlerHookHandler {
   return async (request, reply) => {
     if (!request.auth) {
-      void unauthorized(reply, "Authentication is required.");
-      return;
+      return unauthorized(request, reply, "Authentication is required.");
     }
 
     if (!request.auth.roles.includes(role)) {
-      void forbidden(reply, `Missing required role: ${role}`);
+      return forbidden(request, reply, `Missing required role: ${role}`);
     }
   };
 }
@@ -51,28 +65,29 @@ export function requireRole(role: string): preHandlerHookHandler {
 export function requirePermission(permission: string): preHandlerHookHandler {
   return async (request, reply) => {
     if (!request.auth) {
-      void unauthorized(reply, "Authentication is required.");
-      return;
+      return unauthorized(request, reply, "Authentication is required.");
     }
 
     if (!request.auth.permissions.includes(permission)) {
-      void forbidden(reply, `Missing required permission: ${permission}`);
+      return forbidden(request, reply, `Missing required permission: ${permission}`);
     }
   };
 }
 
-function unauthorized(reply: FastifyReply, message: string) {
+function unauthorized(request: FastifyRequest, reply: FastifyReply, message: string) {
   return reply.code(401).send({
     error: "UNAUTHORIZED",
     message,
+    requestId: request.id,
     statusCode: 401
   });
 }
 
-function forbidden(reply: FastifyReply, message: string) {
+function forbidden(request: FastifyRequest, reply: FastifyReply, message: string) {
   return reply.code(403).send({
     error: "FORBIDDEN",
     message,
+    requestId: request.id,
     statusCode: 403
   });
 }
