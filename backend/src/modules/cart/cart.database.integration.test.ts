@@ -118,13 +118,14 @@ integrationDescribe("guest cart database lifecycle", () => {
 
       const listingId = catalog.rows[0].listing_id;
       const fabric = await pool.query<{
+        counted_reserved_quantity: number;
         id: string;
-        quantity_reserved: number;
       }>(
         `
-          select f.id, f.quantity_reserved
+          select f.id, availability.counted_reserved_quantity
           from listing_fabrics lf
           join fabrics f on f.id = lf.fabric_id
+          join fabric_inventory_availability availability on availability.id = f.id
           where lf.listing_id = $1 and lf.active = true and f.status = 'active'
           order by lf.is_default desc, lf.sort_order, f.id
           limit 1
@@ -132,7 +133,7 @@ integrationDescribe("guest cart database lifecycle", () => {
         [listingId],
       );
       fabricId = fabric.rows[0].id;
-      initialReservedQuantity = fabric.rows[0].quantity_reserved;
+      initialReservedQuantity = fabric.rows[0].counted_reserved_quantity;
 
       const itemIds = new Map<string, string>();
       const inputs = new Map<string, CartItemInput>();

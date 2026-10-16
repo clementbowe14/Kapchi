@@ -608,6 +608,14 @@ describe("CartService guest mutations", () => {
           ]
         };
       }
+      if (sql.includes("update fabric_reservations") && sql.includes("returning id")) {
+        return {
+          rows: [{ id: ids.reservation, fabric_id: ids.fabric, quantity: 1 }]
+        };
+      }
+      if (sql.includes("update fabrics") && sql.includes("returning id")) {
+        return { rows: [{ id: ids.fabric }] };
+      }
       if (sql.includes("from fabric_reservations")) {
         return {
           rows: [
@@ -644,6 +652,7 @@ describe("CartService guest mutations", () => {
     expect(sql.findIndex((statement) => statement.includes("status = 'released'"))).toBeLessThan(
       sql.findIndex((statement) => statement.includes("delete from cart_items")),
     );
+    expect(sql.some((statement) => statement.includes("quantity_reserved = quantity_reserved - $2"))).toBe(true);
     expect(sql.some((statement) => statement.includes("set status = 'uploaded'"))).toBe(
       true,
     );
