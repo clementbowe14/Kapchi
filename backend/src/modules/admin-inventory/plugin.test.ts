@@ -18,22 +18,13 @@ vi.mock("../auth/index.js", () => ({
           userId: "clerk_admin"
         }
       : null;
-  },
-  requireRole: (role: string) => async (
-    request: { auth: { roles: string[] } | null },
-    reply: { code: (statusCode: number) => { send: (payload: unknown) => void } },
-  ) => {
-    if (!request.auth) {
-      reply.code(401).send({ error: "UNAUTHORIZED", statusCode: 401 });
-      return;
-    }
-    if (!request.auth.roles.includes(role)) {
-      reply.code(403).send({ error: "FORBIDDEN", statusCode: 403 });
-    }
   }
 }));
 
-const { createAdminInventoryPlugin } = await import("./plugin.js");
+const [{ default: adminBoundaryPlugin }, { createAdminInventoryPlugin }] = await Promise.all([
+  import("../admin-auth/boundary.js"),
+  import("./plugin.js")
+]);
 
 const fabric = {
   availabilityStatus: "available" as const,
@@ -101,6 +92,7 @@ function dependencies() {
 
 async function server(repository: AdminInventoryReader) {
   const app = fastify({ logger: false });
+  await app.register(adminBoundaryPlugin);
   await app.register(createAdminInventoryPlugin({ repository }), {
     prefix: "/admin/inventory"
   });

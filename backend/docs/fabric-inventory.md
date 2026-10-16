@@ -58,10 +58,10 @@ is archived.
 
 ## Admin API
 
-All routes require a verified Clerk token with the exact `admin` role. Mutating
-routes also require an active local user record and an `Idempotency-Key` header.
-Issue #100 will replace this temporary role boundary with the final shop-manager
-permission contract.
+All routes use the shared admin authorization boundary and require a verified
+Clerk token with the exact `admin` role. Reads declare `inventory:read`, while
+mutations declare `inventory:write` and additionally require an active local
+user record plus an `Idempotency-Key` header.
 
 - `GET /admin/inventory`: search unique pools by fabric, SKU, or linked product;
   filter with `stock`, `lowStockThreshold`, `fabricId`, or `listingId`.

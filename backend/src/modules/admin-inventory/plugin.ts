@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import Joi from "joi";
-import { authMiddleware, requireRole } from "../auth/index.js";
+import { adminRoute } from "../admin-auth/index.js";
 import { InventoryError } from "./errors.js";
 import {
   AdminInventoryRepository,
@@ -113,11 +113,10 @@ export function createAdminInventoryPlugin(
 ) {
   const plugin: FastifyPluginAsync = async (fastify) => {
     const repository = dependencies.repository ?? new AdminInventoryRepository(fastify.pg);
-    const protectedRoute = [authMiddleware, requireRole("admin")];
 
     fastify.get(
       "/",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:read"),
       async (request, reply) => {
         const parsed = listQuery.validate(request.query, {
           abortEarly: false,
@@ -139,7 +138,7 @@ export function createAdminInventoryPlugin(
 
     fastify.post(
       "/fabrics",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:write"),
       async (request, reply) => {
         const parsed = createBody.validate(request.body, { abortEarly: false, allowUnknown: false });
         if (parsed.error) return validationError(reply, parsed.error.message);
@@ -167,7 +166,7 @@ export function createAdminInventoryPlugin(
 
     fastify.patch(
       "/fabrics/:fabricId",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:write"),
       async (request, reply) => {
         const params = fabricParams.validate(request.params, { allowUnknown: false });
         const body = updateBody.validate(request.body, { abortEarly: false, allowUnknown: false });
@@ -198,7 +197,7 @@ export function createAdminInventoryPlugin(
 
     fastify.post(
       "/fabrics/:fabricId/adjustments",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:write"),
       async (request, reply) => {
         const params = fabricParams.validate(request.params, { allowUnknown: false });
         const body = adjustmentBody.validate(request.body, { abortEarly: false, allowUnknown: false });
@@ -234,7 +233,7 @@ export function createAdminInventoryPlugin(
 
     fastify.put(
       "/fabrics/:fabricId/listings/:listingId",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:write"),
       async (request, reply) => {
         const params = listingParams.validate(request.params, { allowUnknown: false });
         const body = linkBody.validate(request.body, { abortEarly: false, allowUnknown: false });
@@ -271,7 +270,7 @@ export function createAdminInventoryPlugin(
 
     fastify.post(
       "/fabrics/:fabricId/restocks",
-      { preHandler: protectedRoute },
+      adminRoute("inventory:write"),
       async (request, reply) => {
         const params = fabricParams.validate(request.params, { allowUnknown: false });
         const body = restockBody.validate(request.body, { abortEarly: false, allowUnknown: false });
