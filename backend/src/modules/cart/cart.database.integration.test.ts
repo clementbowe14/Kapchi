@@ -29,7 +29,8 @@ integrationDescribe("guest cart database lifecycle", () => {
   let pool: Pool;
   let service: InstanceType<typeof import("./service.js").CartService>;
   let fabricId: string;
-  let initialReservedQuantity: number;
+  let initialActiveReservedQuantity: number;
+  let initialStoredReservedQuantity: number;
 
   beforeAll(async () => {
     const [{ createDatabasePool }, { CartService }] = await Promise.all([
@@ -120,9 +121,13 @@ integrationDescribe("guest cart database lifecycle", () => {
       const fabric = await pool.query<{
         counted_reserved_quantity: number;
         id: string;
+        quantity_reserved: number;
       }>(
         `
-          select f.id, availability.counted_reserved_quantity
+          select
+            f.id,
+            f.quantity_reserved,
+            availability.counted_reserved_quantity
           from listing_fabrics lf
           join fabrics f on f.id = lf.fabric_id
           join fabric_inventory_availability availability on availability.id = f.id
@@ -133,7 +138,8 @@ integrationDescribe("guest cart database lifecycle", () => {
         [listingId],
       );
       fabricId = fabric.rows[0].id;
-      initialReservedQuantity = fabric.rows[0].counted_reserved_quantity;
+      initialActiveReservedQuantity = fabric.rows[0].counted_reserved_quantity;
+      initialStoredReservedQuantity = fabric.rows[0].quantity_reserved;
 
       const itemIds = new Map<string, string>();
       const inputs = new Map<string, CartItemInput>();
@@ -366,11 +372,26 @@ integrationDescribe("guest cart database lifecycle", () => {
         subtotalCents: 0,
         totalQuantity: 0
       });
-      const finalFabric = await pool.query<{ quantity_reserved: number }>(
-        "select quantity_reserved from fabrics where id = $1",
+      const finalFabric = await pool.query<{
+        counted_reserved_quantity: number;
+        quantity_reserved: number;
+      }>(
+        `
+          select
+            f.quantity_reserved,
+            availability.counted_reserved_quantity
+          from fabrics f
+          join fabric_inventory_availability availability on availability.id = f.id
+          where f.id = $1
+        `,
         [fabricId],
       );
-      expect(finalFabric.rows[0].quantity_reserved).toBe(initialReservedQuantity);
+      expect(finalFabric.rows[0].quantity_reserved).toBe(
+        initialStoredReservedQuantity,
+      );
+      expect(finalFabric.rows[0].counted_reserved_quantity).toBe(
+        initialActiveReservedQuantity,
+      );
     },
     30_000,
   );
