@@ -15,6 +15,7 @@
     "stripe:catalog:sync:local": "tsx src/scripts/sync-stripe-test-catalog.ts",
     "refunds:reconcile": "tsx src/scripts/reconcile-refunds.ts",
     "inventory:reconcile": "tsx src/scripts/reconcile-fabric-inventory.ts",
+    "messages:dispatch": "tsx src/scripts/dispatch-messages.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

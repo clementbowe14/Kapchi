@@ -64,6 +64,13 @@ const environmentSchema = Joi.object({
     .integer()
     .min(1)
     .default(5 * 1024 * 1024),
+  MESSAGE_DELIVERY_URL: Joi.string()
+    .uri({ scheme: ["http", "https"] })
+    .optional(),
+  MESSAGE_DELIVERY_TOKEN: Joi.string().trim().optional(),
+  MESSAGE_WEBHOOK_SECRET: Joi.string().trim().optional(),
+  MESSAGE_FROM_EMAIL: Joi.string().trim().email().optional(),
+  MESSAGE_FROM_SMS: Joi.string().trim().optional(),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required()
 }).unknown(true);
 
@@ -88,6 +95,11 @@ type EnvironmentShape = {
   DATABASE_MAX_APP_INSTANCES: number;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+  MESSAGE_DELIVERY_TOKEN?: string;
+  MESSAGE_DELIVERY_URL?: string;
+  MESSAGE_FROM_EMAIL?: string;
+  MESSAGE_FROM_SMS?: string;
+  MESSAGE_WEBHOOK_SECRET?: string;
   NODE_ENV: "development" | "test" | "production";
   PORT: number;
   REDIS_URL: string;
@@ -227,6 +239,17 @@ export const config = Object.freeze({
     },
     sslMode: environment.DATABASE_SSL_MODE,
     url: environment.DATABASE_URL
+  },
+  messaging: {
+    delivery: {
+      token: environment.MESSAGE_DELIVERY_TOKEN,
+      url: environment.MESSAGE_DELIVERY_URL
+    },
+    senders: {
+      email: environment.MESSAGE_FROM_EMAIL,
+      sms: environment.MESSAGE_FROM_SMS
+    },
+    webhookSecret: environment.MESSAGE_WEBHOOK_SECRET
   },
   payments: {
     checkout: {

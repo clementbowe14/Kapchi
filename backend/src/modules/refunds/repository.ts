@@ -480,7 +480,7 @@ export class RefundRepository {
             refund_operation_id, effect_type, requested, status, idempotency_key
           ) values
             ($1::uuid, 'restock', $2, case when $2 then 'unsupported'::refund_effect_status else 'not_requested'::refund_effect_status end, 'refund-effect:' || $1 || ':restock'),
-            ($1::uuid, 'customer_notification', $3, case when $3 then 'unsupported'::refund_effect_status else 'not_requested'::refund_effect_status end, 'refund-effect:' || $1 || ':notification')
+            ($1::uuid, 'customer_notification', $3, case when $3 then 'pending'::refund_effect_status else 'not_requested'::refund_effect_status end, 'refund-effect:' || $1 || ':notification')
         `,
         [row.id, request.restockRequested, request.notificationRequested],
       );
@@ -597,7 +597,7 @@ export class RefundRepository {
     const overcommitted = Math.max(0, values.succeeded + values.pending - state.captured_amount_cents);
     return {
       capabilities: {
-        customerNotificationExecution: false,
+        customerNotificationExecution: true,
         itemLevelAllocation: false,
         restockExecution: false
       },
