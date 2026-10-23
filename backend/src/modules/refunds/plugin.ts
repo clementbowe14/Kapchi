@@ -2,7 +2,11 @@ import fp from "fastify-plugin";
 import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
 import type { Pool } from "pg";
+import { config } from "../../config/index.js";
 import { adminRoute } from "../admin-auth/index.js";
+import { HttpMessageProvider } from "../admin-messaging/provider.js";
+import { AdminMessagingRepository } from "../admin-messaging/repository.js";
+import { AdminMessagingService } from "../admin-messaging/service.js";
 import { createStripeClient } from "../payments/stripe-client.js";
 import { RefundError } from "./errors.js";
 import { StripeRefundProvider, type RefundProvider } from "./provider.js";
@@ -58,9 +62,31 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
   const plugin: FastifyPluginAsync = async (fastify) => {
     const provider = dependencies.providerFactory?.() ?? new StripeRefundProvider(createStripeClient());
     const repository = dependencies.repositoryFactory?.(fastify.pg) ?? new RefundRepository(fastify.pg);
-    const serviceFor = (logger: FastifyBaseLogger) =>
-      dependencies.serviceFactory?.(repository, provider, observer(logger)) ??
-      new RefundService(repository, provider, observer(logger));
+    const serviceFor = (logger: FastifyBaseLogger) => {
+      const lifecycleObserver = observer(logger);
+      const injected = dependencies.serviceFactory?.(
+        repository,
+        provider,
+        lifecycleObserver,
+      );
+      if (injected) return injected;
+      const messagingConfig = config.messaging ?? {
+        delivery: {},
+        senders: {},
+        webhookSecret: undefined
+      };
+      return new RefundService(
+        repository,
+        provider,
+        lifecycleObserver,
+        new AdminMessagingService(
+          new AdminMessagingRepository(fastify.pg),
+          new HttpMessageProvider(messagingConfig.delivery),
+          messagingConfig.senders,
+          lifecycleObserver,
+        ),
+      );
+    };
     const protectedRoute = adminRoute("refunds:write");
 
     fastify.get<{ Params: { orderId: string } }>(

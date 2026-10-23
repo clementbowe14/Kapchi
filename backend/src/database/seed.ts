@@ -1091,8 +1091,35 @@ async function seedCartAndOrder(db: Queryable) {
 
   await db.query(
     `
+      with conversation as (
+        insert into order_conversations (
+          order_id,
+          thread_key,
+          status,
+          admin_unread,
+          last_message_at,
+          last_admin_message_at
+        ) values (
+          $1::uuid,
+          'kapchi-order:' || $1::uuid::text,
+          'awaiting_customer',
+          false,
+          $3,
+          $3
+        )
+        on conflict (order_id) do update set
+          status = excluded.status,
+          admin_unread = excluded.admin_unread,
+          last_message_at = excluded.last_message_at,
+          last_admin_message_at = excluded.last_admin_message_at,
+          resolved_at = null,
+          resolved_by_user_id = null,
+          version = order_conversations.version + 1
+        returning id
+      )
       insert into order_messages (
         order_id,
+        conversation_id,
         sender_type,
         sender_user_id,
         channel,
@@ -1105,8 +1132,9 @@ async function seedCartAndOrder(db: Queryable) {
         provider,
         provider_message_id,
         sent_at
-      ) values (
-        $1,
+      ) select
+        $1::uuid,
+        conversation.id,
         'system',
         'local-seed',
         'email',
@@ -1119,7 +1147,7 @@ async function seedCartAndOrder(db: Queryable) {
         'local-seed',
         $2,
         $3
-      )
+      from conversation
       on conflict (provider, provider_message_id)
       where provider is not null and provider_message_id is not null
       do update set
