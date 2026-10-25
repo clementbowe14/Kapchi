@@ -122,7 +122,15 @@ function dependencies() {
 describe("RefundService", () => {
   it("reconciles, reserves, and dispatches one successful refund", async () => {
     const { provider, repository } = dependencies();
-    const service = new RefundService(repository, provider);
+    const notificationScheduler = {
+      scheduleRefundNotification: vi.fn().mockResolvedValue(true)
+    };
+    const service = new RefundService(
+      repository,
+      provider,
+      undefined,
+      notificationScheduler,
+    );
 
     const result = await service.create(
       pendingOperation().orderId,
@@ -135,8 +143,35 @@ describe("RefundService", () => {
     expect(repository.applyReconciliation).toHaveBeenCalledOnce();
     expect(repository.reserve).toHaveBeenCalledOnce();
     expect(provider.createRefund).toHaveBeenCalledOnce();
-    expect(provider.createRefund).toHaveBeenCalledWith(
-      expect.objectContaining({ livemode: false }),
+    expect(notificationScheduler.scheduleRefundNotification).toHaveBeenCalledWith(
+      result.operation.id,
+    );
+  });
+
+  it("does not fail a successful refund when notification scheduling fails", async () => {
+    const { provider, repository } = dependencies();
+    const notificationScheduler = {
+      scheduleRefundNotification: vi.fn().mockRejectedValue(new Error("queue unavailable"))
+    };
+    const observer = { error: vi.fn(), info: vi.fn(), warn: vi.fn() };
+    const service = new RefundService(
+      repository,
+      provider,
+      observer,
+      notificationScheduler,
+    );
+
+    const result = await service.create(
+      pendingOperation().orderId,
+      actor,
+      request,
+      "refund-with-notification-failure",
+    );
+
+    expect(result.operation.status).toBe("succeeded");
+    expect(observer.error).toHaveBeenCalledWith(
+      "refund.notification.scheduling_failed",
+      expect.objectContaining({ resultCode: "MESSAGE_SCHEDULING_FAILED" }),
     );
   });
 

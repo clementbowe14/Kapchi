@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  consumeFabricInventory,
   handleCheckoutSessionCompleted,
   handlePaymentIntentSucceeded
 } from "./success-state.js";
@@ -34,6 +35,8 @@ function mockSuccessfulTransaction(
     .mockResolvedValueOnce({ rows: [order] })
     .mockResolvedValueOnce({ rows: [] })
     .mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [] })
     .mockResolvedValueOnce({ rows: [] });
 }
 
@@ -63,8 +66,10 @@ describe("successful Stripe payment state handling", () => {
       "cs_test_123",
       "pi_test_123"
     ]);
-    expect(client.query.mock.calls[2][1]).toEqual([orderId, "pi_test_123"]);
-    expect(client.query.mock.calls[3][1]).toEqual([
+    expect(client.query.mock.calls[2][1]).toEqual([orderId]);
+    expect(client.query.mock.calls[3][1]).toEqual([orderId]);
+    expect(client.query.mock.calls[4][1]).toEqual([orderId, "pi_test_123"]);
+    expect(client.query.mock.calls[5][1]).toEqual([
       orderId,
       "pi_test_123",
       "checkout_started",
@@ -74,7 +79,7 @@ describe("successful Stripe payment state handling", () => {
         paymentIntentId: "pi_test_123"
       }
     ]);
-    expect(client.query.mock.calls[4][0]).toBe("commit");
+    expect(client.query.mock.calls[6][0]).toBe("commit");
   });
 
   it("marks an order paid from payment_intent.succeeded", async () => {
@@ -93,8 +98,10 @@ describe("successful Stripe payment state handling", () => {
       orderId
     });
     expect(client.query.mock.calls[1][1]).toEqual([orderId, null, "pi_test_456"]);
-    expect(client.query.mock.calls[2][1]).toEqual([orderId, "pi_test_456"]);
-    expect(client.query.mock.calls[3][1]).toEqual([
+    expect(client.query.mock.calls[2][1]).toEqual([orderId]);
+    expect(client.query.mock.calls[3][1]).toEqual([orderId]);
+    expect(client.query.mock.calls[4][1]).toEqual([orderId, "pi_test_456"]);
+    expect(client.query.mock.calls[5][1]).toEqual([
       orderId,
       "pi_test_456",
       "checkout_started",
@@ -216,5 +223,61 @@ describe("successful Stripe payment state handling", () => {
     });
     expect(client.query).toHaveBeenCalledTimes(3);
     expect(client.query.mock.calls[2][0]).toBe("commit");
+  });
+
+  it("consumes shared fabric reservations once for a paid order", async () => {
+    const client = createClient();
+    const fabricId = "9f6cb9ac-78f8-467d-81dd-ff287d4c5605";
+    const firstItem = "68367975-5b50-43f4-81bd-b6cbcf1f4301";
+    const secondItem = "df157c5d-b354-4bfa-8617-479cc5d55a66";
+    client.query
+      .mockResolvedValueOnce({
+        rows: [
+          { fabric_id: fabricId, order_item_id: firstItem, quantity: 1 },
+          { fabric_id: fabricId, order_item_id: secondItem, quantity: 2 }
+        ]
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          { fabric_id: fabricId, order_item_id: firstItem, quantity: 1, reservation_id: "389d7af7-7a08-4f7f-9f43-dbc81d132493" },
+          { fabric_id: fabricId, order_item_id: secondItem, quantity: 2, reservation_id: "37ab2405-7ba4-4ea9-a28d-e46e9559752e" }
+        ]
+      })
+      .mockResolvedValueOnce({ rows: [{ id: fabricId }] })
+      .mockResolvedValueOnce({ rows: [{ id: "one" }, { id: "two" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await consumeFabricInventory(client, orderId);
+
+    expect(client.query.mock.calls[2][1]).toEqual([fabricId, 3]);
+    expect(String(client.query.mock.calls[2][0])).toContain(
+      "quantity_sold = quantity_sold + $2",
+    );
+    expect(String(client.query.mock.calls[3][0])).toContain("status = 'converted'");
+    expect(client.query.mock.calls[4][1]).toEqual(expect.arrayContaining([
+      fabricId,
+      firstItem,
+      -1,
+      1
+    ]));
+  });
+
+  it("fails closed when a paid order item has no matching reservation", async () => {
+    const client = createClient();
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{
+          fabric_id: "9f6cb9ac-78f8-467d-81dd-ff287d4c5605",
+          order_item_id: "68367975-5b50-43f4-81bd-b6cbcf1f4301",
+          quantity: 1
+        }]
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(consumeFabricInventory(client, orderId)).rejects.toThrow(
+      "Fabric reservation does not match",
+    );
+    expect(client.query).toHaveBeenCalledTimes(2);
   });
 });

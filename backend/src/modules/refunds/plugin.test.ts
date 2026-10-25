@@ -39,11 +39,17 @@ const operation = {
   succeededAt: "2026-10-01T12:00:01.000Z"
 };
 
-function authenticated(permissions = ["orders:refund"]) {
+function authenticated({
+  permissions = [],
+  roles = ["admin"]
+}: {
+  permissions?: string[];
+  roles?: string[];
+} = {}) {
   mocks.verifyClerkToken.mockResolvedValue({
     claims: {},
     permissions,
-    roles: ["admin"],
+    roles,
     sessionId: "sess_admin",
     token: "verified-token",
     userId: "user_admin"
@@ -68,8 +74,11 @@ async function build(service: Record<string, unknown>) {
 describe("refundPlugin", () => {
   beforeEach(() => mocks.verifyClerkToken.mockReset());
 
-  it("requires the refund capability", async () => {
-    authenticated([]);
+  it("rejects permission-only and organization-admin principals", async () => {
+    authenticated({
+      permissions: ["orders:refund"],
+      roles: ["org:admin"]
+    });
     const app = await build({});
     const response = await app.inject({
       headers: { authorization: "Bearer verified-token" },
@@ -154,4 +163,3 @@ describe("refundPlugin", () => {
     await app.close();
   });
 });
-

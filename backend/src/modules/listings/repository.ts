@@ -128,10 +128,11 @@ const SUMMARY_SELECT = `
       and lpv.replaced_at is null
   ) prices on true
   left join lateral (
-    select sum(greatest(f.quantity_on_hand - f.quantity_reserved, 0))::integer
+    select sum(availability.available_quantity)::integer
       as available_quantity
     from listing_fabrics lf
     join fabrics f on f.id = lf.fabric_id and f.status = 'active'
+    join fabric_inventory_availability availability on availability.id = f.id
     where lf.listing_id = l.id and lf.active = true
   ) inventory on true
   left join lateral (
@@ -255,10 +256,11 @@ export class ListingsRepository {
         ),
         this.pool.query<FabricRow>(
           `select f.id, f.name, f.color_hex, f.material,
-                  greatest(f.quantity_on_hand - f.quantity_reserved, 0) as available_quantity,
+                  availability.available_quantity,
                   image.url as image_url, image.alt as image_alt
            from listing_fabrics lf
            join fabrics f on f.id = lf.fabric_id and f.status = 'active'
+           join fabric_inventory_availability availability on availability.id = f.id
            left join lateral (
              select a.url, nullif(a.metadata ->> 'alt', '') as alt
              from assets a

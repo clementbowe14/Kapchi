@@ -27,6 +27,10 @@ export type RefundObserver = {
   error(event: string, fields?: Record<string, unknown>): void;
 };
 
+export type RefundNotificationScheduler = {
+  scheduleRefundNotification(operationId: string): Promise<boolean>;
+};
+
 const noopObserver: RefundObserver = {
   error() {},
   info() {},
@@ -38,6 +42,7 @@ export class RefundService {
     private readonly repository: RefundRepositoryPort,
     private readonly provider: RefundProvider,
     private readonly observer: RefundObserver = noopObserver,
+    private readonly notificationScheduler?: RefundNotificationScheduler,
   ) {}
 
   resolveActor(authSubject: string) {
@@ -61,6 +66,7 @@ export class RefundService {
         );
       }
       if (existing.status !== "pending") {
+        await this.scheduleNotification(existing);
         return { operation: existing, replayed: true };
       }
       const recovered = await this.recover(existing);
@@ -105,6 +111,7 @@ export class RefundService {
     if (current.status === "pending" && current.pendingReason !== "provider_conflict") {
       return this.recover(current);
     }
+    await this.scheduleNotification(current);
     return current;
   }
 
@@ -139,8 +146,10 @@ export class RefundService {
   private async recover(current: StoredRefundOperation) {
     if (current.providerRefundId) {
       try {
-        const refund = await this.provider.retrieveRefund(current.providerRefundId, current.livemode);
-        return this.repository.applyProviderResult(current.id, refund);
+        const refund = await this.provider.retrieveRefund(current.providerRefundId);
+        const updated = await this.repository.applyProviderResult(current.id, refund);
+        await this.scheduleNotification(updated);
+        return updated;
       } catch (error) {
         if (error instanceof RefundProviderError) {
           await this.repository.markProviderError(current.id, error.code, true);
@@ -188,18 +197,12 @@ export class RefundService {
         reasonCode: claimed.reasonCode
       });
       const updated = await this.repository.applyProviderResult(claimed.id, refund);
-      this.observer[updated.pendingReason === "provider_conflict" ? "warn" : "info"](
-        updated.pendingReason === "provider_conflict"
-          ? "refund.provider.response_rejected"
-          : "refund.provider.completed",
-        {
-          operationId: claimed.id,
-          orderId: claimed.orderId,
-          resultCode: updated.pendingReason === "provider_conflict"
-            ? updated.failureCode
-            : updated.status.toUpperCase()
-        },
-      );
+      await this.scheduleNotification(updated);
+      this.observer.info("refund.provider.completed", {
+        operationId: claimed.id,
+        orderId: claimed.orderId,
+        resultCode: updated.status.toUpperCase()
+      });
       return updated;
     } catch (error) {
       if (error instanceof RefundProviderError) {
@@ -257,6 +260,23 @@ export class RefundService {
         "Stripe refund reconciliation is temporarily unavailable.",
         503,
       );
+    }
+  }
+
+  private async scheduleNotification(operation: StoredRefundOperation) {
+    if (
+      operation.status !== "succeeded" ||
+      !operation.notificationRequested ||
+      !this.notificationScheduler
+    ) return;
+    try {
+      await this.notificationScheduler.scheduleRefundNotification(operation.id);
+    } catch {
+      this.observer.error("refund.notification.scheduling_failed", {
+        operationId: operation.id,
+        orderId: operation.orderId,
+        resultCode: "MESSAGE_SCHEDULING_FAILED"
+      });
     }
   }
 }

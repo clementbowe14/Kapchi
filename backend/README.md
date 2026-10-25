@@ -66,6 +66,14 @@ API key. `STRIPE_WEBHOOK_SECRET` is only for webhook signature verification, and
 credentials created by `stripe login` belong to the Stripe CLI rather than the
 backend process.
 
+Admin customer messaging uses an optional provider-neutral delivery gateway
+and a durable PostgreSQL outbox. Configure the `MESSAGE_*` values shown in
+`.env.example`, apply migrations, and run `npm run messages:dispatch` from a
+scheduler. Without a configured sender/gateway, the API returns an actionable
+unavailable response rather than pretending a message was sent. See
+[Customer messaging](docs/customer-messaging.md) for the API, webhook,
+idempotency, consent, and retry contracts.
+
 To use seeded listings with Stripe Checkout, provision their test catalog after
 seeding. This is an explicit development command and is never run by server
 startup:

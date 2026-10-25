@@ -4,6 +4,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import Joi from "joi";
 import { config } from "../../config/index.js";
 import { getDatabasePool } from "../../database/index.js";
+import { hasStoreAdminRole } from "../admin-auth/index.js";
 import { authMiddleware } from "../auth/index.js";
 import { getGuestCartContext, hashSessionId } from "../cart/guest-session.js";
 
@@ -48,6 +49,23 @@ type UploadIntentBody = {
 type UploadPayload = UploadIntentBody & {
   assetId: string;
   issuedAt: string;
+};
+
+type UploadAuthorization = {
+  adminActor?: {
+    authSubject: string;
+    userId: string;
+  };
+  authenticatedUserId: string | null;
+  cartId: string | null;
+  createdByAuthSubject: string | null;
+};
+
+type AdminAssetAudit = {
+  actorAuthSubject: string;
+  actorUserId: string;
+  idempotencyKey: string;
+  requestId: string;
 };
 
 type BlobCompletion = {
@@ -110,19 +128,6 @@ function requestError(reply: FastifyReply, statusCode: number, error: string, me
     message,
     statusCode
   });
-}
-
-function isAdmin(request: FastifyRequest) {
-  const roles = request.auth?.roles ?? [];
-  const permissions = request.auth?.permissions ?? [];
-
-  return (
-    roles.includes("admin") ||
-    permissions.includes("assets:write") ||
-    permissions.includes("catalog:write") ||
-    permissions.includes("listings:write") ||
-    permissions.includes("fabrics:write")
-  );
 }
 
 function sanitizeFilename(filename: string) {
@@ -222,6 +227,7 @@ async function findInternalUserId(authSubject: string | undefined) {
       from users
       where auth_provider = 'clerk'
         and auth_subject = $1
+        and disabled_at is null
       limit 1
     `,
     [authSubject],
@@ -374,7 +380,7 @@ async function authorizeAdminUpload(
   reply: FastifyReply,
   body: UploadIntentBody,
 ) {
-  if (!request.auth || !isAdmin(request)) {
+  if (!request.auth || !hasStoreAdminRole(request.auth)) {
     return requestError(
       reply,
       403,
@@ -403,7 +409,20 @@ async function authorizeAdminUpload(
 
   const internalUserId = await findInternalUserId(request.auth.userId);
 
+  if (!internalUserId) {
+    return requestError(
+      reply,
+      403,
+      "ADMIN_ACTOR_UNAVAILABLE",
+      "A verified active store administrator profile is required.",
+    );
+  }
+
   return {
+    adminActor: {
+      authSubject: request.auth.userId,
+      userId: internalUserId
+    },
     authenticatedUserId: internalUserId,
     cartId: null,
     createdByAuthSubject: request.auth.userId
@@ -444,18 +463,16 @@ function buildTokenPayload(body: UploadIntentBody, assetId: string): UploadPaylo
 
 async function createPendingAsset(
   body: UploadIntentBody,
-  authorization: {
-    authenticatedUserId: string | null;
-    cartId: string | null;
-    createdByAuthSubject: string | null;
-  },
+  authorization: UploadAuthorization,
   assetId: string,
   pathname: string,
+  audit: AdminAssetAudit | null,
 ) {
   const visibility = defaultVisibility(body.context, body.visibility);
   const result = await getDatabasePool().query<AssetRow>(
     `
-      insert into assets (
+      with inserted as (
+        insert into assets (
         id,
         provider,
         content_type,
@@ -470,8 +487,34 @@ async function createPendingAsset(
         listing_customization_set_id,
         fabric_id,
         metadata
-      ) values ($1, 'vercel_blob', $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
-      returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status
+        ) values ($1, 'vercel_blob', $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
+        returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status
+      ), audited as (
+        insert into admin_audit_events (
+          actor_user_id,
+          actor_auth_subject,
+          capability,
+          action,
+          target_type,
+          target_id,
+          request_id,
+          idempotency_key,
+          metadata
+        )
+        select
+          $13::uuid,
+          $14,
+          'assets:write',
+          'asset.upload_intent.created',
+          'asset',
+          inserted.id::text,
+          $15,
+          $16,
+          $17::jsonb
+        from inserted
+        where $13::uuid is not null
+      )
+      select * from inserted
     `,
     [
       assetId,
@@ -489,6 +532,15 @@ async function createPendingAsset(
         expectedPathname: pathname,
         originalFilename: body.filename,
         source: "vercel_blob_client_upload_intent"
+      }),
+      audit?.actorUserId ?? null,
+      audit?.actorAuthSubject ?? null,
+      audit?.requestId ?? null,
+      audit?.idempotencyKey ?? null,
+      JSON.stringify({
+        context: body.context,
+        fabricId: body.fabricId ?? null,
+        listingId: body.listingId ?? null
       })
     ],
   );
@@ -534,11 +586,7 @@ function nullish(value: string | undefined) {
 function validatePendingAssetMatchesPayload(
   asset: PendingAssetRow | null,
   payload: UploadPayload,
-  authorization?: {
-    authenticatedUserId: string | null;
-    cartId: string | null;
-    createdByAuthSubject: string | null;
-  },
+  authorization?: UploadAuthorization,
 ) {
   if (!asset) {
     return "Upload asset not found.";
@@ -604,12 +652,52 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
 
       const assetId = randomUUID();
       const pathname = buildPathname(body.context, assetId, body.filename);
-      const asset = await createPendingAsset(
-        body,
-        authorization,
-        assetId,
-        pathname,
-      );
+      let audit: AdminAssetAudit | null = null;
+      if ("adminActor" in authorization && authorization.adminActor) {
+        const idempotencyKey = request.headers["idempotency-key"];
+        if (
+          typeof idempotencyKey !== "string" ||
+          idempotencyKey.length < 1 ||
+          idempotencyKey.length > 128
+        ) {
+          return requestError(
+            reply,
+            400,
+            "VALIDATION_ERROR",
+            "A valid Idempotency-Key header is required for admin asset uploads.",
+          );
+        }
+        audit = {
+          actorAuthSubject: authorization.adminActor.authSubject,
+          actorUserId: authorization.adminActor.userId,
+          idempotencyKey,
+          requestId: request.id
+        };
+      }
+      let asset: AssetRow;
+      try {
+        asset = await createPendingAsset(
+          body,
+          authorization,
+          assetId,
+          pathname,
+          audit,
+        );
+      } catch (createError) {
+        if (
+          audit &&
+          (createError as { constraint?: string }).constraint ===
+            "admin_audit_events_idempotency_idx"
+        ) {
+          return requestError(
+            reply,
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "This idempotency key was already used for an admin asset upload.",
+          );
+        }
+        throw createError;
+      }
       const payload = buildTokenPayload(body, asset.id);
 
       return {

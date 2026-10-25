@@ -14,6 +14,7 @@ import {
   InvalidProductionPriorityError
 } from "./errors.js";
 import type { AuthenticatedCartView, CartWarning } from "./claim-types.js";
+import { expireStaleFabricReservations } from "../admin-inventory/lifecycle.js";
 import {
   parseProductionEstimateSnapshot,
   productionEstimateSummary,
@@ -708,8 +709,21 @@ export class CartRepository {
     quantity: number,
     currentReservation: ReservationRow | null,
   ) {
-    const reusableQuantity =
-      currentReservation?.fabric_id === fabricId ? currentReservation.quantity : 0;
+    await expireStaleFabricReservations(client, fabricId);
+    const reusableReservation = currentReservation?.fabric_id === fabricId
+      ? (
+          await client.query<ReservationRow>(
+            `
+              select id, fabric_id, quantity
+              from fabric_reservations
+              where id = $1 and status = 'active'
+              for update
+            `,
+            [currentReservation.id],
+          )
+        ).rows[0] ?? null
+      : null;
+    const reusableQuantity = reusableReservation?.quantity ?? 0;
     const adjusted = await client.query<{ id: string }>(
       `
         update fabrics
@@ -726,15 +740,19 @@ export class CartRepository {
       throw new CartConflictError("The selected fabric does not have enough inventory.");
     }
 
-    if (currentReservation?.fabric_id === fabricId) {
-      await client.query(
+    if (reusableReservation) {
+      const updated = await client.query<{ id: string }>(
         `
           update fabric_reservations
           set quantity = $2, expires_at = $3
-          where id = $1
+          where id = $1 and status = 'active'
+          returning id
         `,
-        [currentReservation.id, quantity, cart.expires_at],
+        [reusableReservation.id, quantity, cart.expires_at],
       );
+      if (updated.rows.length !== 1) {
+        throw new CartConflictError("The selected fabric reservation changed.");
+      }
       return;
     }
 
@@ -753,22 +771,28 @@ export class CartRepository {
       return;
     }
 
-    await client.query(
-      `
-        update fabrics
-        set quantity_reserved = greatest(0, quantity_reserved - $2)
-        where id = $1
-      `,
-      [reservation.fabric_id, reservation.quantity],
-    );
-    await client.query(
+    const released = await client.query<ReservationRow>(
       `
         update fabric_reservations
         set status = 'released', expires_at = now()
         where id = $1 and status = 'active'
+        returning id, fabric_id, quantity
       `,
       [reservation.id],
     );
+    if (!released.rows[0]) return;
+    const adjusted = await client.query<{ id: string }>(
+      `
+        update fabrics
+        set quantity_reserved = quantity_reserved - $2
+        where id = $1 and quantity_reserved >= $2
+        returning id
+      `,
+      [released.rows[0].fabric_id, released.rows[0].quantity],
+    );
+    if (!adjusted.rows[0]) {
+      throw new CartConflictError("Fabric inventory changed while releasing a reservation.");
+    }
   }
 
   async attachAsset(client: Queryable, cartId: string, input: CartItemInput) {

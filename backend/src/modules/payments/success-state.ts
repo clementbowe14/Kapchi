@@ -44,6 +44,19 @@ type SuccessfulPaymentIdentifiers = {
   paymentIntentId?: string;
 };
 
+type FabricOrderItemRow = QueryResultRow & {
+  fabric_id: string;
+  order_item_id: string;
+  quantity: number;
+};
+
+type FabricReservationRow = QueryResultRow & {
+  fabric_id: string;
+  order_item_id: string;
+  quantity: number;
+  reservation_id: string;
+};
+
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -103,6 +116,7 @@ async function handleSuccessfulPayment(
       };
     }
 
+    await consumeFabricInventory(client, order.id);
     await markOrderPaid(client, order, identifiers);
     await insertOrderPaidEvent(client, order, identifiers);
     await client.query("commit");
@@ -114,6 +128,114 @@ async function handleSuccessfulPayment(
   } catch (error) {
     await client.query("rollback");
     throw error;
+  }
+}
+
+export async function consumeFabricInventory(
+  client: QueryableClient,
+  orderId: string,
+) {
+  const items = await client.query<FabricOrderItemRow>(
+    `
+      select oi.id as order_item_id, oi.fabric_id, oi.quantity
+      from order_items oi
+      join fabrics f on f.id = oi.fabric_id
+      where oi.order_id = $1::uuid and oi.fabric_id is not null
+      order by oi.fabric_id, oi.id
+      for update of oi, f
+    `,
+    [orderId],
+  );
+  const reservations = await client.query<FabricReservationRow>(
+    `
+      select
+        fr.id as reservation_id,
+        fr.fabric_id,
+        fr.order_item_id,
+        fr.quantity
+      from fabric_reservations fr
+      where fr.order_id = $1::uuid
+        and fr.status = 'active'
+      order by fr.fabric_id, fr.order_item_id, fr.id
+      for update
+    `,
+    [orderId],
+  );
+  const reservationByItem = new Map(
+    reservations.rows.map((reservation) => [reservation.order_item_id, reservation]),
+  );
+  const totals = new Map<string, number>();
+
+  for (const item of items.rows) {
+    const reservation = reservationByItem.get(item.order_item_id);
+    if (
+      !reservation ||
+      reservation.fabric_id !== item.fabric_id ||
+      reservation.quantity !== item.quantity
+    ) {
+      throw new Error("Fabric reservation does not match the paid order item.");
+    }
+    totals.set(item.fabric_id, (totals.get(item.fabric_id) ?? 0) + item.quantity);
+  }
+  if (reservations.rows.length !== items.rows.length) {
+    throw new Error("Paid order has conflicting fabric reservations.");
+  }
+  if (items.rows.length === 0) return;
+
+  for (const [fabricId, quantity] of totals) {
+    const updated = await client.query<{ id: string }>(
+      `
+        update fabrics
+        set quantity_on_hand = quantity_on_hand - $2,
+            quantity_reserved = quantity_reserved - $2,
+            quantity_sold = quantity_sold + $2
+        where id = $1::uuid
+          and quantity_on_hand >= $2
+          and quantity_reserved >= $2
+        returning id
+      `,
+      [fabricId, quantity],
+    );
+    if (updated.rows.length !== 1) {
+      throw new Error("Fabric inventory changed before payment could be recorded.");
+    }
+  }
+
+  const converted = await client.query<{ id: string }>(
+    `
+      update fabric_reservations
+      set status = 'converted', expires_at = now()
+      where id = any($1::uuid[]) and status = 'active'
+      returning id
+    `,
+    [reservations.rows.map((reservation) => reservation.reservation_id)],
+  );
+  if (converted.rows.length !== reservations.rows.length) {
+    throw new Error("Fabric reservations changed before payment could be recorded.");
+  }
+
+  for (const item of items.rows) {
+    await client.query(
+      `
+        insert into fabric_inventory_events (
+          fabric_id, order_item_id, event_type, source, idempotency_key,
+          request_fingerprint, delta_on_hand, delta_sold, reason, metadata
+        ) values (
+          $1::uuid, $2::uuid, 'payment_consumed', 'system', $3, $4,
+          $5, $6, 'Stripe payment succeeded', $7::jsonb
+        )
+        on conflict (idempotency_key) do nothing
+      `,
+      [
+        item.fabric_id,
+        item.order_item_id,
+        `payment-consume:${item.order_item_id}`,
+        `order:${orderId}:item:${item.order_item_id}:quantity:${item.quantity}`,
+        -item.quantity,
+        item.quantity,
+        JSON.stringify({ orderId })
+      ],
+    );
   }
 }
 

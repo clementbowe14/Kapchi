@@ -2,13 +2,17 @@ import fp from "fastify-plugin";
 import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
 import type { Pool } from "pg";
-import { authMiddleware, requirePermission } from "../auth/index.js";
+import { config } from "../../config/index.js";
+import { adminRoute } from "../admin-auth/index.js";
+import { HttpMessageProvider } from "../admin-messaging/provider.js";
+import { AdminMessagingRepository } from "../admin-messaging/repository.js";
+import { AdminMessagingService } from "../admin-messaging/service.js";
 import { createStripeClient } from "../payments/stripe-client.js";
 import { RefundError } from "./errors.js";
 import { StripeRefundProvider, type RefundProvider } from "./provider.js";
 import { RefundRepository } from "./repository.js";
 import { RefundService, type RefundObserver, type RefundRepositoryPort } from "./service.js";
-import { REFUND_PERMISSION, type RefundRequest } from "./types.js";
+import type { RefundRequest } from "./types.js";
 
 const orderParams = Joi.object({ orderId: Joi.string().guid().required() }).required();
 const operationParams = Joi.object({ operationId: Joi.string().guid().required() }).required();
@@ -58,14 +62,36 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
   const plugin: FastifyPluginAsync = async (fastify) => {
     const provider = dependencies.providerFactory?.() ?? new StripeRefundProvider(createStripeClient());
     const repository = dependencies.repositoryFactory?.(fastify.pg) ?? new RefundRepository(fastify.pg);
-    const serviceFor = (logger: FastifyBaseLogger) =>
-      dependencies.serviceFactory?.(repository, provider, observer(logger)) ??
-      new RefundService(repository, provider, observer(logger));
-    const protectedRoute = [authMiddleware, requirePermission(REFUND_PERMISSION)];
+    const serviceFor = (logger: FastifyBaseLogger) => {
+      const lifecycleObserver = observer(logger);
+      const injected = dependencies.serviceFactory?.(
+        repository,
+        provider,
+        lifecycleObserver,
+      );
+      if (injected) return injected;
+      const messagingConfig = config.messaging ?? {
+        delivery: {},
+        senders: {},
+        webhookSecret: undefined
+      };
+      return new RefundService(
+        repository,
+        provider,
+        lifecycleObserver,
+        new AdminMessagingService(
+          new AdminMessagingRepository(fastify.pg),
+          new HttpMessageProvider(messagingConfig.delivery),
+          messagingConfig.senders,
+          lifecycleObserver,
+        ),
+      );
+    };
+    const protectedRoute = adminRoute("refunds:write");
 
     fastify.get<{ Params: { orderId: string } }>(
       "/orders/:orderId/refunds/summary",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const parsed = orderParams.validate(request.params, { allowUnknown: false });
         if (parsed.error) return reply.code(400).send({ error: "VALIDATION_ERROR", message: parsed.error.message, statusCode: 400 });
@@ -79,7 +105,7 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 
     fastify.post<{ Params: { orderId: string } }>(
       "/orders/:orderId/refunds",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const params = orderParams.validate(request.params, { allowUnknown: false });
         const body = bodySchema.validate(request.body, { allowUnknown: false, abortEarly: false });
@@ -113,7 +139,7 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 
     fastify.get<{ Params: { operationId: string } }>(
       "/refunds/:operationId",
-      { preHandler: protectedRoute },
+      protectedRoute,
       async (request, reply) => {
         const parsed = operationParams.validate(request.params, { allowUnknown: false });
         if (parsed.error) return reply.code(400).send({ error: "VALIDATION_ERROR", message: parsed.error.message, statusCode: 400 });
@@ -129,4 +155,3 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
 }
 
 export default createRefundPlugin();
-

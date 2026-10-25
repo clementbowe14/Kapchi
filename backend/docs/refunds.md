@@ -65,8 +65,9 @@ response means Kapchi could not durably record the verified event.
 
 Amount-only refunds are unallocated and may include merchandise, shipping, or
 tax. They do not infer returned units. Restock and customer-notification choices
-are recorded separately; execution remains unsupported until issues #32 and
-#12 provide their contracts. Effect failures never retry financial work.
+are recorded separately. Confirmed returned units use the inventory contract
+from #32; requested customer notifications enter the durable messaging outbox
+from #12 only after refund success. Effect failures never retry financial work.
 
 ## Verification
 
