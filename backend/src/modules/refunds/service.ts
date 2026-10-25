@@ -146,7 +146,10 @@ export class RefundService {
   private async recover(current: StoredRefundOperation) {
     if (current.providerRefundId) {
       try {
-        const refund = await this.provider.retrieveRefund(current.providerRefundId);
+        const refund = await this.provider.retrieveRefund(
+          current.providerRefundId,
+          current.livemode,
+        );
         const updated = await this.repository.applyProviderResult(current.id, refund);
         await this.scheduleNotification(updated);
         return updated;
