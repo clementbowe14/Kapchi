@@ -39,6 +39,10 @@ timeline pagination.
 Refund API, recovery-worker, and operational behavior is documented in
 [Refund ledger and reconciliation](docs/refunds.md).
 
+Kapchi does not integrate with Shippo or require a shipping-provider API key.
+See [Shipping label workflow](docs/shipping-label-workflow.md) for the current
+manual Pirate Ship process and the boundaries for future automation.
+
 ## Requirements
 
 - Node.js `>= 20.9.0`
