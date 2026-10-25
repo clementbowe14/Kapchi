@@ -20,7 +20,6 @@ const envDefaults: Record<string, string> = {
   DATABASE_URL: "postgres://user:pass@localhost:5432/kapchi_test",
   NODE_ENV: "test",
   REDIS_URL: "redis://localhost:6379",
-  SHIPPO_API_KEY: "test-shippo-key",
   STRIPE_SECRET_KEY: "sk_test_123",
   STRIPE_WEBHOOK_SECRET: "whsec_test"
 };

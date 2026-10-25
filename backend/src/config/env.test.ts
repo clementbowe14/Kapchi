@@ -26,6 +26,15 @@ for (const [key, value] of Object.entries({
 const { validateEnvironment } = await import("./env.js");
 
 describe("checkout redirect environment", () => {
+  it("starts without a shipping-provider credential", () => {
+    const environment = validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "test"
+    });
+
+    expect(environment).not.toHaveProperty("SHIPPO_API_KEY");
+  });
+
   it("keeps localhost defaults for development and test", () => {
     const environment = validateEnvironment({
       ...requiredEnvironment,
