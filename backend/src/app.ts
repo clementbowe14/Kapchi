@@ -9,6 +9,7 @@ import adminAnalyticsPlugin from "./modules/admin-analytics/plugin.js";
 import adminBoundaryPlugin from "./modules/admin-auth/boundary.js";
 import adminInventoryPlugin from "./modules/admin-inventory/plugin.js";
 import adminMessagingPlugin from "./modules/admin-messaging/plugin.js";
+import adminOrdersPlugin from "./modules/admin-orders/plugin.js";
 import { authPlugin } from "./modules/auth/index.js";
 import assetsPlugin from "./modules/assets/plugin.js";
 import cartPlugin from "./modules/cart/plugin.js";
@@ -59,6 +60,7 @@ export async function buildServer() {
   await app.register(adminAnalyticsPlugin, { prefix: "/admin/analytics" });
   await app.register(adminInventoryPlugin, { prefix: "/admin/inventory" });
   await app.register(adminMessagingPlugin);
+  await app.register(adminOrdersPlugin, { prefix: "/admin/orders" });
   await app.register(assetsPlugin, { prefix: "/assets" });
   await app.register(usersPlugin, { prefix: "/users" });
   await app.register(listingsPlugin, { prefix: "/listings" });
