@@ -39,6 +39,7 @@ function pendingOperation(overrides: Partial<StoredRefundOperation> = {}): Store
     failedAt: null,
     failureCode: null,
     id: "3de37830-b86f-43bb-a0b1-d6938b85ad59",
+    livemode: false,
     manualReviewRequired: false,
     nextReconciliationAt: new Date().toISOString(),
     notificationRequested: true,
@@ -221,6 +222,33 @@ describe("RefundService", () => {
     });
   });
 
+  it("uses the operation mode when recovering a provider refund", async () => {
+    const { provider, repository, setStored } = dependencies();
+    const current = pendingOperation({
+      livemode: true,
+      pendingReason: "provider_pending",
+      providerRefundId: "re_live"
+    });
+    setStored(current);
+    provider.retrieveRefund.mockResolvedValue({
+      amountCents: current.amountCents,
+      chargeId: "ch_live",
+      createdAt: new Date(),
+      currency: current.currency,
+      failureCode: null,
+      id: "re_live",
+      livemode: true,
+      metadata: { operationId: current.id, orderId: current.orderId },
+      paymentIntentId: current.paymentIntentId,
+      status: "succeeded"
+    });
+    const service = new RefundService(repository, provider);
+
+    await service.getOperation(current.id);
+
+    expect(provider.retrieveRefund).toHaveBeenCalledWith("re_live", true);
+  });
+
   it("rejects reuse of a client key for different input", async () => {
     const { provider, repository, setStored } = dependencies();
     setStored(pendingOperation({ requestFingerprint: "different" }));
@@ -228,7 +256,10 @@ describe("RefundService", () => {
 
     await expect(
       service.create(pendingOperation().orderId, actor, request, "refund-key"),
-    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    ).rejects.toMatchObject({
+      code: "IDEMPOTENCY_CONFLICT",
+      operationId: undefined
+    });
     expect(provider.createRefund).not.toHaveBeenCalled();
   });
 });

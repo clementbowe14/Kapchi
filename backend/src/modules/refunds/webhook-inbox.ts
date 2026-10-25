@@ -126,7 +126,17 @@ export class StripeWebhookInbox {
       ],
     );
     if (receipt.rows.length === 0) {
-      return { duplicate: true, processingStatus: "processed" };
+      const existing = await this.pool.query<{ processing_status: string }>(
+        `select processing_status from stripe_webhook_events where stripe_event_id = $1`,
+        [event.id],
+      );
+      const storedStatus = existing.rows[0]?.processing_status;
+      const processingStatus = storedStatus === "processed"
+        ? "processed"
+        : storedStatus === "unmatched"
+          ? "unmatched"
+          : "retryable";
+      return { duplicate: true, processingStatus };
     }
 
     try {

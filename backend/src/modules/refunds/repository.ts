@@ -17,6 +17,7 @@ type OperationRow = QueryResultRow & {
   dispatch_ever_claimed: boolean;
   failed_at: Date | string | null;
   id: string;
+  livemode: boolean;
   manual_review_required: boolean;
   next_reconciliation_at: Date | string | null;
   notification_requested: boolean;
@@ -44,6 +45,7 @@ type PaymentStateRow = QueryResultRow & {
 
 export type StoredRefundOperation = RefundOperation & {
   dispatchEverClaimed: boolean;
+  livemode: boolean;
   paymentIntentId: string;
   providerAccountId: string;
   providerAttemptCount: number;
@@ -67,6 +69,7 @@ function operation(row: OperationRow): StoredRefundOperation {
     failedAt: iso(row.failed_at),
     failureCode: row.provider_failure_code,
     id: row.id,
+    livemode: row.livemode,
     manualReviewRequired: row.manual_review_required,
     nextReconciliationAt: iso(row.next_reconciliation_at),
     notificationRequested: row.notification_requested,
@@ -115,7 +118,7 @@ async function transaction<T>(pool: Pool, callback: (client: PoolClient) => Prom
 }
 
 const operationColumns = `
-  id, order_id, payment_intent_id, provider_account_id, amount_cents, currency,
+  id, order_id, payment_intent_id, provider_account_id, livemode, amount_cents, currency,
   reason_code, status, pending_reason, provider_refund_id,
   client_idempotency_key, provider_idempotency_key, request_fingerprint,
   provider_failure_code, provider_attempt_count, dispatch_ever_claimed,
@@ -515,6 +518,38 @@ export class RefundRepository {
       const row = rowResult.rows[0];
       if (!row) throw new RefundError("REFUND_NOT_FOUND", "Refund operation not found.", 404);
       await client.query(`select id from orders where id = $1::uuid for update`, [row.order_id]);
+      const mismatch =
+        (refund.paymentIntentId !== row.payment_intent_id && "payment_intent") ||
+        (refund.amountCents !== row.amount_cents && "amount") ||
+        (refund.currency !== row.currency && "currency") ||
+        (refund.livemode !== row.livemode && "livemode") ||
+        (row.provider_refund_id !== null && refund.id !== row.provider_refund_id && "refund_id") ||
+        (refund.metadata.operationId !== undefined && refund.metadata.operationId !== row.id && "operation_id") ||
+        (refund.metadata.orderId !== undefined && refund.metadata.orderId !== row.order_id && "order_id") ||
+        null;
+      if (mismatch) {
+        const conflict = await client.query<OperationRow>(
+          `
+            update refund_operations
+            set pending_reason = 'provider_conflict', manual_review_required = true,
+                provider_failure_code = $2, next_reconciliation_at = null,
+                dispatch_lease_owner = null, dispatch_lease_expires_at = null
+            where id = $1::uuid
+            returning ${operationColumns}
+          `,
+          [operationId, `provider_response_${mismatch}_mismatch`],
+        );
+        await client.query(
+          `
+            update payment_reconciliation_state
+            set reconciliation_status = 'conflicted',
+                last_reconciliation_error_code = 'PROVIDER_RESPONSE_MISMATCH'
+            where order_id = $1::uuid
+          `,
+          [row.order_id],
+        );
+        return operation(conflict.rows[0]!);
+      }
       const state = providerState(refund);
       await this.updateProviderRow(client, operationId, refund, state);
       const payment = await client.query<{ captured_amount_cents: number }>(
@@ -560,7 +595,7 @@ export class RefundRepository {
             next_reconciliation_at = case when $3 then now() + interval '1 minute' else null end,
             dispatch_lease_owner = null, dispatch_lease_expires_at = null
         where id = $1::uuid
-        returning r.*
+        returning ${operationColumns}
       `,
       [operationId, code, ambiguous],
     );

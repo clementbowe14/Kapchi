@@ -10,6 +10,7 @@ export type CreateProviderRefundInput = {
   amountCents: number;
   currency: string;
   idempotencyKey: string;
+  livemode: boolean;
   operationId: string;
   orderId: string;
   paymentIntentId: string;
@@ -19,7 +20,7 @@ export type CreateProviderRefundInput = {
 export interface RefundProvider {
   createRefund(input: CreateProviderRefundInput): Promise<ProviderRefund>;
   reconcilePayment(paymentIntentId: string): Promise<ProviderPaymentSnapshot>;
-  retrieveRefund(refundId: string): Promise<ProviderRefund>;
+  retrieveRefund(refundId: string, livemode: boolean): Promise<ProviderRefund>;
 }
 
 function idOf(value: string | { id: string } | null | undefined) {
@@ -83,15 +84,15 @@ export class StripeRefundProvider implements RefundProvider {
         },
         { idempotencyKey: input.idempotencyKey },
       );
-      return mapRefund(refund);
+      return mapRefund(refund, input.livemode);
     } catch (error) {
       throw providerError(error);
     }
   }
 
-  async retrieveRefund(refundId: string) {
+  async retrieveRefund(refundId: string, livemode: boolean) {
     try {
-      return mapRefund(await this.stripe.refunds.retrieve(refundId));
+      return mapRefund(await this.stripe.refunds.retrieve(refundId), livemode);
     } catch (error) {
       throw providerError(error);
     }

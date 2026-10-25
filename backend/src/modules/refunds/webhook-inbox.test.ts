@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { projectStripeEvent } from "./webhook-inbox.js";
+import { describe, expect, it, vi } from "vitest";
+import { projectStripeEvent, StripeWebhookInbox } from "./webhook-inbox.js";
 
 describe("projectStripeEvent", () => {
   it("keeps only allowlisted refund fields and metadata", () => {
@@ -76,3 +76,31 @@ describe("projectStripeEvent", () => {
   });
 });
 
+describe("StripeWebhookInbox", () => {
+  it("reports the persisted retry state when a duplicate event arrives", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ processing_status: "retryable" }] });
+    const inbox = new StripeWebhookInbox(
+      { query } as never,
+      {} as never,
+    );
+    const event = {
+      api_version: "2026-02-25.clover",
+      created: 1_790_000_000,
+      data: { object: { id: "obj_ignored", object: "unknown" } },
+      id: "evt_duplicate",
+      livemode: false,
+      object: "event",
+      pending_webhooks: 1,
+      request: null,
+      type: "unknown.event"
+    } as never;
+
+    await expect(inbox.receive(event, "raw-payload")).resolves.toEqual({
+      duplicate: true,
+      processingStatus: "retryable"
+    });
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+});
