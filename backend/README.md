@@ -32,6 +32,10 @@ troubleshooting.
 See [Admin sales analytics](docs/admin-sales-analytics.md) for the bounded,
 single-currency reporting contract and metric definitions.
 
+See [Admin order read API](docs/admin-orders.md) for authorized order search,
+immutable production detail, reconciliation-backed balances, and unified
+timeline pagination.
+
 Refund API, recovery-worker, and operational behavior is documented in
 [Refund ledger and reconciliation](docs/refunds.md).
 
