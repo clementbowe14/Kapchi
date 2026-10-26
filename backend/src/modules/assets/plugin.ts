@@ -7,6 +7,7 @@ import { getDatabasePool } from "../../database/index.js";
 import { hasStoreAdminRole } from "../admin-auth/index.js";
 import { authMiddleware } from "../auth/index.js";
 import { getGuestCartContext, hashSessionId } from "../cart/guest-session.js";
+import { buildAssetPathname } from "./pathname.js";
 
 type AssetContext = "customization_image" | "catalog_listing_image" | "fabric_image";
 type AssetVisibility = "private" | "public_catalog";
@@ -130,16 +131,6 @@ function requestError(reply: FastifyReply, statusCode: number, error: string, me
   });
 }
 
-function sanitizeFilename(filename: string) {
-  const normalized = filename
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return normalized || "upload";
-}
-
 function defaultVisibility(context: AssetContext, requested?: AssetVisibility): AssetVisibility {
   if (context === "customization_image") {
     return "private";
@@ -184,10 +175,6 @@ function storageKeyFromBlob(blob: BlobCompletion) {
   }
 
   return new URL(blob.url).pathname.replace(/^\/+/, "");
-}
-
-function buildPathname(context: AssetContext, assetId: string, filename: string) {
-  return ["kapchi", context, assetId, sanitizeFilename(filename)].join("/");
 }
 
 function assertConfiguredCallbackSecret(request: FastifyRequest, reply: FastifyReply) {
@@ -651,7 +638,7 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
       }
 
       const assetId = randomUUID();
-      const pathname = buildPathname(body.context, assetId, body.filename);
+      const pathname = buildAssetPathname(body.context, assetId, body.filename);
       let audit: AdminAssetAudit | null = null;
       if ("adminActor" in authorization && authorization.adminActor) {
         const idempotencyKey = request.headers["idempotency-key"];

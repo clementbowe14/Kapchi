@@ -1,5 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
+import { config } from "../../config/index.js";
 
 const healthPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.get("/health", async () => ({
@@ -11,6 +12,13 @@ const healthPlugin: FastifyPluginAsync = async (fastify) => {
     await fastify.pg.query("select 1");
 
     return {
+      dependencies: {
+        privateAssetProvider: config.assets.privateReads.vercel.token ||
+          (config.assets.privateReads.vercel.oidcToken &&
+            config.assets.privateReads.vercel.storeId)
+          ? "ready"
+          : "unconfigured"
+      },
       service: "kapchi-backend",
       status: "ready"
     };

@@ -48,6 +48,10 @@ DATABASE_IDLE_TIMEOUT_MS=30000
 STRIPE_API_VERSION=2026-02-25.clover
 ASSET_UPLOAD_ALLOWED_IMAGE_TYPES=image/jpeg,image/png,image/webp
 ASSET_UPLOAD_MAX_IMAGE_BYTES=5242880
+ASSET_PRIVATE_OPEN_TIMEOUT_MS=5000
+ASSET_PRIVATE_IDLE_TIMEOUT_MS=15000
+ASSET_PRIVATE_TOTAL_TIMEOUT_MS=60000
+ASSET_PRIVATE_CROSS_ORIGIN_POLICY=same-site
 ```
 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is also needed at build time for the Next.js
@@ -57,7 +61,10 @@ Vercel Blob customer upload support uses `BLOB_READ_WRITE_TOKEN` in the Next.js
 runtime and `ASSET_UPLOAD_CALLBACK_SECRET` in both the Next.js and Fastify
 runtimes. Fastify authorizes upload intent and stores canonical provider-neutral
 asset metadata; the Next.js route only handles the Vercel Blob token exchange
-and completion callback.
+and completion callback. The Fastify runtime also uses server-only Blob
+credentials to stream purchased private customization images to authenticated
+administrators. Vercel deployments may use `VERCEL_OIDC_TOKEN` plus
+`BLOB_STORE_ID`; other hosts use `BLOB_READ_WRITE_TOKEN`.
 
 Configure production PostgreSQL credentials in the deployment platform's
 encrypted runtime environment or managed database binding, not in committed

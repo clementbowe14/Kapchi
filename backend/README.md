@@ -36,6 +36,10 @@ See [Admin order read API](docs/admin-orders.md) for authorized order search,
 immutable production detail, reconciliation-backed balances, and unified
 timeline pagination.
 
+See [Private admin customization assets](docs/private-admin-assets.md) for
+purchased-order binding, authenticated image streaming, provider configuration,
+content validation, and access auditing.
+
 Refund API, recovery-worker, and operational behavior is documented in
 [Refund ledger and reconciliation](docs/refunds.md).
 

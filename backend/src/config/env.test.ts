@@ -26,6 +26,32 @@ for (const [key, value] of Object.entries({
 const { validateEnvironment } = await import("./env.js");
 
 describe("checkout redirect environment", () => {
+  it("keeps private asset provider credentials optional", () => {
+    const environment = validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "test"
+    });
+
+    expect(environment.BLOB_READ_WRITE_TOKEN).toBeUndefined();
+    expect(environment.ASSET_PRIVATE_OPEN_TIMEOUT_MS).toBe(5000);
+    expect(environment.ASSET_PRIVATE_IDLE_TIMEOUT_MS).toBe(15000);
+    expect(environment.ASSET_PRIVATE_TOTAL_TIMEOUT_MS).toBe(60000);
+    expect(environment.ASSET_PRIVATE_CROSS_ORIGIN_POLICY).toBe("same-site");
+  });
+
+  it("rejects unsafe private asset timeout and resource-policy values", () => {
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      ASSET_PRIVATE_OPEN_TIMEOUT_MS: "999",
+      NODE_ENV: "test"
+    })).toThrow(/ASSET_PRIVATE_OPEN_TIMEOUT_MS/);
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      ASSET_PRIVATE_CROSS_ORIGIN_POLICY: "allow-all",
+      NODE_ENV: "test"
+    })).toThrow(/ASSET_PRIVATE_CROSS_ORIGIN_POLICY/);
+  });
+
   it("starts without a shipping-provider credential", () => {
     const environment = validateEnvironment({
       ...requiredEnvironment,

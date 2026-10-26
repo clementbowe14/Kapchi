@@ -24,7 +24,7 @@ ownership fields, or permissions as authorization evidence.
 | --- | --- | --- |
 | `orders:read` | read | Orders, order items, exports, and nested resources |
 | `customers:read` | read | Customer profiles and contacts |
-| `assets:read` | read | Catalog assets and private customization metadata |
+| `assets:read` | read | Catalog assets and private customization metadata/content |
 | `reports:read` | read | Sales reports and admin exports |
 | `inventory:read` | read | Fabric pools and reservation summaries |
 | `assets:write` | write | Catalog listing and fabric images |
@@ -89,6 +89,10 @@ before an admin mutation. The client cannot choose the actor.
   timestamp. A feature-specific ledger, such as the shared fabric inventory
   event ledger, remains the sole audit source for that domain and must not also
   write a duplicate generic event.
+- Private customization content reads use the dedicated
+  `admin_private_asset_access_events` ledger. An `opened` record must be durable
+  before response headers are sent; stream completion or failure is updated
+  afterward on a best-effort basis.
 - Financial records remain in the refund/payment ledgers. Message content and
   delivery state remain in message records. Audit events reference the action
   and identifiers; they do not duplicate financial amounts, provider payloads,

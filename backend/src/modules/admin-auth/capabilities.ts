@@ -5,7 +5,11 @@ export const STORE_ADMIN_ROLE = "admin";
 export const ADMIN_CAPABILITY_MATRIX = {
   "assets:read": {
     access: "read",
-    resources: ["catalog assets", "private customization asset metadata"]
+    resources: [
+      "catalog assets",
+      "private customization asset metadata",
+      "private customization asset content"
+    ]
   },
   "assets:write": {
     access: "write",
