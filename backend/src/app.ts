@@ -6,6 +6,7 @@ import * as fastify from "fastify";
 import { config } from "./config/index.js";
 import { closeDatabasePool } from "./database/index.js";
 import adminAnalyticsPlugin from "./modules/admin-analytics/plugin.js";
+import adminAssetsPlugin from "./modules/admin-assets/plugin.js";
 import adminBoundaryPlugin from "./modules/admin-auth/boundary.js";
 import adminInventoryPlugin from "./modules/admin-inventory/plugin.js";
 import adminMessagingPlugin from "./modules/admin-messaging/plugin.js";
@@ -30,10 +31,12 @@ import requestObservabilityPlugin, {
 
 export async function buildServer() {
   const app = fastify.fastify({
-    disableRequestLogging: true,
     genReqId: generateRequestId,
     logger: createLoggerOptions(config.app.logLevel),
-    requestIdLogLabel: "requestId"
+    logController: new fastify.LogController({
+      disableRequestLogging: true,
+      requestIdLogLabel: "requestId"
+    })
   });
 
   await app.register(requestObservabilityPlugin);
@@ -58,6 +61,7 @@ export async function buildServer() {
   await app.register(healthPlugin);
 
   await app.register(adminAnalyticsPlugin, { prefix: "/admin/analytics" });
+  await app.register(adminAssetsPlugin, { prefix: "/admin/orders" });
   await app.register(adminInventoryPlugin, { prefix: "/admin/inventory" });
   await app.register(adminMessagingPlugin);
   await app.register(adminOrdersPlugin, { prefix: "/admin/orders" });

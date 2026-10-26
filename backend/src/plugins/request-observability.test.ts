@@ -1,5 +1,5 @@
 import { Writable } from "node:stream";
-import fastify from "fastify";
+import fastify, { LogController } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { createLoggerOptions } from "../observability/logger.js";
 import {
@@ -16,13 +16,15 @@ function buildTestServer(now: () => number = () => performance.now()) {
     }
   });
   const app = fastify({
-    disableRequestLogging: true,
     genReqId: generateRequestId,
     logger: {
       ...createLoggerOptions("info"),
       stream
     },
-    requestIdLogLabel: "requestId"
+    logController: new LogController({
+      disableRequestLogging: true,
+      requestIdLogLabel: "requestId"
+    })
   });
 
   return {

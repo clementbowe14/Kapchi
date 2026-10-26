@@ -64,6 +64,27 @@ const environmentSchema = Joi.object({
     .integer()
     .min(1)
     .default(5 * 1024 * 1024),
+  ASSET_PRIVATE_OPEN_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(15000)
+    .default(5000),
+  ASSET_PRIVATE_IDLE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(60000)
+    .default(15000),
+  ASSET_PRIVATE_TOTAL_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5000)
+    .max(120000)
+    .default(60000),
+  ASSET_PRIVATE_CROSS_ORIGIN_POLICY: Joi.string()
+    .valid("same-origin", "same-site", "cross-origin")
+    .default("same-site"),
+  BLOB_READ_WRITE_TOKEN: Joi.string().trim().optional(),
+  BLOB_STORE_ID: Joi.string().trim().optional(),
+  VERCEL_OIDC_TOKEN: Joi.string().trim().optional(),
   MESSAGE_DELIVERY_URL: Joi.string()
     .uri({ scheme: ["http", "https"] })
     .optional(),
@@ -75,9 +96,15 @@ const environmentSchema = Joi.object({
 }).unknown(true);
 
 type EnvironmentShape = {
+  ASSET_PRIVATE_CROSS_ORIGIN_POLICY: "cross-origin" | "same-origin" | "same-site";
+  ASSET_PRIVATE_IDLE_TIMEOUT_MS: number;
+  ASSET_PRIVATE_OPEN_TIMEOUT_MS: number;
+  ASSET_PRIVATE_TOTAL_TIMEOUT_MS: number;
   ASSET_UPLOAD_ALLOWED_IMAGE_TYPES: string;
   ASSET_UPLOAD_CALLBACK_SECRET?: string;
   ASSET_UPLOAD_MAX_IMAGE_BYTES: number;
+  BLOB_READ_WRITE_TOKEN?: string;
+  BLOB_STORE_ID?: string;
   CLERK_JWKS_URL: string;
   CLERK_JWT_ISSUER: string;
   CLERK_PUBLISHABLE_KEY: string;
@@ -108,6 +135,7 @@ type EnvironmentShape = {
   STRIPE_CHECKOUT_SUCCESS_URL: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
+  VERCEL_OIDC_TOKEN?: string;
 };
 
 type ValidatedEnvironmentShape = EnvironmentShape & {
@@ -210,6 +238,17 @@ export const config = Object.freeze({
       .map((contentType) => contentType.trim())
       .filter(Boolean),
     maxImageBytes: environment.ASSET_UPLOAD_MAX_IMAGE_BYTES,
+    privateReads: {
+      crossOriginPolicy: environment.ASSET_PRIVATE_CROSS_ORIGIN_POLICY,
+      idleTimeoutMs: environment.ASSET_PRIVATE_IDLE_TIMEOUT_MS,
+      openTimeoutMs: environment.ASSET_PRIVATE_OPEN_TIMEOUT_MS,
+      totalTimeoutMs: environment.ASSET_PRIVATE_TOTAL_TIMEOUT_MS,
+      vercel: {
+        oidcToken: environment.VERCEL_OIDC_TOKEN,
+        storeId: environment.BLOB_STORE_ID,
+        token: environment.BLOB_READ_WRITE_TOKEN
+      }
+    },
     uploadCallbackSecret: environment.ASSET_UPLOAD_CALLBACK_SECRET
   },
   auth: {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import cookie from "@fastify/cookie";
-import fastify from "fastify";
+import fastify, { LogController } from "fastify";
 import type { Pool } from "pg";
 import type { RedisClientType } from "redis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1013,7 +1013,7 @@ describe("cartPlugin", () => {
     const app = fastify({
       genReqId: (request) => String(request.headers["x-request-id"]),
       logger: { level: "info", stream },
-      requestIdLogLabel: "requestId"
+      logController: new LogController({ requestIdLogLabel: "requestId" })
     });
     mocks.verifyClerkToken.mockResolvedValue({
       claims: {},
@@ -1059,7 +1059,7 @@ describe("cartPlugin", () => {
     const app = fastify({
       genReqId: (request) => String(request.headers["x-request-id"]),
       logger: { level: "info", stream },
-      requestIdLogLabel: "requestId"
+      logController: new LogController({ requestIdLogLabel: "requestId" })
     });
     await registerInjectedCartPlugin({ app, database, redis, service });
 
