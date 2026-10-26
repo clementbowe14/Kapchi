@@ -36,6 +36,7 @@ type OrderRow = QueryResultRow & {
   pending_refund_cents: number | string;
   preferred_contact_method: CustomerSnapshot["preferredContactMethod"];
   public_order_number: string;
+  revision: number;
   shipped_at: Date | string | null;
   shipping_address: Record<string, unknown> | null;
   shipping_name: string | null;
@@ -84,6 +85,7 @@ type TimelineRow = QueryResultRow & {
 const orderColumns = `
   orders.id,
   orders.public_order_number,
+  orders.revision,
   orders.status,
   orders.payment_status,
   orders.fulfillment_status,
@@ -201,6 +203,7 @@ function summary(row: OrderRow): AdminOrderSummary {
     payment: payment(row),
     paymentStatus: row.payment_status,
     publicOrderNumber: row.public_order_number,
+    revision: row.revision,
     status: row.status,
     total: {
       amountMinor: safeInteger(row.total_cents, "order total"),

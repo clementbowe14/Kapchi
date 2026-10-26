@@ -48,6 +48,31 @@ export type AdminOrderTimelineQuery = {
   limit: number;
 };
 
+export type AdminOrderMutationCommand =
+  | "start_production"
+  | "mark_ready_to_ship";
+
+export type AdminOrderMutationInput = {
+  expectedRevision: number;
+  reason?: string;
+};
+
+export type AdminOrderMutationActor = {
+  authSubject: string;
+  userId: string;
+};
+
+export type AdminOrderMutationResult = {
+  command: AdminOrderMutationCommand;
+  fulfillmentStatus: FulfillmentStatus;
+  orderId: string;
+  orderStatus: OrderStatus;
+  paymentStatus: PaymentStatus;
+  replayed: boolean;
+  revision: number;
+  transitionedAt: string;
+};
+
 export type Money = {
   amountMinor: number;
   currency: string;
@@ -78,6 +103,7 @@ export type AdminOrderSummary = {
   payment: PaymentSummary;
   paymentStatus: PaymentStatus;
   publicOrderNumber: string;
+  revision: number;
   status: OrderStatus;
   total: Money;
   totalQuantity: number;

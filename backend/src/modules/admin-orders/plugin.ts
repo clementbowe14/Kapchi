@@ -1,13 +1,20 @@
 import fp from "fastify-plugin";
-import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import Joi from "joi";
 import { adminRoute } from "../admin-auth/index.js";
 import { AdminOrderError } from "./errors.js";
+import {
+  adminOrderMutationFingerprint,
+  AdminOrderMutationRepository,
+  type AdminOrderMutator
+} from "./mutation-repository.js";
 import {
   AdminOrderRepository,
   type AdminOrderReader
 } from "./repository.js";
 import type {
+  AdminOrderMutationCommand,
+  AdminOrderMutationInput,
   AdminOrderSearchQuery,
   AdminOrderTimelineQuery
 } from "./types.js";
@@ -62,6 +69,10 @@ const timelineQuery = Joi.object<AdminOrderTimelineQuery>({
   cursor: Joi.string().trim().max(1000).optional(),
   limit: Joi.number().integer().min(1).max(100).default(50)
 }).required();
+const mutationBody = Joi.object<AdminOrderMutationInput>({
+  expectedRevision: Joi.number().integer().min(0).required(),
+  reason: Joi.string().trim().min(3).max(500).optional()
+}).required();
 
 function day(value: string) {
   const [year, month, date] = value.split("-").map(Number);
@@ -96,6 +107,15 @@ function validationError(reply: FastifyReply, message: string) {
   });
 }
 
+function idempotencyKey(request: FastifyRequest, reply: FastifyReply) {
+  const value = request.headers["idempotency-key"];
+  if (typeof value !== "string" || value.length < 1 || value.length > 128) {
+    validationError(reply, "A valid Idempotency-Key header is required.");
+    return null;
+  }
+  return value;
+}
+
 function unavailable(error: unknown) {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   const code = String(error.code);
@@ -128,6 +148,7 @@ function sendError(reply: FastifyReply, error: unknown) {
 }
 
 export type AdminOrderPluginDependencies = {
+  mutationRepository?: AdminOrderMutator;
   repository?: AdminOrderReader;
 };
 
@@ -136,6 +157,8 @@ export function createAdminOrderPlugin(
 ) {
   const plugin: FastifyPluginAsync = async (fastify) => {
     const repository = dependencies.repository ?? new AdminOrderRepository(fastify.pg);
+    const mutationRepository = dependencies.mutationRepository
+      ?? new AdminOrderMutationRepository(fastify.pg);
 
     fastify.get(
       "/",
@@ -219,6 +242,73 @@ export function createAdminOrderPlugin(
         }
       },
     );
+
+    const mutationRoutes: Array<{
+      command: AdminOrderMutationCommand;
+      path: string;
+    }> = [
+      { command: "start_production", path: "/:orderId/actions/start-production" },
+      { command: "mark_ready_to_ship", path: "/:orderId/actions/mark-ready-to-ship" }
+    ];
+
+    for (const route of mutationRoutes) {
+      fastify.post<{ Params: { orderId: string } }>(
+        route.path,
+        adminRoute("fulfillment:write"),
+        async (request, reply) => {
+          const params = orderParams.validate(request.params, { allowUnknown: false });
+          const body = mutationBody.validate(request.body, {
+            abortEarly: false,
+            allowUnknown: false
+          });
+          const key = idempotencyKey(request, reply);
+          if (!key) return;
+          if (params.error || body.error) {
+            return validationError(
+              reply,
+              params.error?.message ?? body.error!.message,
+            );
+          }
+          try {
+            const actor = await mutationRepository.resolveActor(request.auth!.userId);
+            if (!actor) {
+              return reply.code(403).send({
+                error: "ORDER_ACTOR_UNAVAILABLE",
+                message: "A verified active administrator profile is required.",
+                statusCode: 403
+              });
+            }
+            const result = await mutationRepository.mutate(
+              params.value.orderId,
+              route.command,
+              actor,
+              body.value,
+              key,
+              adminOrderMutationFingerprint(
+                route.command,
+                params.value.orderId,
+                body.value,
+              ),
+            );
+            request.log.info(
+              {
+                command: route.command,
+                event: "admin.order.lifecycle.transitioned",
+                fulfillmentStatus: result.fulfillmentStatus,
+                orderId: result.orderId,
+                orderStatus: result.orderStatus,
+                replayed: result.replayed,
+                revision: result.revision
+              },
+              "Admin order lifecycle mutation completed",
+            );
+            return reply.code(200).send(result);
+          } catch (error) {
+            return sendError(reply, error);
+          }
+        },
+      );
+    }
   };
 
   return fp(plugin, { encapsulate: true, name: "admin-orders-plugin" });
