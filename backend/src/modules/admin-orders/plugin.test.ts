@@ -1,6 +1,7 @@
 import fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminOrderError } from "./errors.js";
+import type { AdminOrderMutator } from "./mutation-repository.js";
 import type { AdminOrderReader } from "./repository.js";
 import type {
   AdminOrderDetail,
@@ -57,6 +58,7 @@ const order = {
   },
   paymentStatus: "paid" as const,
   publicOrderNumber: "KAP-1001",
+  revision: 0,
   status: "paid" as const,
   total: { amountMinor: 5000, currency: "usd" },
   totalQuantity: 1,
@@ -84,16 +86,44 @@ describe("admin order plugin", () => {
     search: vi.fn(async () => page),
     timeline: vi.fn(async () => timeline)
   };
+  const mutationRepository: AdminOrderMutator = {
+    mutate: vi.fn(async (orderId, command) => ({
+      command,
+      fulfillmentStatus: command === "start_production"
+        ? "in_progress" as const
+        : "ready_to_ship" as const,
+      orderId,
+      orderStatus: command === "start_production"
+        ? "in_production" as const
+        : "ready_to_ship" as const,
+      paymentStatus: "paid" as const,
+      replayed: false,
+      revision: 1,
+      transitionedAt: "2026-10-26T12:00:00.000Z"
+    })),
+    resolveActor: vi.fn(async () => ({
+      authSubject: "user_123",
+      userId: "22222222-2222-4222-8222-222222222222"
+    }))
+  };
 
   beforeEach(() => {
     vi.mocked(repository.detail).mockClear();
     vi.mocked(repository.search).mockClear();
     vi.mocked(repository.timeline).mockClear();
+    vi.mocked(mutationRepository.mutate).mockClear();
+    vi.mocked(mutationRepository.resolveActor).mockClear();
   });
 
-  async function buildServer(reader: AdminOrderReader = repository) {
+  async function buildServer(
+    reader: AdminOrderReader = repository,
+    mutator: AdminOrderMutator = mutationRepository,
+  ) {
     const app = fastify({ logger: false });
-    await app.register(createAdminOrderPlugin({ repository: reader }), {
+    await app.register(createAdminOrderPlugin({
+      mutationRepository: mutator,
+      repository: reader
+    }), {
       prefix: "/admin/orders"
     });
     return app;
@@ -251,5 +281,132 @@ describe("admin order plugin", () => {
     });
     expect(unavailableResponse.headers["retry-after"]).toBe("30");
     await unavailableApp.close();
+  });
+
+  it.each([
+    {
+      command: "start_production",
+      path: "start-production"
+    },
+    {
+      command: "mark_ready_to_ship",
+      path: "mark-ready-to-ship"
+    }
+  ] as const)("executes the guarded $command command", async ({ command, path }) => {
+    const app = await buildServer();
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": `order-${command}-1`
+      },
+      method: "POST",
+      payload: { expectedRevision: 0, reason: "Production work confirmed" },
+      url: `/admin/orders/${order.id}/actions/${path}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mutationRepository.resolveActor).toHaveBeenCalledWith("user_123");
+    expect(mutationRepository.mutate).toHaveBeenCalledWith(
+      order.id,
+      command,
+      {
+        authSubject: "user_123",
+        userId: "22222222-2222-4222-8222-222222222222"
+      },
+      { expectedRevision: 0, reason: "Production work confirmed" },
+      `order-${command}-1`,
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
+    expect(response.json()).toMatchObject({ command, revision: 1 });
+    await app.close();
+  });
+
+  it.each([
+    {
+      headers: { authorization: "Bearer admin-token" },
+      payload: { expectedRevision: 0 },
+      statusCode: 400
+    },
+    {
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "missing-revision"
+      },
+      payload: {},
+      statusCode: 400
+    },
+    {
+      headers: {
+        authorization: "Bearer customer-token",
+        "idempotency-key": "customer-command"
+      },
+      payload: { expectedRevision: 0 },
+      statusCode: 403
+    }
+  ])("rejects an invalid or unauthorized mutation request", async ({ headers, payload, statusCode }) => {
+    const app = await buildServer();
+    const response = await app.inject({
+      headers,
+      method: "POST",
+      payload,
+      url: `/admin/orders/${order.id}/actions/start-production`
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(mutationRepository.mutate).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("returns a conflict from a rejected lifecycle transition", async () => {
+    const conflict: AdminOrderMutator = {
+      ...mutationRepository,
+      mutate: vi.fn(async () => {
+        throw new AdminOrderError(
+          "ORDER_TRANSITION_NOT_ALLOWED",
+          "The transition is not allowed.",
+          409,
+        );
+      })
+    };
+    const app = await buildServer(repository, conflict);
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "invalid-transition"
+      },
+      method: "POST",
+      payload: { expectedRevision: 0 },
+      url: `/admin/orders/${order.id}/actions/start-production`
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "ORDER_TRANSITION_NOT_ALLOWED",
+      message: "The transition is not allowed.",
+      statusCode: 409
+    });
+    await app.close();
+  });
+
+  it("requires an active local administrator actor", async () => {
+    const missingActor: AdminOrderMutator = {
+      ...mutationRepository,
+      resolveActor: vi.fn(async () => null)
+    };
+    const app = await buildServer(repository, missingActor);
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "missing-actor"
+      },
+      method: "POST",
+      payload: { expectedRevision: 0 },
+      url: `/admin/orders/${order.id}/actions/start-production`
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe("ORDER_ACTOR_UNAVAILABLE");
+    expect(missingActor.mutate).not.toHaveBeenCalled();
+    await app.close();
   });
 });

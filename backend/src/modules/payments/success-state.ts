@@ -314,6 +314,11 @@ async function markOrderPaid(
           when fulfillment_status in ('not_started', 'queued') then 'queued'::fulfillment_status
           else fulfillment_status
         end,
+        fulfillment_queued_at = case
+          when fulfillment_status in ('not_started', 'queued')
+            then coalesce(fulfillment_queued_at, now())
+          else fulfillment_queued_at
+        end,
         paid_at = coalesce(paid_at, now()),
         stripe_payment_intent_id = coalesce(stripe_payment_intent_id, $2::text),
         updated_at = now()

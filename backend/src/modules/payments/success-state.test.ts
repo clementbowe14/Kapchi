@@ -69,6 +69,9 @@ describe("successful Stripe payment state handling", () => {
     expect(client.query.mock.calls[2][1]).toEqual([orderId]);
     expect(client.query.mock.calls[3][1]).toEqual([orderId]);
     expect(client.query.mock.calls[4][1]).toEqual([orderId, "pi_test_123"]);
+    expect(client.query.mock.calls[4][0]).toContain(
+      "fulfillment_queued_at = case",
+    );
     expect(client.query.mock.calls[5][1]).toEqual([
       orderId,
       "pi_test_123",

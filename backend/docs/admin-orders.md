@@ -1,9 +1,9 @@
-# Admin order read API
+# Admin order API
 
 Issue #11 provides read-only order search, detail, and history contracts for the
-Kapchi shop manager. Every route uses the shared `orders:read` capability and
-requires the exact verified store-admin role. The public demo must not call
-these endpoints.
+Kapchi shop manager. Read routes use the shared `orders:read` capability; issue
+#21 production commands use `fulfillment:write`. Every route requires the exact
+verified store-admin role. The public demo must not call these endpoints.
 
 ## Search
 
@@ -61,6 +61,40 @@ generic event source because their authoritative message/refund records are
 already returned. This prevents duplicate history rows while preserving other
 order lifecycle events.
 
+## Production lifecycle commands
+
+Issue #21 adds narrow commands instead of a generic status setter. Both routes
+require the `fulfillment:write` capability, a verified active local admin, an
+`Idempotency-Key` header of 1–128 characters, and an `expectedRevision` from the
+latest order response:
+
+- `POST /admin/orders/:orderId/actions/start-production` moves
+  `paid/queued` to `in_production/in_progress`.
+- `POST /admin/orders/:orderId/actions/mark-ready-to-ship` moves
+  `in_production/in_progress` to `ready_to_ship/ready_to_ship`.
+
+The body is `{ "expectedRevision": 0, "reason": "optional internal reason" }`.
+The reason is audit-only and is never returned by customer order APIs.
+
+Only orders with a recorded payment timestamp and payment status `paid` or
+`partially_refunded` may transition. A full refund, cancellation, shipment,
+completion, missing payment, unexpected source state, or stale revision returns
+HTTP 409 without changing the order. A partial refund alone does not imply a
+returned item and therefore does not stop an otherwise valid production
+transition.
+
+Accepted mutations update order and fulfillment state together, increment the
+order revision once, and append an actor-attributed `order_events` record in the
+same transaction. Replaying the same idempotency key and request returns the
+stored result without another revision or event. Reusing the key with different
+input returns `IDEMPOTENCY_CONFLICT`. Idempotency keys are hashed before their
+identity is stored and are not logged.
+
+Shipping confirmation, cancellation/inventory release, address edits, tracking,
+and partial-shipment aggregation remain separate issue #21 review units. In
+particular, these commands cannot mark an order shipped without confirmed
+shipment data.
+
 ## Failure states and observability
 
 - malformed filters and cursors return `VALIDATION_ERROR` or `INVALID_CURSOR`;
@@ -70,3 +104,5 @@ order lifecycle events.
   `ADMIN_ORDERS_UNAVAILABLE`, HTTP 503, and `Retry-After: 30`;
 - completion logs include order IDs, result counts, paging state, and filter
   modes, but never contact data, addresses, message bodies, or snapshot data.
+- lifecycle completion logs include the command, order and fulfillment states,
+  replay flag, and revision, but not the idempotency key or audit reason.
