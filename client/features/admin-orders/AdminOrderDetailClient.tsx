@@ -27,14 +27,15 @@ import { validateNote, validateReason, validateShipment } from "./order-workflow
 import type { OrderAction } from "./order-workflow";
 import type { AdminOrderDetail, AdminOrderItem, AdminOrderTimelinePage } from "./types";
 import { AdminOrdersShell, LoadingPanel, StatePanel, StatusBadge } from "./AdminOrdersUi";
+import { ShippingAddressCorrection } from "@/features/admin-shipping/ShippingAddressCorrection";
 
 type ProtectedData<T> = { epoch: number; value: T } | null;
-type ShipmentForm = { carrier: string; carrierService: string; trackingNumber: string };
+type ShipmentForm = { carrier: string; carrierService: string; shipmentId: string; trackingNumber: string };
 type ShipmentErrors = Record<keyof ShipmentForm | "reason", string | null>;
 type UnknownOutcome = { accepted?: boolean; action: OrderAction | "note"; baselineRevision: number; noteBody?: string };
 
-const emptyShipment: ShipmentForm = { carrier: "", carrierService: "", trackingNumber: "" };
-const emptyShipmentErrors: ShipmentErrors = { carrier: null, carrierService: null, reason: null, trackingNumber: null };
+const emptyShipment: ShipmentForm = { carrier: "", carrierService: "", shipmentId: "", trackingNumber: "" };
+const emptyShipmentErrors: ShipmentErrors = { carrier: null, carrierService: null, reason: null, shipmentId: null, trackingNumber: null };
 const newKey = () => globalThis.crypto.randomUUID();
 
 function mutationMessage(error: AdminOrdersApiError) {
@@ -53,7 +54,7 @@ function mutationMessage(error: AdminOrdersApiError) {
     : adminOrdersErrorMessage(error);
 }
 
-export function AdminOrderDetailClient({ orderId, returnHref }: { orderId: string; returnHref: string }) {
+export function AdminOrderDetailClient({ expectedShipmentId, orderId, returnHref }: { expectedShipmentId?: string; orderId: string; returnHref: string }) {
   const { getToken, isLoaded, isSignedIn, userId } = useAuth();
   const identity = isLoaded && isSignedIn && userId ? userId : null;
   const epoch = useRef(0);
@@ -191,7 +192,10 @@ export function AdminOrderDetailClient({ orderId, returnHref }: { orderId: strin
     if (!currentDetail || !dialogAction || mutationBusy || mutationsLocked) return;
     const localReasonError = validateReason(reason);
     if (dialogAction === "confirm_shipment") {
-      const errors = validateShipment({ ...shipment, reason }); setShipmentErrors(errors);
+      const errors: ShipmentErrors = { ...emptyShipmentErrors, ...validateShipment({ ...shipment, reason }) };
+      const reusableShipments = currentDetail.shipments.filter((entry) => ["label_pending", "label_purchased", "failed"].includes(entry.status));
+      if ((expectedShipmentId || reusableShipments.length > 1) && !shipment.shipmentId) errors.shipmentId = "Select the exact shipment from the export.";
+      setShipmentErrors(errors);
       if (Object.values(errors).some(Boolean)) return;
     } else { setReasonError(localReasonError ?? ""); if (localReasonError) return; }
     const requestEpoch = epoch.current;
@@ -204,6 +208,7 @@ export function AdminOrderDetailClient({ orderId, returnHref }: { orderId: strin
           ...(shipment.carrierService.trim() ? { carrierService: shipment.carrierService.trim() } : {}),
           expectedRevision: currentDetail.revision,
           ...(reason.trim() ? { reason: reason.trim() } : {}),
+          ...(shipment.shipmentId ? { shipmentId: shipment.shipmentId } : {}),
           trackingNumber: shipment.trackingNumber.trim(),
         }, actionKey, request.controller.signal));
       } else {
@@ -298,11 +303,18 @@ export function AdminOrderDetailClient({ orderId, returnHref }: { orderId: strin
           noteBusy={noteBusy} noteError={noteError} noteValue={note}
           onLoadMore={() => { if (currentTimeline?.nextCursor) { setTimelineLoadingMore(true); void readTimeline(epoch.current, currentTimeline.nextCursor).finally(() => setTimelineLoadingMore(false)); } }}
           onNoteChange={updateNote} onNoteSubmit={submitNote}
-          onOpenAction={(action) => { setDialogAction(action); setMutationError(""); setReasonError(""); setShipmentErrors(emptyShipmentErrors); }}
+          onOpenAction={(action) => {
+            if (action === "confirm_shipment") {
+              const reusable = currentDetail.shipments.filter((entry) => ["label_pending", "label_purchased", "failed"].includes(entry.status));
+              setShipment({ ...emptyShipment, shipmentId: expectedShipmentId ?? (reusable.length === 1 ? reusable[0].id : "") });
+            }
+            setDialogAction(action); setMutationError(""); setReasonError(""); setShipmentErrors(emptyShipmentErrors);
+          }}
           onRefreshDetail={() => void readDetail(epoch.current)}
           onRetryTimeline={() => { setTimelineLoading(true); void readTimeline(epoch.current).finally(() => setTimelineLoading(false)); }}
           order={currentDetail} statusMessage={statusMessage} timeline={currentTimeline} timelineAppendError={timelineAppendError}
           timelineError={timelineError} timelineLoading={timelineLoading} timelineLoadingMore={timelineLoadingMore}
+          onAddressCorrected={() => { setStatusMessage("Shipping address corrected. Create a fresh export before purchasing a label."); void readDetail(epoch.current); void readTimeline(epoch.current); }}
         />
       ) : null}
       {mutationsLocked ? <div className="fixed bottom-4 left-4 right-4 z-40 flex flex-col gap-3 border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg sm:left-auto sm:max-w-md sm:flex-row sm:items-center" role="alert"><p className="flex-1">{statusMessage || "Mutations are paused until the latest order state is verified."}</p><button type="button" onClick={() => void refreshUnknownOutcome()} className="h-10 rounded-md border border-amber-400 px-3 font-semibold">Refresh status</button></div> : null}
@@ -310,6 +322,15 @@ export function AdminOrderDetailClient({ orderId, returnHref }: { orderId: strin
         <AdminOrderDialog busy={mutationBusy} description={dialogAction === "confirm_shipment" ? "This records tracking and marks the order shipped. It does not purchase a label." : `Confirm that this order should ${actionLabels[dialogAction].toLowerCase()}.`} initialFocusRef={dialogAction === "confirm_shipment" ? carrierRef : cancelRef} onClose={() => setDialogAction(null)} title={actionLabels[dialogAction]}>
           <form onSubmit={submitAction} className="space-y-4">
             {dialogAction === "confirm_shipment" ? <>
+              {(expectedShipmentId || currentDetail?.shipments.some((entry) => ["label_pending", "label_purchased", "failed"].includes(entry.status))) ? (
+                <DialogField id="shipment-id" label="Shipment from export" error={shipmentErrors.shipmentId}>
+                  <select id="shipment-id" value={shipment.shipmentId} disabled={mutationBusy || Boolean(expectedShipmentId)} aria-invalid={Boolean(shipmentErrors.shipmentId)} aria-describedby={shipmentErrors.shipmentId ? "shipment-id-error" : undefined} onChange={(event) => updateShipment("shipmentId", event.target.value)} className="h-11 w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 disabled:bg-slate-100">
+                    <option value="">Select shipment</option>
+                    {expectedShipmentId && !currentDetail?.shipments.some((entry) => entry.id === expectedShipmentId) ? <option value={expectedShipmentId}>Export shipment {expectedShipmentId}</option> : null}
+                    {currentDetail?.shipments.filter((entry) => ["label_pending", "label_purchased", "failed"].includes(entry.status)).map((entry) => <option key={entry.id} value={entry.id}>Shipment {entry.shipmentNumber} ({statusLabel(entry.status)})</option>)}
+                  </select>
+                </DialogField>
+              ) : null}
               <DialogField id="shipment-carrier" label="Carrier" error={shipmentErrors.carrier}><input ref={carrierRef} id="shipment-carrier" value={shipment.carrier} disabled={mutationBusy} aria-invalid={Boolean(shipmentErrors.carrier)} aria-describedby={shipmentErrors.carrier ? "shipment-carrier-error" : undefined} onChange={(event) => updateShipment("carrier", event.target.value)} className="h-11 w-full min-w-0 rounded-md border border-slate-300 px-3" /></DialogField>
               <DialogField id="shipment-service" label="Carrier service (optional)" error={shipmentErrors.carrierService}><input id="shipment-service" value={shipment.carrierService} disabled={mutationBusy} aria-invalid={Boolean(shipmentErrors.carrierService)} aria-describedby={shipmentErrors.carrierService ? "shipment-service-error" : undefined} onChange={(event) => updateShipment("carrierService", event.target.value)} className="h-11 w-full min-w-0 rounded-md border border-slate-300 px-3" /></DialogField>
               <DialogField id="shipment-tracking" label="Tracking number" error={shipmentErrors.trackingNumber}><input id="shipment-tracking" value={shipment.trackingNumber} disabled={mutationBusy} aria-invalid={Boolean(shipmentErrors.trackingNumber)} aria-describedby={shipmentErrors.trackingNumber ? "shipment-tracking-error" : undefined} onChange={(event) => updateShipment("trackingNumber", event.target.value)} className="h-11 w-full min-w-0 rounded-md border border-slate-300 px-3" /></DialogField>
@@ -334,16 +355,17 @@ type DetailProps = {
   onNoteSubmit: (event: FormEvent) => void; onOpenAction: (action: OrderAction) => void; onRefreshDetail: () => void; onRetryTimeline: () => void;
   order: AdminOrderDetail; statusMessage: string; timeline: AdminOrderTimelinePage | null; timelineAppendError: string; timelineError: string;
   timelineLoading: boolean; timelineLoadingMore: boolean;
+  onAddressCorrected: () => void;
 };
 
 function OrderDetail(props: DetailProps) {
-  const { actionHeadingRef, detailError, detailLoading, mutationsLocked, noteBusy, noteError, noteValue, onLoadMore, onNoteChange, onNoteSubmit, onOpenAction, onRefreshDetail, onRetryTimeline, order, statusMessage, timeline, timelineAppendError, timelineError, timelineLoading, timelineLoadingMore } = props;
+  const { actionHeadingRef, detailError, detailLoading, mutationsLocked, noteBusy, noteError, noteValue, onAddressCorrected, onLoadMore, onNoteChange, onNoteSubmit, onOpenAction, onRefreshDetail, onRetryTimeline, order, statusMessage, timeline, timelineAppendError, timelineError, timelineLoading, timelineLoadingMore } = props;
   const address = formatAddress(order.shipping.address);
   return <div className="space-y-7">
     {detailLoading ? <p role="status" className="text-sm text-slate-600">Refreshing order...</p> : null}
     {detailError ? <div className="flex flex-wrap items-center justify-between gap-3 border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert"><p>Showing last-known order data. {adminOrdersErrorMessage(detailError)}</p><button type="button" onClick={onRefreshDetail} className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-300 px-3 font-semibold"><RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry</button></div> : null}
     <section aria-labelledby="order-summary-heading" className="border-y border-slate-200 bg-white px-4 py-5 sm:px-5"><div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between"><div><h2 id="order-summary-heading" className="text-base font-semibold">Order summary</h2><p className="mt-1 text-sm text-slate-600">Placed {formatAdminDate(order.createdAt)}</p><p className="mt-3 text-2xl font-semibold">{formatAdminMoney(order.total)}</p></div><div className="flex flex-wrap gap-2"><StatusBadge context="Order status" value={order.status} /><StatusBadge context="Payment status" value={order.paymentStatus} /><StatusBadge context="Fulfillment status" value={order.fulfillmentStatus} /></div></div></section>
-    <section aria-labelledby="customer-heading"><h2 id="customer-heading" className="mb-3 text-lg font-semibold">Customer and delivery</h2><div className="grid border-y border-slate-200 bg-white md:grid-cols-2 md:divide-x md:divide-slate-200"><dl className="grid gap-4 p-5 text-sm"><ContactRow icon={<UserRound />} label="Name" value={order.contactSnapshot.name ?? "Not provided"} /><ContactRow icon={<Mail />} label="Email" value={order.contactSnapshot.email ?? "Not provided"} /><ContactRow icon={<Phone />} label="Phone" value={order.contactSnapshot.phone ?? "Not provided"} /><div><dt className="text-xs font-semibold uppercase text-slate-500">Preferred contact</dt><dd className="mt-1">{order.contactSnapshot.preferredContactMethod ? statusLabel(order.contactSnapshot.preferredContactMethod) : "Not provided"}</dd></div></dl><div className="border-t border-slate-200 p-5 md:border-t-0"><h3 className="text-sm font-semibold">Shipping address</h3><address className="mt-3 not-italic text-sm leading-6 text-slate-600"><p>{order.shipping.name ?? "Not provided"}</p>{address.length ? address.map((line) => <p key={line}>{line}</p>) : <p>Not provided</p>}</address></div></div></section>
+    <section aria-labelledby="customer-heading"><h2 id="customer-heading" className="mb-3 text-lg font-semibold">Customer and delivery</h2><div className="grid border-y border-slate-200 bg-white md:grid-cols-2 md:divide-x md:divide-slate-200"><dl className="grid gap-4 p-5 text-sm"><ContactRow icon={<UserRound />} label="Name" value={order.contactSnapshot.name ?? "Not provided"} /><ContactRow icon={<Mail />} label="Email" value={order.contactSnapshot.email ?? "Not provided"} /><ContactRow icon={<Phone />} label="Phone" value={order.contactSnapshot.phone ?? "Not provided"} /><div><dt className="text-xs font-semibold uppercase text-slate-500">Preferred contact</dt><dd className="mt-1">{order.contactSnapshot.preferredContactMethod ? statusLabel(order.contactSnapshot.preferredContactMethod) : "Not provided"}</dd></div></dl><div className="border-t border-slate-200 p-5 md:border-t-0"><h3 className="text-sm font-semibold">Shipping address</h3><address className="mt-3 not-italic text-sm leading-6 text-slate-600"><p>{order.shipping.name ?? "Not provided"}</p>{address.length ? address.map((line) => <p key={line}>{line}</p>) : <p>Not provided</p>}</address><ShippingAddressCorrection order={order} onCorrected={onAddressCorrected} /></div></div></section>
     <section aria-labelledby="items-heading"><div className="mb-3 flex items-end justify-between gap-3"><h2 id="items-heading" className="text-lg font-semibold">Purchased items</h2><p className="text-sm text-slate-600">{order.totalQuantity} total units</p></div><div className="space-y-3">{order.items.map((item, index) => <OrderItemDetail key={item.id} item={item} index={index} />)}</div></section>
     <OrderActionsPanel disabled={mutationsLocked} headingRef={actionHeadingRef} onOpenAction={onOpenAction} order={order} statusMessage={statusMessage} />
     <OrderHistoryPanel appendError={timelineAppendError} loading={timelineLoading} loadingMore={timelineLoadingMore} mutationsDisabled={mutationsLocked} noteBusy={noteBusy} noteError={noteError} noteValue={noteValue} onLoadMore={onLoadMore} onNoteChange={onNoteChange} onNoteSubmit={onNoteSubmit} onRetry={onRetryTimeline} page={timelineError && !timeline ? null : timeline} />

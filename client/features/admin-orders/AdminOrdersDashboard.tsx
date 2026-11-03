@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { ChevronRight, Filter, RefreshCw } from "lucide-react";
+import { ChevronRight, Filter, PackageOpen, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +25,7 @@ import {
   StatePanel,
   StatusBadge,
 } from "./AdminOrdersUi";
+import { ShippingExportWorkflow } from "@/features/admin-shipping/ShippingExportWorkflow";
 
 type DataState = {
   filterFingerprint: string;
@@ -55,6 +56,12 @@ function customerName(order: AdminOrderSearchPage["orders"][number]) {
   return order.customer.name || order.customer.email || "Guest customer";
 }
 
+function isShippingExportSelectable(order: AdminOrderSearchPage["orders"][number]) {
+  return order.status === "ready_to_ship"
+    && order.fulfillmentStatus === "ready_to_ship"
+    && (order.paymentStatus === "paid" || order.paymentStatus === "partially_refunded");
+}
+
 export function AdminOrdersDashboard({
   initialSort,
   initialStatus,
@@ -78,6 +85,8 @@ export function AdminOrdersDashboard({
   const [loadingMore, setLoadingMore] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [retryVersion, setRetryVersion] = useState(0);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(() => new Set());
+  const [exportOpen, setExportOpen] = useState(false);
   const sequence = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const identity = isLoaded && isSignedIn && userId ? userId : null;
@@ -87,6 +96,16 @@ export function AdminOrdersDashboard({
   const visiblePage = data?.identity === identity ? data.page : null;
   const visibleFilters = data?.identity === identity ? data.filters : filters;
   const visiblePageMatchesFilters = data?.filterFingerprint === filterFingerprint;
+  const selectedOrders = useMemo(
+    () => visiblePage?.orders.filter((order) => selectedOrderIds.has(order.id)) ?? [],
+    [selectedOrderIds, visiblePage],
+  );
+  const handleShippingAuthorizationFailure = useCallback((authorizationError: AdminOrdersApiError) => {
+    setData(null);
+    setSelectedOrderIds(new Set());
+    setExportOpen(false);
+    setError(authorizationError);
+  }, []);
 
   const requestPage = useCallback(async (
     mode: "replace" | "append",
@@ -168,6 +187,20 @@ export function AdminOrdersDashboard({
       activeRequest.current?.abort();
     };
   }, [identity, filters, requestPage, retryVersion]);
+
+  useEffect(() => {
+    setSelectedOrderIds(new Set());
+    setExportOpen(false);
+  }, [filterFingerprint, identity]);
+
+  useEffect(() => {
+    if (!visiblePage) return;
+    const selectable = new Set(visiblePage.orders.filter(isShippingExportSelectable).map((order) => order.id));
+    setSelectedOrderIds((current) => {
+      const next = new Set([...current].filter((id) => selectable.has(id)));
+      return next.size === current.size && [...next].every((id) => current.has(id)) ? current : next;
+    });
+  }, [visiblePage]);
 
   function applyFilters(event: FormEvent) {
     event.preventDefault();
@@ -254,6 +287,27 @@ export function AdminOrdersDashboard({
             </div>
           </form>
 
+          <div className="flex flex-col gap-3 border-y border-slate-200 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Pirate Ship exports</p>
+              <p className="mt-1 text-sm text-slate-600">Select paid, ready-to-ship orders to prepare package rows.</p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Link href="/admin/shipping-exports" className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872]">
+                Shipping exports
+              </Link>
+              <button
+                type="button"
+                disabled={!selectedOrders.length}
+                onClick={() => setExportOpen(true)}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2"
+              >
+                <PackageOpen className="h-4 w-4" aria-hidden="true" />
+                Prepare export{selectedOrders.length ? ` (${selectedOrders.length})` : ""}
+              </button>
+            </div>
+          </div>
+
           <p className="sr-only" role="status">{announcement}</p>
           {loading && !visiblePage ? <LoadingPanel label="Loading ongoing orders" /> : null}
           {error && !visiblePage ? error.status === 403 ? (
@@ -303,7 +357,12 @@ export function AdminOrdersDashboard({
                   onRetry={filtered ? clearFilters : undefined}
                 />
               ) : (
-                <OrdersRows page={visiblePage} filters={visibleFilters} />
+                <OrdersRows
+                  page={visiblePage}
+                  filters={visibleFilters}
+                  selectedOrderIds={selectedOrderIds}
+                  onSelectionChange={setSelectedOrderIds}
+                />
               )}
               {visiblePage.nextCursor && visiblePageMatchesFilters ? (
                 <div className="flex justify-center pt-2">
@@ -326,13 +385,62 @@ export function AdminOrdersDashboard({
               ) : null}
             </>
           ) : null}
+          {exportOpen && selectedOrders.length ? (
+            <ShippingExportWorkflow
+              orders={selectedOrders}
+              onAuthorizationFailure={handleShippingAuthorizationFailure}
+              onClose={() => {
+                setExportOpen(false);
+                setSelectedOrderIds(new Set());
+                void requestPage("replace");
+              }}
+              onCreated={() => {
+                setAnnouncement("Shipping export created. It remains available from Shipping exports.");
+              }}
+            />
+          ) : null}
         </div>
       )}
     </AdminOrdersShell>
   );
 }
 
-function OrdersRows({ page, filters }: { page: AdminOrderSearchPage; filters: AdminOrderFilters }) {
+function OrdersRows({
+  page,
+  filters,
+  onSelectionChange,
+  selectedOrderIds,
+}: {
+  page: AdminOrderSearchPage;
+  filters: AdminOrderFilters;
+  onSelectionChange: (value: Set<string>) => void;
+  selectedOrderIds: Set<string>;
+}) {
+  const selectableIds = page.orders.filter(isShippingExportSelectable).map((order) => order.id);
+  const selectedVisible = selectableIds.filter((id) => selectedOrderIds.has(id));
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedVisible.length > 0 && selectedVisible.length < selectableIds.length;
+    }
+  }, [selectableIds.length, selectedVisible.length]);
+
+  function toggle(orderId: string, checked: boolean) {
+    const next = new Set(selectedOrderIds);
+    if (checked) next.add(orderId);
+    else next.delete(orderId);
+    onSelectionChange(next);
+  }
+
+  function toggleVisible(checked: boolean) {
+    const next = new Set(selectedOrderIds);
+    for (const id of selectableIds) {
+      if (checked) next.add(id);
+      else next.delete(id);
+    }
+    onSelectionChange(next);
+  }
+
   return (
     <div className="border-y border-slate-200 bg-white">
       <div className="hidden overflow-x-auto lg:block">
@@ -340,6 +448,17 @@ function OrdersRows({ page, filters }: { page: AdminOrderSearchPage; filters: Ad
           <caption className="sr-only">Ongoing customer orders</caption>
           <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
+              <th scope="col" className="w-12 px-3 py-3 font-semibold">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  aria-label="Select all eligible visible orders"
+                  checked={Boolean(selectableIds.length) && selectedVisible.length === selectableIds.length}
+                  disabled={!selectableIds.length}
+                  onChange={(event) => toggleVisible(event.target.checked)}
+                  className="h-4 w-4"
+                />
+              </th>
               {['Order', 'Customer', 'Placed', 'Items', 'Total', 'Order status', 'Payment', 'Fulfillment', ''].map((label) => (
                 <th key={label || 'action'} scope="col" className="px-3 py-3 font-semibold">{label}</th>
               ))}
@@ -348,6 +467,16 @@ function OrdersRows({ page, filters }: { page: AdminOrderSearchPage; filters: Ad
           <tbody className="divide-y divide-slate-200">
             {page.orders.map((order) => (
               <tr key={order.id} className="align-top hover:bg-slate-50/70">
+                <td className="px-3 py-4">
+                  <input
+                    type="checkbox"
+                    checked={selectedOrderIds.has(order.id)}
+                    disabled={!isShippingExportSelectable(order)}
+                    aria-label={`Select ${order.publicOrderNumber} for shipping export`}
+                    onChange={(event) => toggle(order.id, event.target.checked)}
+                    className="h-4 w-4"
+                  />
+                </td>
                 <td className="px-3 py-4 font-semibold text-slate-950">{order.publicOrderNumber}</td>
                 <td className="max-w-56 px-3 py-4">
                   <p className="font-medium text-slate-900">{customerName(order)}</p>
@@ -374,11 +503,21 @@ function OrdersRows({ page, filters }: { page: AdminOrderSearchPage; filters: Ad
         {page.orders.map((order) => (
           <article key={order.id} className="p-4">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+              <div className="flex min-w-0 gap-3">
+                <input
+                  type="checkbox"
+                  checked={selectedOrderIds.has(order.id)}
+                  disabled={!isShippingExportSelectable(order)}
+                  aria-label={`Select ${order.publicOrderNumber} for shipping export`}
+                  onChange={(event) => toggle(order.id, event.target.checked)}
+                  className="mt-1 h-4 w-4 shrink-0"
+                />
+                <div className="min-w-0">
                 <p className="text-sm font-semibold">{order.publicOrderNumber}</p>
                 <p className="mt-1 break-words text-sm text-slate-600">{customerName(order)}</p>
                 {order.customer.email && order.customer.name ? <p className="mt-1 break-all text-xs text-slate-500">{order.customer.email}</p> : null}
                 {order.customer.phone ? <p className="mt-1 text-xs text-slate-500">{order.customer.phone}</p> : null}
+                </div>
               </div>
               <StatusBadge value={order.status} />
             </div>

@@ -135,6 +135,57 @@ test("recovers from a temporary list failure", async ({ page }) => {
   await expect(page.getByText("KAP-1042").first()).toBeVisible();
 });
 
+test("prepares a Pirate Ship batch with shared selection and protected handoff", async ({ page }) => {
+  const ready = { ...summary, fulfillmentStatus: "ready_to_ship", revision: 4, status: "ready_to_ship" };
+  const batchId = "44444444-4444-4444-8444-444444444444";
+  await page.unroute("**/api/admin/orders**");
+  await page.route("**/api/admin/orders**", async (route) => {
+    await route.fulfill({ contentType: "application/json", json: { nextCursor: null, orders: [ready] } });
+  });
+  await page.route("**/api/admin/shipping/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/export-candidates")) {
+      expect(request.postDataJSON()).toEqual({ orderIds: [orderId] });
+      await route.fulfill({ contentType: "application/json", json: { candidates: [{ codes: [], eligible: true, existingPackage: null, orderId, publicOrderNumber: "KAP-1042", revision: 4 }] } });
+      return;
+    }
+    if (url.pathname.endsWith("/export-batches") && request.method() === "POST") {
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(request.postDataJSON()).toEqual({ orders: [{ expectedRevision: 4, orderId, package: { description: "Graduation stole", heightInches: 2, lengthInches: 10, weightOunces: 12.5, widthInches: 8 } }] });
+      await route.fulfill({ contentType: "application/json", json: {
+        allowedActions: ["download", "cancel", "confirm_shipment"], batchId,
+        createdAt: "2026-11-03T12:00:00.000Z", downloadPath: `/admin/shipping/export-batches/${batchId}/file`,
+        expiresAt: "2026-12-03T12:00:00.000Z", filename: "kapchi-export.csv",
+        items: [{ orderId, publicOrderNumber: "KAP-1042", shipmentId: "33333333-3333-4333-8333-333333333333" }],
+        mappingVersion: 1, rowCount: 1, status: "prepared",
+      } });
+      return;
+    }
+    await route.abort();
+  });
+
+  await page.goto("/admin/orders?status=ready_to_ship");
+  await page.getByLabel("Select KAP-1042 for shipping export").first().check();
+  const trigger = page.getByRole("button", { name: "Prepare export (1)" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Prepare Pirate Ship export" });
+  await expect(dialog.getByText("Eligible")).toBeVisible();
+  await dialog.getByLabel("KAP-1042 Weight (oz)").fill("12.5");
+  await dialog.getByLabel("KAP-1042 Length (in)").fill("10");
+  await dialog.getByLabel("KAP-1042 Width (in)").fill("8");
+  await dialog.getByLabel("KAP-1042 Height (in)").fill("2");
+  await dialog.getByRole("button", { name: "Create export (1)" }).click();
+  await expect(dialog.getByText("Export prepared")).toBeVisible();
+  const handoff = dialog.getByRole("link", { name: "Open Pirate Ship" });
+  await expect(handoff).toHaveAttribute("aria-disabled", "true");
+  await dialog.getByText(/This file contains customer contact/).click();
+  await expect(handoff).toHaveAttribute("aria-disabled", "false");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+});
+
 test("handles lifecycle, shipment, notes, and newest-first history", async ({ page }) => {
   let revision = 2;
   let currentDetail: Record<string, unknown> & {

@@ -323,4 +323,51 @@ describe("AdminOrdersDashboard integration", () => {
       expect.any(Object),
     );
   });
+
+  it("shares eligible shipping selection across desktop and mobile renderers", async () => {
+    const user = userEvent.setup();
+    const ready = createAdminOrderSummary({
+      fulfillmentStatus: "ready_to_ship",
+      paymentStatus: "paid",
+      revision: 4,
+      status: "ready_to_ship",
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/admin/orders?")) return json(createAdminOrderPage({ orders: [ready] }));
+      if (url.endsWith("/admin/shipping/export-candidates") && init?.method === "POST") {
+        return json({ candidates: [{
+          codes: [], eligible: true, existingPackage: null, orderId: ready.id,
+          publicOrderNumber: ready.publicOrderNumber, revision: ready.revision,
+        }] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(<AdminOrdersDashboard />);
+    const selectors = await screen.findAllByLabelText(`Select ${ready.publicOrderNumber} for shipping export`);
+    await user.click(selectors[0]);
+    expect(selectors).toHaveLength(2);
+    expect(selectors.every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Prepare export (1)" }));
+    expect(await screen.findByRole("dialog", { name: "Prepare Pirate Ship export" })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/admin/shipping/export-candidates",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("clears the protected queue when shipping preflight cannot refresh authorization", async () => {
+    const user = userEvent.setup();
+    const ready = createAdminOrderSummary({ fulfillmentStatus: "ready_to_ship", paymentStatus: "paid", status: "ready_to_ship" });
+    vi.mocked(fetch).mockImplementation(async (input) => String(input).includes("/admin/orders?")
+      ? json(createAdminOrderPage({ orders: [ready] }))
+      : json({ error: "UNAUTHORIZED" }, 401));
+    render(<AdminOrdersDashboard />);
+    const selectors = await screen.findAllByLabelText(`Select ${ready.publicOrderNumber} for shipping export`);
+    await user.click(selectors[0]);
+    await user.click(screen.getByRole("button", { name: "Prepare export (1)" }));
+
+    expect(await screen.findByRole("heading", { name: "Session expired" })).toBeInTheDocument();
+    expect(screen.queryByText(ready.publicOrderNumber)).not.toBeInTheDocument();
+  });
 });
