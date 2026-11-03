@@ -32,10 +32,11 @@ integrationDescribe("successful payment fabric inventory conversion", () => {
       `
         insert into orders (
           id, public_order_number, status, payment_status, fulfillment_status,
-          subtotal_cents, total_cents, currency, stripe_payment_intent_id
+          customer_email, preferred_contact_method, subtotal_cents, total_cents,
+          currency, stripe_payment_intent_id
         ) values (
           $1, $2, 'pending_payment', 'checkout_started', 'not_started',
-          5000, 5000, 'usd', $3
+          'payment-customer@example.test', 'email', 5000, 5000, 'usd', $3
         )
       `,
       [orderId, `PAY-${orderId}`, paymentIntentId],
@@ -45,7 +46,8 @@ integrationDescribe("successful payment fabric inventory conversion", () => {
         insert into order_items (
           id, order_id, fabric_id, quantity, unit_amount_cents,
           total_amount_cents, currency, listing_snapshot, customization_snapshot
-        ) values ($1, $2, $3, 2, 2500, 5000, 'usd', '{}'::jsonb, '{}'::jsonb)
+        ) values ($1, $2, $3, 2, 2500, 5000, 'usd',
+                  '{"title":"Payment Stole"}'::jsonb, '{}'::jsonb)
       `,
       [orderItemId, orderId, fabricId],
     );
@@ -74,6 +76,10 @@ integrationDescribe("successful payment fabric inventory conversion", () => {
         id: paymentIntentId,
         metadata: { order_id: orderId }
       })).resolves.toEqual({ outcome: "updated", orderId });
+      await client.query(
+        `delete from transactional_notification_intents where order_id = $1`,
+        [orderId],
+      );
       await expect(handlePaymentIntentSucceeded(client, {
         id: paymentIntentId,
         metadata: { order_id: orderId }
@@ -107,5 +113,12 @@ integrationDescribe("successful payment fabric inventory conversion", () => {
       [orderItemId],
     );
     expect(events.rows[0].count).toBe(1);
+    const intents = await pool.query<{ count: number }>(
+      `select count(*)::integer as count
+         from transactional_notification_intents
+        where order_id = $1 and kind = 'order.confirmed'`,
+      [orderId],
+    );
+    expect(intents.rows[0].count).toBe(1);
   });
 });

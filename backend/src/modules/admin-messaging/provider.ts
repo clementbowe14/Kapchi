@@ -50,13 +50,14 @@ export class HttpMessageProvider implements MessageProvider {
       };
       if (
         typeof payload.messageId !== "string" ||
-        payload.messageId.length === 0 ||
+        payload.messageId.trim().length === 0 ||
+        payload.messageId.length > 500 ||
         typeof payload.provider !== "string" ||
-        payload.provider.length === 0
+        !/^[a-z0-9_-]{1,50}$/i.test(payload.provider)
       ) {
         throw new MessageProviderError("MESSAGE_PROVIDER_INVALID_RESPONSE", false);
       }
-      return { messageId: payload.messageId, provider: payload.provider };
+      return { messageId: payload.messageId.trim(), provider: payload.provider.toLowerCase() };
     } catch (error) {
       if (error instanceof MessageProviderError) throw error;
       throw new MessageProviderError("MESSAGE_PROVIDER_UNAVAILABLE", true);

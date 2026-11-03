@@ -4,6 +4,7 @@ import { AdminOrderError } from "./errors.js";
 import { isConfirmedShipmentStatus, isReusableShipmentStatus, prepareShipment } from "./shipment-service.js";
 import { confirmedTrackingIdentity } from "./tracking.js";
 import type { AdminOrderMutationActor, ConfirmShipmentInput, ConfirmShipmentResult, PaymentStatus } from "./types.js";
+import { ensureOrderShipmentIntent } from "../transactional-notifications/producer.js";
 
 type LockedOrder = QueryResultRow & {
   fulfillment_status: string;
@@ -83,6 +84,28 @@ function iso(value: Date | string) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+function notificationEnvironment() {
+  return {
+    lookupBaseUrl: process.env.ORDER_LOOKUP_BASE_URL ?? "http://localhost:3000",
+    nodeEnv: process.env.NODE_ENV ?? "development"
+  };
+}
+
+async function ensureShipmentNotification(
+  client: PoolClient,
+  orderId: string,
+  shipmentId: string,
+) {
+  const notification = notificationEnvironment();
+  await ensureOrderShipmentIntent(
+    client,
+    orderId,
+    shipmentId,
+    notification.lookupBaseUrl,
+    notification.nodeEnv,
+  );
+}
+
 async function transaction<T>(pool: Pool, callback: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect();
   try {
@@ -121,7 +144,11 @@ export class AdminOrderShipmentRepository {
          for update`,
         [orderId, idempotencyKey],
       );
-      if (receiptResult.rows[0]) return replayReceipt(receiptResult.rows[0], fingerprint);
+      if (receiptResult.rows[0]) {
+        const replay = replayReceipt(receiptResult.rows[0], fingerprint);
+        await ensureShipmentNotification(client, orderId, replay.shipment.id);
+        return replay;
+      }
 
       const verifiedActor = await client.query<{ id: string }>(
         `select id from users where id = $1::uuid and auth_provider = 'clerk'
@@ -171,6 +198,7 @@ export class AdminOrderShipmentRepository {
             throw new AdminOrderError("ORDER_MUTATION_REPLAY_UNAVAILABLE", "The previous shipment result is unavailable.", 500);
           }
           const stored = validateResult(source.rows[0].result);
+          await ensureShipmentNotification(client, orderId, stored.shipment.id);
           await client.query(
             `insert into admin_order_mutation_receipts (
                order_id, command, idempotency_key, request_fingerprint, result, source_event_id
@@ -284,6 +312,7 @@ export class AdminOrderShipmentRepository {
          ) values ($1::uuid, 'confirm_shipment', $2, $3, $4::jsonb, $5::uuid)`,
         [orderId, idempotencyKey, fingerprint, JSON.stringify(result), event.rows[0].id],
       );
+      await ensureShipmentNotification(client, orderId, shipmentId);
       return result;
     });
   }

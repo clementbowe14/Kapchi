@@ -1,6 +1,8 @@
 import fp from "fastify-plugin";
+import { createHash } from "node:crypto";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
+import type { Pool } from "pg";
 import { getDatabasePool } from "../../database/index.js";
 import { authMiddleware, requireAuth } from "../auth/index.js";
 import { loadCustomerTracking, type CustomerTracking } from "./customer-tracking.js";
@@ -81,6 +83,41 @@ const lookupSchema = Joi.object({
 })
   .or("email", "phone")
   .required();
+
+const LOOKUP_RATE_LIMIT = 10;
+const LOOKUP_RATE_WINDOW_MS = 15 * 60 * 1000;
+const lookupRateLimitScript = `
+  local count = redis.call('INCR', KEYS[1])
+  if count == 1 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  end
+  return count
+`;
+
+type LookupRateLimitStore = {
+  eval(
+    script: string,
+    options: { arguments: string[]; keys: string[] },
+  ): Promise<unknown>;
+};
+
+export type OrdersPluginDependencies = {
+  pool?: Pick<Pool, "query">;
+  rateLimitStore?: LookupRateLimitStore;
+};
+
+function lookupRateLimitKey(source: string) {
+  const digest = createHash("sha256").update(source).digest("hex");
+  return `order-lookup:source:${digest}`;
+}
+
+async function consumeLookupAttempt(store: LookupRateLimitStore, source: string) {
+  const value = await store.eval(lookupRateLimitScript, {
+    arguments: [String(LOOKUP_RATE_WINDOW_MS)],
+    keys: [lookupRateLimitKey(source)]
+  });
+  return Number(value) <= LOOKUP_RATE_LIMIT;
+}
 
 const orderSelectColumns = `
   id,
@@ -205,12 +242,12 @@ function groupItemsByOrderId(items: OrderItemRow[]) {
   return grouped;
 }
 
-async function loadOrderItems(orderIds: string[]) {
+async function loadOrderItems(pool: Pick<Pool, "query">, orderIds: string[]) {
   if (orderIds.length === 0) {
     return [];
   }
 
-  const result = await getDatabasePool().query<OrderItemRow>(
+  const result = await pool.query<OrderItemRow>(
     `
       select
         oi.id,
@@ -238,8 +275,42 @@ async function loadOrderItems(orderIds: string[]) {
   return result.rows;
 }
 
-const ordersPlugin: FastifyPluginAsync = async (fastify) => {
-  fastify.post("/orders/lookup", async (request, reply) => {
+export function createOrdersPlugin(dependencies: OrdersPluginDependencies = {}) {
+  const ordersPlugin: FastifyPluginAsync = async (fastify) => {
+    const pool = dependencies.pool ?? getDatabasePool();
+    const rateLimitStore = dependencies.rateLimitStore
+      ?? ("redis" in fastify ? fastify.redis as LookupRateLimitStore : undefined);
+
+    fastify.post("/orders/lookup", async (request, reply) => {
+    if (rateLimitStore) {
+      try {
+        const allowed = await consumeLookupAttempt(rateLimitStore, request.ip);
+        if (!allowed) {
+          request.log.warn(
+            { event: "order.lookup.rate_limited", resultCode: "RATE_LIMITED" },
+            "Order lookup rate limited",
+          );
+          reply.header("retry-after", String(Math.ceil(LOOKUP_RATE_WINDOW_MS / 1000)));
+          return reply.code(429).send({
+            error: "ORDER_LOOKUP_UNAVAILABLE",
+            message: "Order lookup is temporarily unavailable.",
+            statusCode: 429
+          });
+        }
+      } catch {
+        request.log.error(
+          { event: "order.lookup.rate_limit_failed", resultCode: "STORE_UNAVAILABLE" },
+          "Order lookup rate limiter unavailable",
+        );
+        reply.header("retry-after", "60");
+        return reply.code(503).send({
+          error: "ORDER_LOOKUP_UNAVAILABLE",
+          message: "Order lookup is temporarily unavailable.",
+          statusCode: 503
+        });
+      }
+    }
+
     const { error, value } = lookupSchema.validate(request.body, {
       abortEarly: false,
       stripUnknown: true
@@ -255,7 +326,7 @@ const ordersPlugin: FastifyPluginAsync = async (fastify) => {
       phone?: string;
     };
 
-    const orderResult = await getDatabasePool().query<OrderRow>(
+    const orderResult = await pool.query<OrderRow>(
       `
         select ${orderSelectColumns}
         from orders
@@ -271,19 +342,19 @@ const ordersPlugin: FastifyPluginAsync = async (fastify) => {
       return notFound(reply);
     }
 
-    const items = await loadOrderItems([order.id]);
-    const tracking = await loadCustomerTracking(getDatabasePool(), [order.id]);
+    const items = await loadOrderItems(pool, [order.id]);
+    const tracking = await loadCustomerTracking(pool, [order.id]);
 
     return serializeOrder(order, groupItemsByOrderId(items), tracking);
-  });
+    });
 
-  fastify.get(
+    fastify.get(
     "/orders/me",
     {
       preHandler: [authMiddleware, requireAuth]
     },
     async (request) => {
-      const orderResult = await getDatabasePool().query<OrderRow>(
+      const orderResult = await pool.query<OrderRow>(
         `
           select ${orderSelectColumns}
           from orders
@@ -294,17 +365,18 @@ const ordersPlugin: FastifyPluginAsync = async (fastify) => {
       );
 
       const orderIds = orderResult.rows.map((order) => order.id);
-      const items = await loadOrderItems(orderIds);
+      const items = await loadOrderItems(pool, orderIds);
       const itemsByOrderId = groupItemsByOrderId(items);
-      const trackingByOrderId = await loadCustomerTracking(getDatabasePool(), orderIds);
+      const trackingByOrderId = await loadCustomerTracking(pool, orderIds);
 
       return {
         orders: orderResult.rows.map((order) => serializeOrder(order, itemsByOrderId, trackingByOrderId))
       };
     },
-  );
-};
+    );
+  };
 
-export default fp(ordersPlugin, {
-  name: "orders-module"
-});
+  return fp(ordersPlugin, { name: "orders-module" });
+}
+
+export default createOrdersPlugin();

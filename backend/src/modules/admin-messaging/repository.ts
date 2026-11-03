@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { MessagingError } from "./errors.js";
+import {
+  canonicalMessageFailureCode,
+  MessagingError,
+  type MessageFailureCode
+} from "./errors.js";
 import type {
   ConversationDetail,
   ConversationQuery,
@@ -48,7 +52,9 @@ type MessageRow = QueryResultRow & {
 
 export type ClaimedDeliveryJob = {
   attemptCount: number;
+  intentId: string | null;
   jobId: string;
+  kind: string | null;
   maxAttempts: number;
   message: DeliveryMessage;
 };
@@ -453,7 +459,9 @@ export class AdminMessagingRepository {
       channel: CustomerMessageChannel;
       from_address: string;
       idempotency_key: string;
+      intent_id: string | null;
       job_id: string;
+      kind: string | null;
       max_attempts: number;
       message_id: string;
       subject: string | null;
@@ -463,9 +471,10 @@ export class AdminMessagingRepository {
       `with candidates as (
          select jobs.id
          from message_delivery_jobs jobs
-         where jobs.status in ('pending', 'retryable')
-           and jobs.next_attempt_at <= now()
-           and (jobs.lease_expires_at is null or jobs.lease_expires_at < now())
+         where (
+           (jobs.status in ('pending', 'retryable') and jobs.next_attempt_at <= now())
+           or (jobs.status = 'leased' and jobs.lease_expires_at < now())
+         )
          order by jobs.next_attempt_at, jobs.created_at
          for update skip locked
          limit $1
@@ -481,15 +490,20 @@ export class AdminMessagingRepository {
        select claimed.id as job_id, claimed.attempt_count, claimed.max_attempts,
               claimed.idempotency_key, messages.id as message_id, messages.channel,
               messages.to_address, messages.from_address, messages.subject,
-              messages.body, conversations.thread_key
+              messages.body, conversations.thread_key,
+              intents.id as intent_id, intents.kind::text as kind
        from claimed
        join order_messages messages on messages.id = claimed.order_message_id
-       join order_conversations conversations on conversations.id = messages.conversation_id`,
+       join order_conversations conversations on conversations.id = messages.conversation_id
+       left join transactional_notification_intents intents
+         on intents.order_message_id = messages.id`,
       [limit, leaseOwner],
     );
     return result.rows.map((row) => ({
       attemptCount: row.attempt_count,
+      intentId: row.intent_id,
       jobId: row.job_id,
+      kind: row.kind,
       maxAttempts: row.max_attempts,
       message: {
         body: row.body,
@@ -529,7 +543,13 @@ export class AdminMessagingRepository {
       );
       const row = updated.rows[0];
       if (!row) return false;
-      await this.updateRefundEffect(client, row.metadata, "succeeded", null);
+      await this.updateTransactionalOutcome(
+        client,
+        row.metadata,
+        job.message.messageId,
+        "succeeded",
+        null,
+      );
       await client.query(
         `insert into order_events (
            order_id, actor_type, actor_id, event_type, transition_key, metadata
@@ -552,6 +572,7 @@ export class AdminMessagingRepository {
     retryable: boolean,
   ) {
     return transaction(this.pool, async (client) => {
+      const failureCode = canonicalMessageFailureCode(code);
       const shouldRetry = retryable && job.attemptCount < job.maxAttempts;
       const updated = await client.query<{
         metadata: Record<string, unknown>;
@@ -579,14 +600,20 @@ export class AdminMessagingRepository {
           job.jobId,
           leaseOwner,
           shouldRetry ? "retryable" : "failed",
-          code,
+          failureCode,
           job.attemptCount
         ],
       );
       const row = updated.rows[0];
       if (!row) return false;
       if (!shouldRetry) {
-        await this.updateRefundEffect(client, row.metadata, "failed", code);
+        await this.updateTransactionalOutcome(
+          client,
+          row.metadata,
+          job.message.messageId,
+          "failed",
+          failureCode,
+        );
         await client.query(
           `insert into order_events (
              order_id, actor_type, actor_id, event_type, transition_key, metadata
@@ -595,7 +622,7 @@ export class AdminMessagingRepository {
           [
             row.order_id,
             `message:${job.message.messageId}:failed`,
-            JSON.stringify({ errorCode: code, messageId: job.message.messageId })
+            JSON.stringify({ errorCode: failureCode, messageId: job.message.messageId })
           ],
         );
       }
@@ -753,36 +780,65 @@ export class AdminMessagingRepository {
         await this.rejectWebhook(client, receipt.rows[0].id, "MESSAGE_ID_REQUIRED");
         return { duplicate: false, errorCode: "MESSAGE_ID_REQUIRED", status: "rejected" };
       }
-      const status = input.type === "message.failed" ? "failed" : "sent";
-      const updated = await client.query<{
+      const existing = await client.query<{
         id: string;
         metadata: Record<string, unknown>;
+        order_id: string;
+        status: MessageView["status"];
       }>(
-        `update order_messages
-         set status = $4::message_status,
-             provider_error = case when $4 = 'failed' then $5 else null end,
-             failed_at = case when $4 = 'failed' then now() else failed_at end,
-             sent_at = case when $4 = 'sent' then coalesce(sent_at, now()) else sent_at end
+        `select id, order_id, status, metadata
+         from order_messages
          where conversation_id = $1::uuid and provider = $2 and provider_message_id = $3
-         returning id, metadata`,
-        [row.id, provider, input.providerMessageId, status, input.errorCode ?? "MESSAGE_PROVIDER_FAILED"],
+         for update`,
+        [row.id, provider, input.providerMessageId],
       );
-      if (!updated.rows[0]) {
+      const matched = existing.rows[0];
+      if (!matched) {
         await this.rejectWebhook(client, receipt.rows[0].id, "MESSAGE_NOT_FOUND");
         return { duplicate: false, errorCode: "MESSAGE_NOT_FOUND", status: "rejected" };
       }
-      if (status === "failed") {
-        const failureCode = input.errorCode ?? "MESSAGE_PROVIDER_FAILED";
+
+      if (input.type === "message.sent") {
+        await client.query(
+          `update order_messages
+           set status = 'sent', provider_error = null, failed_at = null,
+               sent_at = coalesce(sent_at, now())
+           where id = $1::uuid and status <> 'sent'`,
+          [matched.id],
+        );
+        await client.query(
+          `update message_delivery_jobs
+           set status = 'succeeded', last_error_code = null,
+               lease_owner = null, lease_expires_at = null
+           where order_message_id = $1::uuid and status <> 'succeeded'`,
+          [matched.id],
+        );
+        await this.updateTransactionalOutcome(
+          client,
+          matched.metadata,
+          matched.id,
+          "succeeded",
+          null,
+        );
+      } else if (matched.status !== "sent") {
+        const failureCode = canonicalMessageFailureCode(input.errorCode);
+        await client.query(
+          `update order_messages
+           set status = 'failed', provider_error = $2, failed_at = now()
+           where id = $1::uuid and status <> 'sent'`,
+          [matched.id, failureCode],
+        );
         await client.query(
           `update message_delivery_jobs
            set status = 'failed', last_error_code = $2,
                lease_owner = null, lease_expires_at = null
-           where order_message_id = $1::uuid`,
-          [updated.rows[0].id, failureCode],
+           where order_message_id = $1::uuid and status <> 'succeeded'`,
+          [matched.id, failureCode],
         );
-        await this.updateRefundEffect(
+        await this.updateTransactionalOutcome(
           client,
-          updated.rows[0].metadata,
+          matched.metadata,
+          matched.id,
           "failed",
           failureCode,
         );
@@ -791,7 +847,7 @@ export class AdminMessagingRepository {
         `update messaging_webhook_events
          set status = 'processed', order_message_id = $2::uuid, processed_at = now()
          where id = $1::uuid`,
-        [receipt.rows[0].id, updated.rows[0].id],
+        [receipt.rows[0].id, matched.id],
       );
       return { duplicate: false, status: "processed" };
     });
@@ -946,13 +1002,33 @@ export class AdminMessagingRepository {
     return Boolean(messageId);
   }
 
-  private async updateRefundEffect(
+  private async updateTransactionalOutcome(
     client: PoolClient,
     metadata: Record<string, unknown>,
+    messageId: string,
     status: "failed" | "succeeded",
-    errorCode: string | null,
+    errorCode: MessageFailureCode | null,
   ) {
-    if (typeof metadata.refundOperationId !== "string") return;
+    const intentId = metadata.transactionalNotificationIntentId;
+    if (typeof intentId === "string") {
+      await client.query(
+        `update transactional_notification_intents
+         set status = $3::transactional_notification_intent_status,
+             last_failure_code = $4,
+             succeeded_at = case when $3 = 'succeeded' then coalesce(succeeded_at, now()) else succeeded_at end,
+             failed_at = case when $3 = 'failed' then coalesce(failed_at, now()) else null end
+         where id = $1::uuid
+           and order_message_id = $2::uuid
+           and (
+             ($3 = 'succeeded' and status in ('queued', 'failed'))
+             or ($3 = 'failed' and status = 'queued')
+           )`,
+        [intentId, messageId, status, errorCode],
+      );
+    }
+
+    const refundOperationId = metadata.refundOperationId;
+    if (typeof intentId !== "string" && typeof refundOperationId !== "string") return;
     await client.query(
       `update refund_effects
        set status = $2::refund_effect_status,
@@ -964,13 +1040,16 @@ export class AdminMessagingRepository {
            end,
            failed_at = case when $2 = 'failed' then now() else failed_at end,
            attempt_count = attempt_count + 1
-       where refund_operation_id = $1::uuid
+       where (
+           transactional_notification_intent_id = $1::uuid
+           or ($4::uuid is not null and refund_operation_id = $4::uuid)
+         )
          and effect_type = 'customer_notification'
          and (
-           status = 'pending'
-           or ($2 = 'failed' and status = 'succeeded')
+           ($2 = 'succeeded' and status in ('pending', 'failed'))
+           or ($2 = 'failed' and status = 'pending')
          )`,
-      [metadata.refundOperationId, status, errorCode],
+      [intentId ?? null, status, errorCode, refundOperationId ?? null],
     );
   }
 

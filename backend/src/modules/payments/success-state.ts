@@ -1,4 +1,5 @@
 import type { PoolClient, QueryResultRow } from "pg";
+import { ensureOrderConfirmationIntent } from "../transactional-notifications/producer.js";
 
 type QueryableClient = Pick<PoolClient, "query">;
 
@@ -63,6 +64,13 @@ const uuidPattern =
 const terminalOrderStatuses = new Set(["cancelled", "completed", "refunded"]);
 const terminalPaymentStatuses = new Set(["refunded", "partially_refunded"]);
 
+function notificationEnvironment() {
+  return {
+    lookupBaseUrl: process.env.ORDER_LOOKUP_BASE_URL ?? "http://localhost:3000",
+    nodeEnv: process.env.NODE_ENV ?? "development"
+  };
+}
+
 export async function handleCheckoutSessionCompleted(
   client: QueryableClient,
   session: CheckoutSessionCompletedPayload,
@@ -101,6 +109,13 @@ async function handleSuccessfulPayment(
     }
 
     if (order.payment_status === "paid") {
+      const notification = notificationEnvironment();
+      await ensureOrderConfirmationIntent(
+        client,
+        order.id,
+        notification.lookupBaseUrl,
+        notification.nodeEnv,
+      );
       await client.query("commit");
       return {
         outcome: "already_paid",
@@ -119,6 +134,13 @@ async function handleSuccessfulPayment(
     await consumeFabricInventory(client, order.id);
     await markOrderPaid(client, order, identifiers);
     await insertOrderPaidEvent(client, order, identifiers);
+    const notification = notificationEnvironment();
+    await ensureOrderConfirmationIntent(
+      client,
+      order.id,
+      notification.lookupBaseUrl,
+      notification.nodeEnv,
+    );
     await client.query("commit");
 
     return {

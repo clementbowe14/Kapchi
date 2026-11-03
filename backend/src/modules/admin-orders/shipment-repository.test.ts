@@ -1,6 +1,11 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
+import { ensureOrderShipmentIntent } from "../transactional-notifications/producer.js";
 import { AdminOrderShipmentRepository, confirmShipmentFingerprint } from "./shipment-repository.js";
+
+vi.mock("../transactional-notifications/producer.js", () => ({
+  ensureOrderShipmentIntent: vi.fn(async () => ({ created: true, id: "intent" }))
+}));
 
 const orderId = "11111111-1111-4111-8111-111111111111";
 const actor = { authSubject: "user_admin", userId: "22222222-2222-4222-8222-222222222222" };
@@ -58,6 +63,13 @@ describe("shipment confirmation repository", () => {
     const receipt = db.query.mock.calls.find(([sql]) => String(sql).includes("insert into admin_order_mutation_receipts"));
     expect(receipt?.[1]).toEqual(expect.arrayContaining([orderId, "confirm-1", fingerprint]));
     expect(db.query).toHaveBeenCalledWith("commit");
+    expect(ensureOrderShipmentIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      orderId,
+      "44444444-4444-4444-8444-444444444444",
+      "http://localhost:3000",
+      "test",
+    );
   });
 
   it("replays an identical receipt without reading or changing the order", async () => {
@@ -77,6 +89,13 @@ describe("shipment confirmation repository", () => {
     await expect(new AdminOrderShipmentRepository(db.pool).confirm(orderId, actor, input, "same", fingerprint))
       .resolves.toEqual({ ...stored, replayed: true });
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("update orders"))).toBe(false);
+    expect(ensureOrderShipmentIntent).toHaveBeenCalledWith(
+      expect.anything(),
+      orderId,
+      stored.shipment.id,
+      "http://localhost:3000",
+      "test",
+    );
   });
 
   it("rejects reuse of a receipt key with different input", async () => {

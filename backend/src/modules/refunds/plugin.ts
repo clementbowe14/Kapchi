@@ -7,6 +7,7 @@ import { adminRoute } from "../admin-auth/index.js";
 import { HttpMessageProvider } from "../admin-messaging/provider.js";
 import { AdminMessagingRepository } from "../admin-messaging/repository.js";
 import { AdminMessagingService } from "../admin-messaging/service.js";
+import { TransactionalNotificationOperationsAdapter } from "../admin-messaging/transactional-operations.js";
 import { createStripeClient } from "../payments/stripe-client.js";
 import { RefundError } from "./errors.js";
 import { StripeRefundProvider, type RefundProvider } from "./provider.js";
@@ -84,6 +85,11 @@ export function createRefundPlugin(dependencies: RefundPluginDependencies = {}) 
           new HttpMessageProvider(messagingConfig.delivery),
           messagingConfig.senders,
           lifecycleObserver,
+          new TransactionalNotificationOperationsAdapter(
+            fastify.pg,
+            process.env.ORDER_LOOKUP_BASE_URL ?? "http://localhost:3000",
+            config.app.nodeEnv,
+          ),
         ),
       );
     };

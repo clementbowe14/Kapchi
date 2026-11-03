@@ -177,6 +177,15 @@ describe("request observability", () => {
             customerEmail: "customer@example.com",
             customerPhone: "+15555550123",
             clientSecret: "pi_secret_private"
+          },
+          notification: {
+            from: "support-private@example.com",
+            lookupUrl: "https://shop.test/orders?secret=value",
+            recipientAddress: "recipient-private@example.com",
+            subject: "Private order subject",
+            to: "+15555550999",
+            trackingNumber: "TRACK-PRIVATE-123",
+            trackingUrl: "https://carrier.test/TRACK-PRIVATE-123"
           }
         },
         "redaction-test",
@@ -198,7 +207,14 @@ describe("request observability", () => {
       "4242424242424242",
       "customer@example.com",
       "+15555550123",
-      "pi_secret_private"
+      "pi_secret_private",
+      "support-private@example.com",
+      "https://shop.test/orders?secret=value",
+      "recipient-private@example.com",
+      "Private order subject",
+      "+15555550999",
+      "TRACK-PRIVATE-123",
+      "https://carrier.test/TRACK-PRIVATE-123"
     ]) {
       expect(output).not.toContain(sensitiveValue);
     }

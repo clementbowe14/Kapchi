@@ -1,6 +1,6 @@
 import fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import ordersPlugin from "./plugin.js";
+import { createOrdersPlugin, type OrdersPluginDependencies } from "./plugin.js";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn()
@@ -85,9 +85,11 @@ const itemRowWithAsset = {
   asset_visibility: "private"
 };
 
-async function buildTestServer() {
+async function buildTestServer(
+  rateLimitStore?: OrdersPluginDependencies["rateLimitStore"],
+) {
   const app = fastify({ logger: false });
-  await app.register(ordersPlugin);
+  await app.register(createOrdersPlugin({ rateLimitStore }));
 
   return app;
 }
@@ -194,6 +196,50 @@ describe("ordersPlugin", () => {
     });
     expect(mocks.query).toHaveBeenCalledTimes(1);
 
+    await app.close();
+  });
+
+  it("rate limits repeated lookup attempts before querying order data", async () => {
+    const rateLimitStore = {
+      eval: vi.fn(async () => 11 as unknown)
+    };
+    const app = await buildTestServer(rateLimitStore);
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders/lookup",
+      payload: { orderId: "KAP-1001", email: "customer@example.com" }
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["retry-after"]).toBe("900");
+    expect(response.json()).toEqual({
+      error: "ORDER_LOOKUP_UNAVAILABLE",
+      message: "Order lookup is temporarily unavailable.",
+      statusCode: 429
+    });
+    expect(mocks.query).not.toHaveBeenCalled();
+    const serializedCall = JSON.stringify(rateLimitStore.eval.mock.calls);
+    expect(serializedCall).not.toContain("customer@example.com");
+    expect(serializedCall).not.toContain("KAP-1001");
+    await app.close();
+  });
+
+  it("fails closed without exposing Redis details when lookup throttling is unavailable", async () => {
+    const rateLimitStore = {
+      eval: vi.fn(async () => {
+        throw new Error("redis://password@private-host");
+      })
+    };
+    const app = await buildTestServer(rateLimitStore);
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders/lookup",
+      payload: { orderId: "KAP-1001", email: "customer@example.com" }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain("private-host");
+    expect(mocks.query).not.toHaveBeenCalled();
     await app.close();
   });
 

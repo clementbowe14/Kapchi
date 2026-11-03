@@ -3,6 +3,7 @@ import { closeDatabasePool, getDatabasePool } from "../database/index.js";
 import { HttpMessageProvider } from "../modules/admin-messaging/provider.js";
 import { AdminMessagingRepository } from "../modules/admin-messaging/repository.js";
 import { AdminMessagingService } from "../modules/admin-messaging/service.js";
+import { TransactionalNotificationOperationsAdapter } from "../modules/admin-messaging/transactional-operations.js";
 
 const observer = {
   error: (event: string, fields?: Record<string, unknown>) =>
@@ -20,6 +21,11 @@ try {
     new HttpMessageProvider(config.messaging.delivery),
     config.messaging.senders,
     observer,
+    new TransactionalNotificationOperationsAdapter(
+      getDatabasePool(),
+      process.env.ORDER_LOOKUP_BASE_URL ?? "http://localhost:3000",
+      config.app.nodeEnv,
+    ),
   );
   const result = await service.runDelivery(50);
   console.info(JSON.stringify({ event: "message.dispatch.completed", ...result }));

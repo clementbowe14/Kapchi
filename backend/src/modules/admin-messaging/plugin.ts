@@ -4,20 +4,23 @@ import Joi from "joi";
 import type { Pool } from "pg";
 import { config } from "../../config/index.js";
 import { adminRoute } from "../admin-auth/index.js";
-import { MessagingError } from "./errors.js";
+import { MESSAGE_FAILURE_CODES, MessagingError } from "./errors.js";
 import { HttpMessageProvider, type MessageProvider } from "./provider.js";
 import { AdminMessagingRepository } from "./repository.js";
 import {
   AdminMessagingService,
   type MessagingObserver,
-  type MessagingRepositoryPort
+  type MessagingRepositoryPort,
+  type TransactionalNotificationOperations
 } from "./service.js";
 import type {
   ConversationQuery,
   MessagingWebhookInput,
   QueueNoteInput,
-  QueueReplyInput
+  QueueReplyInput,
+  TransactionalNotificationQuery
 } from "./types.js";
+import { TransactionalNotificationOperationsAdapter } from "./transactional-operations.js";
 import {
   messagingPayloadHash,
   verifyMessagingWebhook
@@ -33,6 +36,25 @@ const listQuery = Joi.object<ConversationQuery>({
   cursor: Joi.string().trim().max(500).optional(),
   limit: Joi.number().integer().min(1).max(100).default(25),
   status: Joi.string().valid("awaiting_admin", "awaiting_customer", "resolved").optional()
+}).required();
+const notificationListQuery = Joi.object<TransactionalNotificationQuery>({
+  failureCode: Joi.string().valid(...MESSAGE_FAILURE_CODES).optional(),
+  kind: Joi.string().valid(
+    "order.cancelled",
+    "order.confirmed",
+    "order.delivered",
+    "order.shipped",
+    "refund.completed",
+  ).optional(),
+  limit: Joi.number().integer().min(1).max(100).default(25),
+  state: Joi.string().valid(
+    "failed",
+    "leased",
+    "pending",
+    "queued",
+    "retryable",
+    "succeeded",
+  ).optional()
 }).required();
 const replyBody = Joi.object<QueueReplyInput>({
   body: Joi.string().trim().min(1).max(10_000).required(),
@@ -96,6 +118,7 @@ function idempotencyKey(request: FastifyRequest, reply: FastifyReply) {
 export type AdminMessagingPluginDependencies = {
   messagingConfig?: typeof config.messaging;
   providerFactory?: () => MessageProvider;
+  notificationOperationsFactory?: (pool: Pool) => TransactionalNotificationOperations;
   repositoryFactory?: (pool: Pool) => MessagingRepositoryPort;
   serviceFactory?: (
     repository: MessagingRepositoryPort,
@@ -113,6 +136,12 @@ export function createAdminMessagingPlugin(
       ?? new AdminMessagingRepository(fastify.pg);
     const provider = dependencies.providerFactory?.()
       ?? new HttpMessageProvider(messagingConfig.delivery);
+    const notifications = dependencies.notificationOperationsFactory?.(fastify.pg)
+      ?? new TransactionalNotificationOperationsAdapter(
+        fastify.pg,
+        process.env.ORDER_LOOKUP_BASE_URL ?? "http://localhost:3000",
+        config.app.nodeEnv,
+      );
     const serviceFor = (logger: FastifyBaseLogger) =>
       dependencies.serviceFactory?.(repository, provider, observer(logger))
       ?? new AdminMessagingService(
@@ -120,7 +149,25 @@ export function createAdminMessagingPlugin(
         provider,
         messagingConfig.senders,
         observer(logger),
+        notifications,
       );
+
+    fastify.get(
+      "/admin/messages/transactional-notifications",
+      adminRoute("orders:read"),
+      async (request, reply) => {
+        const parsed = notificationListQuery.validate(request.query, {
+          abortEarly: false,
+          allowUnknown: false
+        });
+        if (parsed.error) return validationError(reply, parsed.error.message);
+        try {
+          return await serviceFor(request.log).listNotifications(parsed.value);
+        } catch (error) {
+          return sendError(reply, error);
+        }
+      },
+    );
 
     fastify.get(
       "/admin/messages/conversations",
