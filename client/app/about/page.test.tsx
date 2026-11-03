@@ -23,5 +23,8 @@ describe("AboutPage", () => {
     expect(
       screen.queryByAltText(/Bianca Poma.*smiling/i),
     ).not.toBeInTheDocument();
+    const sentinel = document.getElementById("about-page-end");
+    expect(sentinel?.tagName).toBe("SECTION");
+    expect(document.querySelector("footer#about-page-end")).not.toBeInTheDocument();
   });
 });

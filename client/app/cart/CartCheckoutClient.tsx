@@ -14,6 +14,10 @@ import {
 import { buildApiUrl } from "@/lib/api";
 import { publishCartInvalidation } from "@/lib/cart-state";
 import {
+  fetchCheckoutPolicyBundle,
+  type CheckoutPolicyBundle,
+} from "@/lib/policies";
+import {
   cartNeedsReview,
   buildCartItemMutation,
   checkoutErrorMessage,
@@ -340,6 +344,12 @@ export function CartCheckoutClient({
     useState<CheckoutPhase>("idle");
   const [checkoutNotice, setCheckoutNotice] =
     useState<CheckoutNotice | null>(null);
+  const [policyBundle, setPolicyBundle] =
+    useState<CheckoutPolicyBundle | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
+  const [policyLoadError, setPolicyLoadError] = useState("");
+  const [policyAsserted, setPolicyAsserted] = useState(false);
+  const [policyAssertionError, setPolicyAssertionError] = useState("");
   const loadSequence = useRef(0);
   const cartGeneration = useRef(0);
   const cartOwner = useRef<string | null>(null);
@@ -348,6 +358,7 @@ export function CartCheckoutClient({
   const emailInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const checkoutNoticeRef = useRef<HTMLDivElement>(null);
+  const policyCheckboxRef = useRef<HTMLInputElement>(null);
 
   const accountEmail = user?.primaryEmailAddress?.emailAddress?.trim() ?? "";
 
@@ -379,6 +390,26 @@ export function CartCheckoutClient({
       setEmail((current) => current || accountEmail);
     }
   }, [accountEmail, signedIn]);
+
+  const loadPolicyBundle = useCallback(async (bypassCache = false) => {
+    setPolicyLoading(true);
+    setPolicyLoadError("");
+    try {
+      const nextBundle = await fetchCheckoutPolicyBundle({ bypassCache });
+      if (bypassCache) setPolicyAsserted(false);
+      setPolicyBundle(nextBundle);
+    } catch {
+      setPolicyBundle(null);
+      setPolicyLoadError("We could not load the checkout policies. Retry before continuing to payment.");
+      setPolicyAsserted(false);
+    } finally {
+      setPolicyLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPolicyBundle();
+  }, [loadPolicyBundle]);
 
   const loadCart = useCallback(async () => {
     if (!authLoaded) {
@@ -647,7 +678,22 @@ export function CartCheckoutClient({
       return;
     }
 
+    if (!policyBundle) {
+      submitGuard.current = false;
+      setPolicyLoadError("We could not load the checkout policies. Retry before continuing to payment.");
+      return;
+    }
+
+    if (!policyAsserted) {
+      setPolicyAssertionError("Agree to the Terms of Sale and acknowledge the Returns and Personalized Goods Policy before continuing.");
+      setCheckoutNotice(null);
+      submitGuard.current = false;
+      window.setTimeout(() => policyCheckboxRef.current?.focus(), 0);
+      return;
+    }
+
     setFieldErrors({});
+    setPolicyAssertionError("");
     setCheckoutNotice(null);
     setCheckoutPhase("submitting");
     let redirecting = false;
@@ -679,6 +725,11 @@ export function CartCheckoutClient({
             customerEmail: email.trim(),
             customerPhone: phone.trim() || null,
             preferredContactMethod,
+            policyAssertion: {
+              bundleVersion: policyBundle.bundleVersion,
+              returnsAcknowledged: true,
+              termsAgreed: true,
+            },
           }),
           credentials: "include",
           headers,
@@ -710,6 +761,18 @@ export function CartCheckoutClient({
         error.code === "CART_NEEDS_REVIEW"
       ) {
         await loadCart();
+      }
+
+      if (
+        error instanceof CheckoutApiError &&
+        error.code === "POLICY_VERSION_STALE"
+      ) {
+        await loadPolicyBundle(true);
+        setPolicyAsserted(false);
+        setPolicyAssertionError("The store policies changed. Review the refreshed policies and check the box again.");
+        setCheckoutNotice(null);
+        window.setTimeout(() => policyCheckboxRef.current?.focus(), 0);
+        return;
       }
 
       if (
@@ -1019,6 +1082,44 @@ export function CartCheckoutClient({
                 </p>
               ) : null}
 
+              <section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="checkout-policies-heading">
+                <h3 className="text-sm font-semibold text-slate-950" id="checkout-policies-heading">Store policies</h3>
+                {policyLoading ? (
+                  <p className="text-sm text-slate-600" role="status">Loading checkout policies...</p>
+                ) : policyLoadError || !policyBundle ? (
+                  <div className="border-l-4 border-rose-400 bg-rose-50 px-3 py-3 text-sm leading-6 text-rose-800" role="alert">
+                    <p>{policyLoadError}</p>
+                    <button className="mt-2 min-h-10 font-semibold underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500" onClick={() => void loadPolicyBundle(true)} type="button">Retry policies</button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-xs leading-5 text-slate-600">
+                      Production time is separate from carrier transit. Contact and uploaded customization data are used and retained as described in the policies below.
+                    </p>
+                    <div className="flex items-start gap-3">
+                      <input
+                        aria-describedby={policyAssertionError ? "policy-assertion-error policy-bundle-version" : "policy-bundle-version"}
+                        aria-invalid={Boolean(policyAssertionError)}
+                        checked={policyAsserted}
+                        className="mt-1 h-5 w-5 shrink-0 accent-[#8f734f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2"
+                        id="checkout-policy-assertion"
+                        onChange={(event) => {
+                          setPolicyAsserted(event.target.checked);
+                          if (event.target.checked) setPolicyAssertionError("");
+                        }}
+                        ref={policyCheckboxRef}
+                        type="checkbox"
+                      />
+                      <label className="text-sm leading-6 text-slate-700" htmlFor="checkout-policy-assertion">
+                        I agree to the <Link className="font-semibold underline underline-offset-4" href={policyBundle.documents.find((document) => document.key === "terms")!.path}>Terms of Sale</Link>, acknowledge the <Link className="font-semibold underline underline-offset-4" href={policyBundle.documents.find((document) => document.key === "returns")!.path}>Returns and Personalized Goods Policy</Link>, and confirm that the <Link className="font-semibold underline underline-offset-4" href={policyBundle.documents.find((document) => document.key === "shipping")!.path}>Shipping and Production Policy</Link> and <Link className="font-semibold underline underline-offset-4" href={policyBundle.documents.find((document) => document.key === "privacy")!.path}>Privacy Policy</Link> were presented to me. This is not marketing, privacy, or SMS consent.
+                      </label>
+                    </div>
+                    <p className="text-xs text-slate-500" id="policy-bundle-version">Policy bundle {policyBundle.bundleVersion}; effective date {policyBundle.effectiveDate}.</p>
+                    {policyAssertionError ? <p className="text-sm text-rose-700" id="policy-assertion-error" role="alert">{policyAssertionError}</p> : null}
+                  </div>
+                )}
+              </section>
+
               {checkoutNotice ? (
                 <div
                   className="border-l-4 border-rose-400 bg-rose-50 px-3 py-3 text-sm leading-6 text-rose-800 outline-none"
@@ -1044,6 +1145,8 @@ export function CartCheckoutClient({
                 disabled={
                   needsReview ||
                   checkoutPhase !== "idle" ||
+                  policyLoading ||
+                  !policyBundle ||
                   Boolean(removingId) ||
                   Boolean(updatingId)
                 }

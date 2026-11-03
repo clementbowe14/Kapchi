@@ -85,6 +85,23 @@ const itemRowWithAsset = {
   asset_visibility: "private"
 };
 
+const policyRow = {
+  assertions: { returnsAcknowledged: true, termsAgreed: true },
+  bundle_version: "2026-11-03.1",
+  checkout_statement_digest: "5".repeat(64),
+  checkout_statement_version: "2026-11-03.1",
+  documents: [
+    { digest: "b".repeat(64), key: "shipping", path: "/policies/shipping/2026-11-03.1", role: "notice", version: "2026-11-03.1" },
+    { digest: "f".repeat(64), key: "returns", path: "/policies/returns/2026-11-03.1", role: "acknowledgment", version: "2026-11-03.1" },
+    { digest: "d".repeat(64), key: "privacy", path: "/policies/privacy/2026-11-03.1", role: "notice", version: "2026-11-03.1" },
+    { digest: "9".repeat(64), key: "terms", path: "/policies/terms/2026-11-03.1", role: "agreement", version: "2026-11-03.1" }
+  ],
+  effective_date: "2026-11-03",
+  order_id: orderRow.id,
+  schema_version: 1,
+  statement_submitted_at: "2026-11-03T12:00:00.000Z"
+};
+
 async function buildTestServer(
   rateLimitStore?: OrdersPluginDependencies["rateLimitStore"],
 ) {
@@ -103,7 +120,9 @@ describe("ordersPlugin", () => {
   it("looks up an order when the submitted email matches", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [orderRow] })
-      .mockResolvedValueOnce({ rows: [itemRow] });
+      .mockResolvedValueOnce({ rows: [itemRow] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [policyRow] });
 
     const app = await buildTestServer();
     const response = await app.inject({
@@ -128,6 +147,17 @@ describe("ordersPlugin", () => {
       currency: "usd",
       createdAt: "2026-06-01T12:00:00.000Z",
       paidAt: "2026-06-01T12:05:00.000Z",
+      policySnapshot: {
+        bundleVersion: policyRow.bundle_version,
+        checkoutStatement: {
+          digest: policyRow.checkout_statement_digest,
+          version: policyRow.checkout_statement_version
+        },
+        documents: policyRow.documents,
+        effectiveDate: policyRow.effective_date,
+        schemaVersion: 1,
+        statementSubmittedAt: policyRow.statement_submitted_at
+      },
       tracking: null,
       items: [
         {
@@ -251,7 +281,8 @@ describe("ordersPlugin", () => {
         carrier: "Local Courier",
         order_id: orderRow.id,
         tracking_number: "LOCAL-1"
-      }] });
+      }] })
+      .mockResolvedValueOnce({ rows: [policyRow] });
 
     const app = await buildTestServer();
     const response = await app.inject({
@@ -270,6 +301,9 @@ describe("ordersPlugin", () => {
       trackingNumber: "LOCAL-1",
       trackingUrl: null
     });
+    expect(response.json().orders[0].policySnapshot.bundleVersion).toBe(
+      policyRow.bundle_version,
+    );
     expect(response.body).not.toContain("production_notes");
     expect(response.body).not.toContain("adminNotes");
     expect(mocks.query.mock.calls[0][1]).toEqual(["user_123"]);

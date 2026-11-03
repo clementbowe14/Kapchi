@@ -14,6 +14,13 @@ const authState = vi.hoisted(() => ({
   },
 }));
 
+const policyState = vi.hoisted(() => ({ fetch: vi.fn() }));
+
+vi.mock("@/lib/policies", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/policies")>();
+  return { ...actual, fetchCheckoutPolicyBundle: policyState.fetch };
+});
+
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     getToken: authState.getToken,
@@ -77,6 +84,23 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+const policyBundle = {
+  schemaVersion: 1 as const,
+  bundleVersion: "2026-11-03.1",
+  effectiveDate: "2026-11-03",
+  checkoutStatement: { version: "2026-11-03.1", digest: "a".repeat(64) },
+  documents: [
+    { key: "shipping" as const, title: "Shipping and Production Policy", role: "notice" as const, version: "2026-11-03.1", digest: "b".repeat(64), path: "/policies/shipping/2026-11-03.1" },
+    { key: "returns" as const, title: "Returns and Personalized Goods Policy", role: "acknowledgment" as const, version: "2026-11-03.1", digest: "c".repeat(64), path: "/policies/returns/2026-11-03.1" },
+    { key: "privacy" as const, title: "Privacy Policy", role: "notice" as const, version: "2026-11-03.1", digest: "d".repeat(64), path: "/policies/privacy/2026-11-03.1" },
+    { key: "terms" as const, title: "Terms of Sale", role: "agreement" as const, version: "2026-11-03.1", digest: "e".repeat(64), path: "/policies/terms/2026-11-03.1" },
+  ],
+};
+
+async function acceptPolicies(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("checkbox", { name: /I agree to the Terms of Sale/ }));
+}
+
 describe("CartCheckoutClient", () => {
   beforeEach(() => {
     authState.getToken.mockReset();
@@ -85,6 +109,8 @@ describe("CartCheckoutClient", () => {
     authState.isSignedIn = false;
     authState.userId = null;
     authState.user = null;
+    policyState.fetch.mockReset();
+    policyState.fetch.mockResolvedValue(policyBundle);
     vi.stubGlobal("fetch", vi.fn());
   });
 
@@ -107,6 +133,56 @@ describe("CartCheckoutClient", () => {
       "/api/cart/",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("keeps checkout actionable and focuses the policy checkbox when assent is missing", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(cartResponse()));
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    await user.type(screen.getByLabelText("Email"), "guest@example.com");
+    await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await user.click(screen.getByRole("button", { name: "Continue to secure checkout" }));
+
+    const checkbox = screen.getByRole("checkbox", { name: /I agree to the Terms of Sale/ });
+    expect(await screen.findByText(/Agree to the Terms of Sale/)).toBeInTheDocument();
+    await waitFor(() => expect(checkbox).toHaveFocus());
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps cart editing available when policy loading fails and supports retry", async () => {
+    const user = userEvent.setup();
+    policyState.fetch.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(policyBundle);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(cartResponse()));
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    expect(screen.getByRole("button", { name: "Continue to secure checkout" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove item" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Retry policies" }));
+    expect(await screen.findByRole("checkbox", { name: /I agree to the Terms of Sale/ })).toBeInTheDocument();
+  });
+
+  it("refreshes a stale bundle without cache and requires renewed assent", async () => {
+    const user = userEvent.setup();
+    const refreshedBundle = { ...policyBundle, bundleVersion: "2026-11-04.1" };
+    policyState.fetch.mockResolvedValueOnce(policyBundle).mockResolvedValueOnce(refreshedBundle);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(cartResponse()))
+      .mockResolvedValueOnce(jsonResponse({ error: "POLICY_VERSION_STALE", message: "stale" }, 409));
+
+    render(<CartCheckoutClient />);
+    await screen.findByText("Graduation Stole");
+    await user.type(screen.getByLabelText("Email"), "guest@example.com");
+    await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
+    await user.click(screen.getByRole("button", { name: "Continue to secure checkout" }));
+
+    expect(await screen.findByText(/policies changed/)).toBeInTheDocument();
+    expect(screen.getByText(/Policy bundle 2026-11-04.1/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /I agree to the Terms of Sale/ })).not.toBeChecked();
+    expect(policyState.fetch).toHaveBeenLastCalledWith({ bypassCache: true });
   });
 
   it("binds contact data to the reviewed cart and follows a validated Stripe URL", async () => {
@@ -132,6 +208,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+1 (555) 010-1010");
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -151,6 +228,11 @@ describe("CartCheckoutClient", () => {
       customerEmail: "guest@example.com",
       customerPhone: "+1 (555) 010-1010",
       preferredContactMethod: "email",
+      policyAssertion: {
+        bundleVersion: "2026-11-03.1",
+        returnsAcknowledged: true,
+        termsAgreed: true,
+      },
     });
     expect(JSON.stringify(request.body)).not.toContain("subtotal");
     expect(JSON.stringify(request.body)).not.toContain("unitAmount");
@@ -187,6 +269,7 @@ describe("CartCheckoutClient", () => {
     render(<CartCheckoutClient redirectToCheckout={redirect} />);
 
     expect(await screen.findByDisplayValue("member@example.com")).toBeInTheDocument();
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -442,6 +525,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -473,6 +557,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -519,6 +604,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -567,6 +653,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
     await user.click(
       screen.getByRole("button", { name: "Continue to secure checkout" }),
     );
@@ -596,6 +683,7 @@ describe("CartCheckoutClient", () => {
     await screen.findByText("Graduation Stole");
     await user.type(screen.getByLabelText("Email"), "guest@example.com");
     await user.type(screen.getByLabelText("Phone"), "+15550101010");
+    await acceptPolicies(user);
     const button = screen.getByRole("button", {
       name: "Continue to secure checkout",
     });

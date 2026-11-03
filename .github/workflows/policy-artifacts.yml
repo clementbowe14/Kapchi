@@ -1,0 +1,35 @@
+name: Policy checks (publication guard intentionally fails for drafts)
+
+on:
+  pull_request:
+    paths:
+      - "policies/**"
+      - "client/content/generated-policy-manifest.ts"
+      - "backend/src/modules/policies/generated-policy-manifest.ts"
+      - "client/package.json"
+      - ".github/workflows/policy-artifacts.yml"
+  push:
+    branches: [main]
+
+jobs:
+  generated-artifacts:
+    name: Generated policy artifact parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node policies/check-policy-artifacts.mjs
+      - run: node policies/check-policy-publication-wiring.mjs
+
+  production-publication-guard:
+    name: Production publication guard (drafts intentionally fail until owner approval)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Require approved policy bundle and matching owner approval
+        run: node policies/validate-policy-publication.mjs

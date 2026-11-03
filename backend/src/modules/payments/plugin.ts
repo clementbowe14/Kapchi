@@ -17,6 +17,9 @@ import {
   CheckoutCatalogUnavailableError,
   CheckoutCartNotFoundError,
   CheckoutNeedsReviewError,
+  CheckoutPolicyAssertionRequiredError,
+  CheckoutPolicyEvidenceMissingError,
+  CheckoutPolicyVersionStaleError,
   CheckoutProviderError
 } from "./checkout-errors.js";
 import {
@@ -46,6 +49,11 @@ import type {
   CheckoutResult
 } from "./checkout-types.js";
 import { createStripeClient } from "./stripe-client.js";
+import {
+  activePolicyBundle,
+  activePolicyBundleEtag,
+  publicPolicyBundle
+} from "../policies/policy-contract.js";
 import { StripeRefundProvider } from "../refunds/provider.js";
 import {
   StripeWebhookInbox,
@@ -94,7 +102,18 @@ const checkoutSchema = Joi.object<CheckoutRequest>({
     .default(null),
   preferredContactMethod: Joi.string()
     .valid(...preferredContactMethods)
+    .required(),
+  policyAssertion: Joi.object({
+    bundleVersion: Joi.string()
+      .trim()
+      .max(64)
+      .pattern(/^[A-Za-z0-9._-]+$/)
+      .required(),
+    returnsAcknowledged: Joi.boolean().strict().valid(true).required(),
+    termsAgreed: Joi.boolean().strict().valid(true).required()
+  })
     .required()
+    .unknown(false)
 })
   .and("cartId", "cartRevision")
   .required();
@@ -160,6 +179,7 @@ export interface CheckoutStarter {
   startCheckout(
     context: CheckoutCartOwner,
     contact: CheckoutContact,
+    policyAssertion: CheckoutRequest["policyAssertion"],
   ): Promise<CheckoutResult>;
 }
 
@@ -306,6 +326,21 @@ export function createPaymentsPlugin(
       },
     );
 
+    fastify.get("/checkout-policy", async (request, reply) => {
+      const observer = observerFactory(request.log);
+      const notModified = request.headers["if-none-match"] === activePolicyBundleEtag;
+      observeSafely(observer, "info", "checkout.policy.bundle_read", {
+        currentBundleVersion: activePolicyBundle.bundleVersion,
+        resultCode: notModified ? "NOT_MODIFIED" : "FOUND"
+      });
+      reply.header("cache-control", "public, max-age=0, must-revalidate");
+      reply.header("etag", activePolicyBundleEtag);
+      if (notModified) {
+        return reply.code(304).send();
+      }
+      return reply.send(publicPolicyBundle());
+    });
+
     fastify.post(
       "/checkout-sessions",
       { preHandler: [authMiddleware] },
@@ -318,10 +353,26 @@ export function createPaymentsPlugin(
         );
 
         if (error) {
+          const policyRejected = error.details.some(
+            (detail) => detail.path[0] === "policyAssertion",
+          );
           observeSafely(observer, "warn", "checkout.contact.rejected", {
             authMode,
             resultCode: "VALIDATION_ERROR"
           });
+          if (policyRejected) {
+            observeSafely(observer, "warn", "checkout.policy.rejected", {
+              authMode,
+              currentBundleVersion: activePolicyBundle.bundleVersion,
+              resultCode: "POLICY_ASSERTION_REQUIRED"
+            });
+            return reply.code(400).send({
+              error: "POLICY_ASSERTION_REQUIRED",
+              message:
+                "You must agree to the Terms of Sale and acknowledge the Returns and Personalized Goods Policy before checkout.",
+              statusCode: 400
+            });
+          }
           return reply.code(400).send({
             error: "VALIDATION_ERROR",
             message: error.message,
@@ -352,9 +403,49 @@ export function createPaymentsPlugin(
               customerPhone: checkoutRequest.customerPhone,
               preferredContactMethod: checkoutRequest.preferredContactMethod
             },
+            checkoutRequest.policyAssertion,
           );
           return reply.code(201).send(result);
         } catch (checkoutError) {
+          if (checkoutError instanceof CheckoutPolicyAssertionRequiredError) {
+            observeSafely(observer, "warn", "checkout.policy.rejected", {
+              authMode,
+              currentBundleVersion: activePolicyBundle.bundleVersion,
+              resultCode: checkoutError.code
+            });
+            return reply.code(400).send({
+              error: checkoutError.code,
+              message: checkoutError.message,
+              statusCode: 400
+            });
+          }
+          if (checkoutError instanceof CheckoutPolicyVersionStaleError) {
+            observeSafely(observer, "warn", "checkout.policy.rejected", {
+              authMode,
+              currentBundleVersion: checkoutError.currentPolicyBundle.bundleVersion,
+              requestedBundleVersion: checkoutError.requestedBundleVersion,
+              resultCode: checkoutError.code
+            });
+            return reply.code(409).send({
+              currentPolicyBundle: checkoutError.currentPolicyBundle,
+              error: checkoutError.code,
+              message: checkoutError.message,
+              statusCode: 409
+            });
+          }
+          if (checkoutError instanceof CheckoutPolicyEvidenceMissingError) {
+            observeSafely(observer, "warn", "checkout.policy.rejected", {
+              authMode,
+              currentBundleVersion: activePolicyBundle.bundleVersion,
+              resultCode: checkoutError.code
+            });
+            return reply.code(409).send({
+              currentPolicyBundle: publicPolicyBundle(),
+              error: checkoutError.code,
+              message: checkoutError.message,
+              statusCode: 409
+            });
+          }
           if (checkoutError instanceof CheckoutCartNotFoundError) {
             return reply.code(404).send({
               error: "CART_NOT_FOUND",

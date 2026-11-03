@@ -17,6 +17,7 @@
     "refunds:reconcile": "tsx src/scripts/reconcile-refunds.ts",
     "shipping:exports:purge": "tsx src/scripts/purge-shipping-exports.ts",
     "inventory:reconcile": "tsx src/scripts/reconcile-fabric-inventory.ts",
+    "policies:assert-enforcement-ready": "tsx src/scripts/assert-policy-enforcement-ready.ts",
     "messages:dispatch": "tsx src/scripts/dispatch-messages.ts",
     "e2e:admin-orders:reset": "tsx src/scripts/reset-admin-order-e2e.ts",
     "start": "node dist/server.js",

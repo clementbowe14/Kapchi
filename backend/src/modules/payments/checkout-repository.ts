@@ -1,13 +1,26 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { hashSessionId } from "../cart/guest-session.js";
+import {
+  activePolicyBundle,
+  serializePolicySnapshot,
+  snapshotForInsertion,
+  type PersistedPolicyAssertionRow
+} from "../policies/policy-contract.js";
 import { parseProductionEstimateSnapshot } from "../production-estimates.js";
-import { CheckoutCartNotFoundError, CheckoutNeedsReviewError } from "./checkout-errors.js";
+import {
+  CheckoutCartNotFoundError,
+  CheckoutNeedsReviewError,
+  CheckoutPolicyAssertionRequiredError,
+  CheckoutPolicyEvidenceMissingError,
+  CheckoutPolicyVersionStaleError
+} from "./checkout-errors.js";
 import type {
   CatalogUnavailableDisposition,
   CheckoutCartOwner,
   CheckoutContact,
   CheckoutLine,
+  PolicyAssertion,
   CheckoutReviewIssue,
   CheckoutStatus,
   PreparedCheckout
@@ -87,14 +100,14 @@ type CartItemLockRow = QueryResultRow & {
   production_priority_code: string | null;
 };
 
-type ExistingOrderRow = QueryResultRow & {
+type ExistingOrderRow = QueryResultRow & Partial<PersistedPolicyAssertionRow> & {
   customer_email: string | null;
   id: string;
   public_order_number: string;
   stripe_checkout_session_id: string | null;
 };
 
-type CheckoutStatusRow = QueryResultRow & {
+type CheckoutStatusRow = QueryResultRow & Partial<PersistedPolicyAssertionRow> & {
   id: string;
   payment_status: string;
   public_order_number: string;
@@ -318,6 +331,7 @@ export class CheckoutRepository {
   async prepareCheckout(
     owner: CheckoutCartOwner,
     contact: CheckoutContact,
+    policyAssertion: PolicyAssertion,
   ): Promise<PreparedCheckout> {
     const prepared = await this.withTransaction(async (client) => {
       const cart = await this.lockCheckoutCart(client, owner);
@@ -367,6 +381,14 @@ export class CheckoutRepository {
       }
 
       if (existing) {
+        let policySnapshot = this.policySnapshotFromNullableRow(existing);
+        if (!policySnapshot) {
+          if (existing.stripe_checkout_session_id) {
+            throw new CheckoutPolicyEvidenceMissingError();
+          }
+          this.assertCurrentPolicy(policyAssertion);
+          policySnapshot = await this.insertPolicyAssertion(client, existing.id);
+        }
         return {
           cartId: cart.id,
           cartRevision: cart.revision,
@@ -375,10 +397,13 @@ export class CheckoutRepository {
           existingStripeSessionId: existing.stripe_checkout_session_id,
           lines: await this.loadOrderLines(client, existing.id),
           orderId: existing.id,
+          policySnapshot,
           publicOrderNumber: existing.public_order_number,
           reusedOrder: true
         };
       }
+
+      this.assertCurrentPolicy(policyAssertion);
 
       const subtotal = items.reduce(
         (sum, item) => sum + item.unit_amount_cents * item.quantity,
@@ -429,6 +454,8 @@ export class CheckoutRepository {
           cart.currency
         ],
       );
+
+      const policySnapshot = await this.insertPolicyAssertion(client, orderId);
 
       const lines: CheckoutLine[] = [];
       for (const item of items) {
@@ -561,6 +588,7 @@ export class CheckoutRepository {
         existingStripeSessionId: null,
         lines,
         orderId,
+        policySnapshot,
         publicOrderNumber: orderNumber(orderId),
         reusedOrder: false
       };
@@ -586,9 +614,21 @@ export class CheckoutRepository {
     const result = "authSubject" in owner
       ? await this.pool.query<CheckoutStatusRow>(
           `
-            select o.id, o.public_order_number, o.payment_status
+            select
+              o.id,
+              o.public_order_number,
+              o.payment_status,
+              opa.schema_version,
+              opa.bundle_version,
+              opa.effective_date,
+              opa.checkout_statement_version,
+              opa.checkout_statement_digest,
+              opa.documents,
+              opa.assertions,
+              opa.statement_submitted_at
             from orders o
             left join users u on u.id = o.authenticated_user_id
+            left join order_policy_assertions opa on opa.order_id = o.id
             where o.stripe_checkout_session_id = $1
               and (
                 o.user_id = $2
@@ -600,9 +640,21 @@ export class CheckoutRepository {
         )
       : await this.pool.query<CheckoutStatusRow>(
           `
-            select o.id, o.public_order_number, o.payment_status
+            select
+              o.id,
+              o.public_order_number,
+              o.payment_status,
+              opa.schema_version,
+              opa.bundle_version,
+              opa.effective_date,
+              opa.checkout_statement_version,
+              opa.checkout_statement_digest,
+              opa.documents,
+              opa.assertions,
+              opa.statement_submitted_at
             from orders o
             join carts c on c.id = o.cart_id
+            left join order_policy_assertions opa on opa.order_id = o.id
             where o.stripe_checkout_session_id = $1
               and c.id = $2
               and c.guest_token_hash = $3
@@ -616,7 +668,8 @@ export class CheckoutRepository {
       ? {
           orderId: order.id,
           paymentStatus: order.payment_status,
-          publicOrderNumber: order.public_order_number
+          publicOrderNumber: order.public_order_number,
+          policySnapshot: this.policySnapshotFromNullableRow(order)
         }
       : null;
   }
@@ -1020,24 +1073,107 @@ export class CheckoutRepository {
   private async findExistingOrder(client: Queryable, cartId: string) {
     const result = await client.query<ExistingOrderRow>(
       `
-        select id, public_order_number, customer_email, stripe_checkout_session_id
-        from orders
-        where cart_id = $1
-          and status = 'pending_payment'
-          and payment_status in ('unpaid', 'checkout_started', 'failed')
+        select
+          o.id,
+          o.public_order_number,
+          o.customer_email,
+          o.stripe_checkout_session_id,
+          opa.schema_version,
+          opa.bundle_version,
+          opa.effective_date,
+          opa.checkout_statement_version,
+          opa.checkout_statement_digest,
+          opa.documents,
+          opa.assertions,
+          opa.statement_submitted_at
+        from orders o
+        left join order_policy_assertions opa on opa.order_id = o.id
+        where o.cart_id = $1
+          and o.status = 'pending_payment'
+          and o.payment_status in ('unpaid', 'checkout_started', 'failed')
           and not exists (
             select 1
             from order_events catalog_failure
-            where catalog_failure.order_id = orders.id
+            where catalog_failure.order_id = o.id
               and catalog_failure.event_type = 'checkout.catalog_unavailable'
           )
-        order by created_at desc, id desc
+        order by o.created_at desc, o.id desc
         limit 1
-        for update
+        for update of o
       `,
       [cartId],
     );
     return result.rows[0] ?? null;
+  }
+
+  private assertCurrentPolicy(policyAssertion: PolicyAssertion) {
+    if (
+      !policyAssertion ||
+      policyAssertion.termsAgreed !== true ||
+      policyAssertion.returnsAcknowledged !== true ||
+      typeof policyAssertion.bundleVersion !== "string" ||
+      policyAssertion.bundleVersion.length === 0
+    ) {
+      throw new CheckoutPolicyAssertionRequiredError();
+    }
+    if (policyAssertion.bundleVersion !== activePolicyBundle.bundleVersion) {
+      throw new CheckoutPolicyVersionStaleError(
+        policyAssertion.bundleVersion,
+        activePolicyBundle,
+      );
+    }
+  }
+
+  private async insertPolicyAssertion(client: Queryable, orderId: string) {
+    const policy = snapshotForInsertion();
+    const result = await client.query<PersistedPolicyAssertionRow>(
+      `
+        insert into order_policy_assertions (
+          order_id,
+          schema_version,
+          bundle_version,
+          effective_date,
+          checkout_statement_version,
+          checkout_statement_digest,
+          documents,
+          assertions
+        ) values ($1, $2, $3, $4::date, $5, $6, $7::jsonb, $8::jsonb)
+        returning
+          schema_version,
+          bundle_version,
+          effective_date,
+          checkout_statement_version,
+          checkout_statement_digest,
+          documents,
+          assertions,
+          statement_submitted_at
+      `,
+      [
+        orderId,
+        policy.schemaVersion,
+        policy.bundleVersion,
+        policy.effectiveDate,
+        policy.checkoutStatement.version,
+        policy.checkoutStatement.digest,
+        JSON.stringify(policy.documents),
+        JSON.stringify(policy.assertions)
+      ],
+    );
+    const snapshot = serializePolicySnapshot(result.rows[0]);
+    if (!snapshot) {
+      throw new Error("Policy assertion was not persisted.");
+    }
+    return snapshot;
+  }
+
+  private policySnapshotFromNullableRow(
+    row: Partial<PersistedPolicyAssertionRow>,
+  ) {
+    if (row.schema_version === null || row.schema_version === undefined) {
+      return null;
+    }
+
+    return serializePolicySnapshot(row as PersistedPolicyAssertionRow);
   }
 
   private async loadOrderLines(client: Queryable, orderId: string) {

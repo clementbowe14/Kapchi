@@ -3,6 +3,11 @@
 import { ClerkLoaded, ClerkLoading, useAuth, useUser } from "@clerk/nextjs";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { buildApiUrl } from "@/lib/api";
+import { OrderPolicies } from "@/components/OrderPolicies";
+import {
+  parseCustomerPolicySnapshot,
+  type CustomerPolicySnapshot,
+} from "@/lib/policies";
 
 export type CustomerOrderItem = {
   id: string;
@@ -27,6 +32,7 @@ export type CustomerOrder = {
   currency: string;
   createdAt: string;
   paidAt?: string | null;
+  policySnapshot?: CustomerPolicySnapshot | null;
   items: CustomerOrderItem[];
   tracking?: {
     carrier?: string | null;
@@ -52,6 +58,16 @@ function humanizeKey(key: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseCustomerOrder(value: unknown): CustomerOrder {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.publicOrderNumber !== "string" || !Array.isArray(value.items)) {
+    throw new Error("Invalid order response.");
+  }
+  return {
+    ...(value as CustomerOrder),
+    policySnapshot: parseCustomerPolicySnapshot(value.policySnapshot),
+  };
 }
 
 function getStringField(value: unknown, keys: string[]) {
@@ -273,6 +289,7 @@ function OrderCard({ order }: { order: CustomerOrder }) {
           )}
         </div>
       </div>
+      <OrderPolicies snapshot={order.policySnapshot ?? null} />
     </article>
   );
 }
@@ -428,7 +445,7 @@ export function OrderLookupClient() {
         const orders = Array.isArray(body) ? body : body.orders;
 
         if (!cancelled) {
-          setHistoryOrders(Array.isArray(orders) ? orders : []);
+          setHistoryOrders(Array.isArray(orders) ? orders.map(parseCustomerOrder) : []);
           setHistoryState("success");
         }
       } catch (error) {
@@ -488,7 +505,7 @@ export function OrderLookupClient() {
         throw new Error(await readError(response));
       }
 
-      const order = (await response.json()) as CustomerOrder;
+      const order = parseCustomerOrder(await response.json());
       setLookupOrder(order);
       setLookupState("success");
     } catch (error) {

@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": "2026-11-03.1",
+  "publicationStatus": "draft",
+  "effectiveDate": "2026-11-03",
+  "checkoutStatement": {
+    "version": "2026-11-03.1",
+    "text": "I agree to the Terms of Sale, acknowledge the Returns and Personalized Goods Policy, and confirm that the Shipping and Production Policy and Privacy Policy were presented to me. This is not marketing, privacy, or SMS consent."
+  },
+  "documents": [
+    {
+      "key": "shipping",
+      "title": "Shipping and Production Policy",
+      "role": "notice",
+      "version": "2026-11-03.1",
+      "summary": "How made-to-order production estimates differ from carrier transit estimates.",
+      "sections": [
+        {
+          "heading": "Made-to-order production",
+          "paragraphs": [
+            "Personalized Kapchi stoles are made to order. The production estimate shown for your selected configuration and captured with your order is the estimate that applies to that order.",
+            "Production time is the time Kapchi expects to need to prepare the item before it is handed to a carrier. It is separate from carrier transit time."
+          ]
+        },
+        {
+          "heading": "Carrier transit",
+          "paragraphs": [
+            "Any carrier transit estimate begins after production is complete and the carrier receives the package. Carrier timing can be affected by the destination, weather, holidays, and carrier operations. Kapchi does not control or guarantee carrier delivery estimates."
+          ]
+        },
+        {
+          "heading": "Rush production",
+          "paragraphs": [
+            "Rush service changes production priority only when an eligible rush option is shown, selected, and paid for with the order. Rush production does not guarantee a carrier delivery date or shorten carrier transit time."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "returns",
+      "title": "Returns and Personalized Goods Policy",
+      "role": "acknowledgment",
+      "version": "2026-11-03.1",
+      "summary": "Review requirements and return limits for goods made to a customer's selections.",
+      "sections": [
+        {
+          "heading": "Personalized goods",
+          "paragraphs": [
+            "Personalized and customized goods are generally not returnable for a change of mind because they are produced to the customer's selections. This policy does not limit remedies that cannot be excluded under applicable law."
+          ]
+        },
+        {
+          "heading": "Review your selections",
+          "paragraphs": [
+            "Customer-supplied spelling, text, images, fabric choices, trim choices, and other selected options are production instructions. Review them carefully before payment.",
+            "Requests for customization beyond the options selected and paid for will not be produced. Kapchi may ask for clarification when submitted instructions cannot be produced as provided."
+          ]
+        },
+        {
+          "heading": "Damaged, defective, or incorrect orders",
+          "paragraphs": [
+            "If an order arrives damaged, defective, or different from the accepted production instructions, use the contact method shown in your order communications so Kapchi can review the order and the available remedy."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "privacy",
+      "title": "Privacy Policy",
+      "role": "notice",
+      "version": "2026-11-03.1",
+      "summary": "How Kapchi currently uses order, contact, account, and uploaded customization data.",
+      "sections": [
+        {
+          "heading": "Information used by Kapchi",
+          "paragraphs": [
+            "Kapchi uses contact, account, order, shipping, and customization information to operate checkout, fulfill orders, send transactional order communications, provide account or order support, and maintain business and legal records.",
+            "Stripe handles hosted payment and full card credentials. Kapchi does not store full card credentials. Clerk processes authentication information. Vercel Blob stores uploaded customization images. Configured database and infrastructure providers process order and contact data, and configured email or SMS providers process information needed for transactional messages. Authorized Kapchi administrators can access information needed for these operational purposes."
+          ]
+        },
+        {
+          "heading": "Uploaded customization images",
+          "paragraphs": [
+            "Customer customization images are private application assets. Access is limited through authenticated and order-related application controls, including operational access for authorized Kapchi administrators.",
+            "Contact details and uploaded images are currently retained for fulfillment, support, and recordkeeping. Images uploaded to carts that never become orders, including incomplete or abandoned checkouts, may remain stored because the application does not currently have an automated purge process. No fixed retention period is promised by this policy."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "terms",
+      "title": "Terms of Sale",
+      "role": "agreement",
+      "version": "2026-11-03.1",
+      "summary": "The terms that apply when a customer submits and pays for a Kapchi order.",
+      "sections": [
+        {
+          "heading": "Orders and payment",
+          "paragraphs": [
+            "An order is submitted using the item configuration, price, and currency displayed at checkout. Payment is completed through Stripe's hosted checkout. An order is not treated as paid merely because checkout was opened.",
+            "Customers are responsible for providing accurate contact, shipping, and customization information and for reviewing the order before payment."
+          ]
+        },
+        {
+          "heading": "Customization instructions",
+          "paragraphs": [
+            "Customers must have the right to use all text and images they upload or submit. Unlawful, infringing, unsafe, unpaid, or technically unproducible customization requests may be rejected, and Kapchi may request clarification before production.",
+            "The Shipping and Production Policy and the Returns and Personalized Goods Policy form part of these Terms of Sale and should be reviewed before checkout."
+          ]
+        }
+      ]
+    }
+  ]
+}

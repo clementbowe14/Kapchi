@@ -18,6 +18,7 @@ import type {
   CatalogUnavailableDisposition,
   CheckoutContact,
   CheckoutCartOwner,
+  PolicyAssertion,
   CheckoutResult,
   CheckoutStatus,
   PreparedCheckout
@@ -41,6 +42,7 @@ export interface CheckoutRepositoryPort {
   prepareCheckout(
     context: CheckoutCartOwner,
     contact: CheckoutContact,
+    policyAssertion: PolicyAssertion,
   ): Promise<PreparedCheckout>;
   retireTerminalCheckout(
     orderId: string,
@@ -127,8 +129,9 @@ export class CheckoutService {
   async startCheckout(
     context: CheckoutCartOwner,
     contact: CheckoutContact,
+    policyAssertion: PolicyAssertion,
   ): Promise<CheckoutResult> {
-    let prepared = await this.prepareCheckout(context, contact);
+    let prepared = await this.prepareCheckout(context, contact, policyAssertion);
     let session = await this.requestProviderSession(prepared);
     let disposition = sessionDisposition(session, this.clock.now());
 
@@ -163,7 +166,7 @@ export class CheckoutService {
         throw new CheckoutProviderError();
       }
 
-      prepared = await this.prepareCheckout(context, contact);
+      prepared = await this.prepareCheckout(context, contact, policyAssertion);
       session = await this.requestProviderSession(prepared);
       disposition = sessionDisposition(session, this.clock.now());
 
@@ -204,11 +207,16 @@ export class CheckoutService {
   private async prepareCheckout(
     context: CheckoutCartOwner,
     contact: CheckoutContact,
+    policyAssertion: PolicyAssertion,
   ) {
     this.observe("info", "checkout.preparation.started");
 
     try {
-      const prepared = await this.repository.prepareCheckout(context, contact);
+      const prepared = await this.repository.prepareCheckout(
+        context,
+        contact,
+        policyAssertion,
+      );
       this.observe("info", "checkout.preparation.succeeded", {
         cartId: prepared.cartId,
         cartRevision: prepared.cartRevision,
@@ -218,6 +226,20 @@ export class CheckoutService {
         orderId: prepared.orderId,
         reusedOrder: prepared.reusedOrder
       });
+      this.observe(
+        "info",
+        prepared.reusedOrder
+          ? "checkout.policy.existing_order_reused"
+          : "checkout.policy.persisted",
+        {
+          orderId: prepared.orderId,
+          requestedBundleVersion: policyAssertion.bundleVersion,
+          resultCode: prepared.reusedOrder
+            ? "EXISTING_ASSERTION_REUSED"
+            : "ASSERTION_PERSISTED",
+          storedBundleVersion: prepared.policySnapshot.bundleVersion
+        },
+      );
       return prepared;
     } catch (error) {
       this.observe("error", "checkout.preparation.failed", {

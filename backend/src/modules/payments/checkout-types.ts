@@ -1,4 +1,10 @@
 import type { GuestCartContext } from "../cart/guest-session.js";
+import type {
+  CustomerPolicySnapshot,
+  PolicyAssertion
+} from "../policies/policy-contract.js";
+
+export type { CustomerPolicySnapshot, PolicyAssertion };
 
 export type CheckoutCartOwner =
   | (GuestCartContext & { expectedRevision?: number })
@@ -19,6 +25,7 @@ export type CheckoutContact = {
 export type CheckoutRequest = CheckoutContact & {
   cartId?: string;
   cartRevision?: number;
+  policyAssertion: PolicyAssertion;
 };
 
 export type CheckoutReviewIssue = {
@@ -42,6 +49,7 @@ export type PreparedCheckout = {
   existingStripeSessionId: string | null;
   lines: CheckoutLine[];
   orderId: string;
+  policySnapshot: CustomerPolicySnapshot;
   publicOrderNumber: string;
   reusedOrder: boolean;
 };
@@ -58,6 +66,7 @@ export type CheckoutStatus = {
   orderId: string;
   paymentStatus: string;
   publicOrderNumber: string;
+  policySnapshot: CustomerPolicySnapshot | null;
 };
 
 export type CatalogUnavailableDisposition = {

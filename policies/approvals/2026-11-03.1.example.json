@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": "2026-11-03.1",
+  "approver": "REPLACE WITH OWNER NAME",
+  "approvalDate": "REPLACE WITH YYYY-MM-DD",
+  "scope": ["owner"],
+  "activationDate": "REPLACE WITH YYYY-MM-DD",
+  "checkoutStatement": {
+    "version": "2026-11-03.1",
+    "digest": "REPLACE WITH GENERATED DIGEST"
+  },
+  "documents": [
+    { "key": "shipping", "version": "2026-11-03.1", "digest": "REPLACE WITH GENERATED DIGEST" },
+    { "key": "returns", "version": "2026-11-03.1", "digest": "REPLACE WITH GENERATED DIGEST" },
+    { "key": "privacy", "version": "2026-11-03.1", "digest": "REPLACE WITH GENERATED DIGEST" },
+    { "key": "terms", "version": "2026-11-03.1", "digest": "REPLACE WITH GENERATED DIGEST" }
+  ]
+}

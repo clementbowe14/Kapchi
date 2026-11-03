@@ -44,14 +44,25 @@ vi.mock("stripe", () => ({
 
 const [
   { authPlugin },
-  { CheckoutCatalogUnavailableError, CheckoutNeedsReviewError },
-  { createPaymentsPlugin, default: paymentsPlugin }
+  {
+    CheckoutCatalogUnavailableError,
+    CheckoutNeedsReviewError,
+    CheckoutPolicyVersionStaleError
+  },
+  { createPaymentsPlugin, default: paymentsPlugin },
+  { activePolicyBundle }
 ] = await Promise.all([
   import("../auth/index.js"),
   import("./checkout-errors.js"),
-  import("./plugin.js")
+  import("./plugin.js"),
+  import("../policies/policy-contract.js")
 ]);
 const stripeClientsConstructedDuringImport = mocks.stripeConstructor.mock.calls.length;
+const policyAssertion = {
+  bundleVersion: "2026-11-03.1",
+  returnsAcknowledged: true,
+  termsAgreed: true
+};
 
 async function buildTestServer() {
   const app = fastify({ logger: false });
@@ -74,6 +85,103 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const app = await buildTestServer();
 
     expect(mocks.stripeConstructor).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("serves authoritative checkout policy metadata with revalidation headers", async () => {
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "GET",
+      url: "/payments/checkout-policy"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(activePolicyBundle);
+    expect(response.headers["cache-control"]).toBe(
+      "public, max-age=0, must-revalidate",
+    );
+    expect(response.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
+
+    const notModified = await app.inject({
+      headers: { "if-none-match": response.headers.etag! },
+      method: "GET",
+      url: "/payments/checkout-policy"
+    });
+    expect(notModified.statusCode).toBe(304);
+    expect(notModified.body).toBe("");
+    await app.close();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["false terms", { ...policyAssertion, termsAgreed: false }],
+    ["false returns", { ...policyAssertion, returnsAcknowledged: false }],
+    ["string true", { ...policyAssertion, termsAgreed: "true" }]
+  ])("rejects a %s policy assertion at the request boundary", async (_label, assertion) => {
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        customerEmail: "guest@example.com",
+        customerPhone: "+15550101010",
+        preferredContactMethod: "phone",
+        ...(assertion === undefined ? {} : { policyAssertion: assertion })
+      },
+      url: "/payments/checkout-sessions"
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "POLICY_ASSERTION_REQUIRED",
+      message:
+        "You must agree to the Terms of Sale and acknowledge the Returns and Personalized Goods Policy before checkout.",
+      statusCode: 400
+    });
+    expect(response.json().message).not.toContain("accept");
+    await app.close();
+  });
+
+  it("returns current metadata when a not-yet-materialized checkout is stale", async () => {
+    mocks.verifyClerkToken.mockResolvedValue({
+      claims: {},
+      permissions: [],
+      roles: [],
+      sessionId: "sess_authenticated",
+      token: "verified-token",
+      userId: "user_123"
+    });
+    const startCheckout = vi.fn(async () => {
+      throw new CheckoutPolicyVersionStaleError("2026-10-01.1", activePolicyBundle);
+    });
+    const app = fastify({ logger: false });
+    await app.register(authPlugin);
+    app.decorate("pg", {} as Pool);
+    await app.register(
+      createPaymentsPlugin({
+        checkoutServiceFactory: () => ({ startCheckout }),
+        stripeClientFactory: () => ({
+          checkout: { sessions: {} },
+          webhooks: { constructEvent: mocks.constructEvent }
+        }) as never
+      }),
+      { prefix: "/payments" },
+    );
+
+    const response = await app.inject({
+      headers: { authorization: "Bearer verified-token" },
+      method: "POST",
+      payload: {
+        customerEmail: "customer@example.com",
+        preferredContactMethod: "email",
+        policyAssertion
+      },
+      url: "/payments/checkout-sessions"
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      currentPolicyBundle: activePolicyBundle,
+      error: "POLICY_VERSION_STALE"
+    });
     await app.close();
   });
 
@@ -146,7 +254,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
         cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
         cartRevision: 7,
         customerEmail: " Customer@Example.com ",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -174,6 +283,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
         customerPhone: null,
         preferredContactMethod: "email"
       },
+      policyAssertion,
     );
     expect(mocks.stripeConstructor).not.toHaveBeenCalled();
     await app.close();
@@ -225,7 +335,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
         cartRevision: 2,
         customerEmail: "Guest@Example.com",
         customerPhone: "+1 (555) 010-1010",
-        preferredContactMethod: "phone"
+        preferredContactMethod: "phone",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -238,6 +349,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
         customerPhone: "+15550101010",
         preferredContactMethod: "phone"
       },
+      policyAssertion,
     );
     await app.close();
   });
@@ -273,7 +385,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
         cartRevision: 2,
         customerEmail: "guest@example.com",
         customerPhone: "+15550101010",
-        preferredContactMethod: "phone"
+        preferredContactMethod: "phone",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -332,7 +445,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -388,7 +502,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -454,7 +569,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -495,7 +611,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -520,7 +637,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "phone"
+        preferredContactMethod: "phone",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -539,7 +657,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
         customerEmail: "customer@example.com",
         customerPhone: "+15550101010",
         orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -558,7 +677,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
         cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
         customerEmail: "customer@example.com",
         customerPhone: "+15550101010",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -607,7 +727,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       method: "POST",
       payload: {
         customerEmail: "customer@example.com",
-        preferredContactMethod: "email"
+        preferredContactMethod: "email",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -659,7 +780,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
       payload: {
         customerEmail: "customer@example.com",
         customerPhone: "+1 (555) 010-1010",
-        preferredContactMethod: "phone"
+        preferredContactMethod: "phone",
+        policyAssertion
       },
       url: "/payments/checkout-sessions"
     });
@@ -673,7 +795,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     await app.close();
   });
 
-  it("returns only payment state for an authenticated checkout owner", async () => {
+  it("returns payment state and policy evidence for an authenticated checkout owner", async () => {
     mocks.verifyClerkToken.mockResolvedValue({
       claims: {},
       permissions: [],
@@ -685,7 +807,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const status = {
       orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
       paymentStatus: "paid",
-      publicOrderNumber: "KAP-2DB9F8E1D0F0"
+      publicOrderNumber: "KAP-2DB9F8E1D0F0",
+      policySnapshot: null
     };
     const getCheckoutStatus = vi.fn()
       .mockResolvedValueOnce(status)
@@ -728,6 +851,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
     expect(Object.keys(owned.json()).sort()).toEqual([
       "orderId",
       "paymentStatus",
+      "policySnapshot",
       "publicOrderNumber"
     ]);
     expect(getCheckoutStatus).toHaveBeenNthCalledWith(
@@ -746,7 +870,8 @@ describe("paymentsPlugin Stripe webhooks", () => {
     const getCheckoutStatus = vi.fn(async () => ({
       orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
       paymentStatus: "checkout_started",
-      publicOrderNumber: "KAP-2DB9F8E1D0F0"
+      publicOrderNumber: "KAP-2DB9F8E1D0F0",
+      policySnapshot: null
     }));
     const repository = {
       finalizeCheckout: vi.fn(),
