@@ -81,6 +81,13 @@ function AuthenticatedState({ mobile = false, onNavigate }: NavbarAuthProps) {
           </div>
           <ChevronDownIcon className="h-5 w-5 text-slate-400" />
         </div>
+        <Link
+          href="/admin/orders"
+          onClick={onNavigate}
+          className="inline-flex h-11 w-full items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872] focus-visible:ring-offset-2"
+        >
+          Admin orders
+        </Link>
         <SignOutButton redirectUrl={AUTH_ROUTES.home}>
           <button
             type="button"
@@ -96,6 +103,12 @@ function AuthenticatedState({ mobile = false, onNavigate }: NavbarAuthProps) {
 
   return (
     <div className="flex items-center gap-3 rounded-full border border-white/60 bg-white/75 py-1.5 pl-1.5 pr-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur">
+      <Link
+        href="/admin/orders"
+        className="inline-flex h-9 items-center rounded-full px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b49872]"
+      >
+        Admin orders
+      </Link>
       <UserButton
         userProfileMode="navigation"
         userProfileUrl={AUTH_ROUTES.userProfile}

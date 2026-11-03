@@ -132,6 +132,11 @@ dist
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 
+# Browser test sessions and artifacts
+**/.auth/
+**/playwright-report/
+**/test-results/
+
 # yarn v3
 .pnp.*
 .yarn/*
