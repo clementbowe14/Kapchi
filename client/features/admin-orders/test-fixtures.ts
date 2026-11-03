@@ -50,6 +50,20 @@ export function createAdminOrderDetail(
     cancelledAt: null,
     completedAt: null,
     contactSnapshot: summary.customer,
+    fulfillments: [
+      {
+        fulfillmentNumber: 1,
+        id: "33333333-3333-4333-8333-333333333333",
+        shippingAddressSnapshot: {
+          city: "Brooklyn",
+          country: "US",
+          line1: "100 Main Street",
+          postalCode: "11201",
+          state: "NY",
+        },
+        status: "in_progress",
+      },
+    ],
     items: [
       {
         catalogReference: { fabricStatus: "active", listingStatus: "active" },
@@ -92,6 +106,7 @@ export function createAdminOrderDetail(
       },
     ],
     paidAt: "2026-10-28T14:35:00.000Z",
+    shipments: [],
     shippedAt: null,
     shipping: {
       address: {
