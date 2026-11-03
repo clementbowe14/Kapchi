@@ -1,6 +1,6 @@
 # Kapchi MVP Launch Plan
 
-Last updated: November 2, 2026
+Last updated: November 3, 2026
 
 ## Current position
 
@@ -9,27 +9,25 @@ are largely complete. The remaining launch work is concentrated in admin
 fulfillment workflows, transactional communication, shipping operations,
 customer policies, production readiness, and the final staging release gate.
 
-The active admin-order stack is:
+The admin-order dashboard milestone is complete:
 
-1. [PR #121](https://github.com/clementbowe14/Kapchi/pull/121) adds the ongoing
-   orders dashboard and read-only order detail.
-2. [PR #123](https://github.com/clementbowe14/Kapchi/pull/123) adds guarded
-   shipment confirmation and completes backend subissue
-   [#122](https://github.com/clementbowe14/Kapchi/issues/122).
-3. [PR #124](https://github.com/clementbowe14/Kapchi/pull/124) adds the admin
-   order-handling UI on top of PR #123.
+1. [PR #121](https://github.com/clementbowe14/Kapchi/pull/121) is merged into
+   `main` and closes [issue #19](https://github.com/clementbowe14/Kapchi/issues/19).
+2. [PR #126](https://github.com/clementbowe14/Kapchi/pull/126) is the active
+   consolidation PR for issue #22 and backend subissue #122. It brings the
+   previously reviewed backend and frontend stack onto current `main`.
 
-The local database, unit, lint, typecheck, production build, GitGuardian, and
-Vercel preview checks pass for PRs #123 and #124. The stack remains in draft
-until authenticated Clerk desktop/mobile browser coverage and the isolated
-real E2E reset are run.
+The consolidated commits previously passed the local database, unit, lint,
+typecheck, production build, GitGuardian, and Vercel preview checks.
+Authenticated Clerk desktop/mobile browser coverage and the isolated real E2E
+reset remain release evidence for issue #22.
 
 ## Ordered MVP launch work
 
 | Order | Work | Current status | Exit condition |
 | --- | --- | --- | --- |
-| 1 | [#19 Admin ongoing orders dashboard](https://github.com/clementbowe14/Kapchi/issues/19) | Draft PR #121 | Authenticated browser and real API smoke tests pass; PR merges. |
-| 2 | [#22 Admin order handling workflow](https://github.com/clementbowe14/Kapchi/issues/22) | Draft backend PR #123 and frontend PR #124; local suites and CI pass | Authenticated E2E passes and the stack merges in order. |
+| 1 | [#19 Admin ongoing orders dashboard](https://github.com/clementbowe14/Kapchi/issues/19) | Completed by merged PR #121 | Keep the dashboard covered by the downstream order-handling regression suite. |
+| 2 | [#22 Admin order handling workflow](https://github.com/clementbowe14/Kapchi/issues/22) | Consolidation PR #126 targets `main`; reviewed local suites pass | Authenticated E2E passes and PR #126 merges. |
 | 3 | [#116 Transactional confirmations and fulfillment updates](https://github.com/clementbowe14/Kapchi/issues/116) | Open; backend dependencies #12 and #21 are complete | Durable, idempotent confirmation and lifecycle notifications pass retry, duplicate, missing-contact, and privacy-safe logging tests. |
 | 4 | [#29 Pirate Ship shipping-label workflow](https://github.com/clementbowe14/Kapchi/issues/29) | Open | Ready-to-ship orders export safely, human approval precedes purchase, and confirmed tracking returns to Kapchi. |
 | 5 | [#117 Customer shipping, returns, privacy, and terms policies](https://github.com/clementbowe14/Kapchi/issues/117) | Open | Owner-approved policy pages and checkout/order links ship with effective-date or version handling where required. |
@@ -74,5 +72,5 @@ the process is documented.
    `E2E_ADMIN_AUTH_SUBJECT`.
 3. Run the authenticated desktop/mobile workflow and real Fastify/PostgreSQL
    order-handling E2E tests.
-4. Merge PRs #121, #123, and #124 in that order.
+4. Review and merge consolidation PR #126 into `main`.
 5. Begin the three-reviewer specification process for issue #116.
