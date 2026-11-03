@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { AdminOrderError } from "./errors.js";
+import { deriveTrackingUrl } from "./tracking.js";
 import type {
   AdminOrderDetail,
   AdminOrderItem,
@@ -11,7 +12,9 @@ import type {
   AdminOrderTimelineQuery,
   CustomerSnapshot,
   PaymentSummary,
-  ProductionFieldAvailability
+  ProductionFieldAvailability,
+  OrderStatus,
+  TimelineActorType
 } from "./types.js";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
@@ -71,15 +74,33 @@ type ItemRow = QueryResultRow & {
 
 type TimelineRow = QueryResultRow & {
   actor_display_name: string | null;
-  actor_id: string | null;
   actor_type: string;
-  actor_user_id: string | null;
+  amount_minor: number | string | null;
+  body: string | null;
+  channel: string | null;
+  direction: string | null;
+  event_type: string | null;
+  from_value: string | null;
   id: string;
   kind: AdminOrderTimelineEntry["kind"];
+  message_status: string | null;
   occurred_at: Date | string;
-  payload: Record<string, unknown>;
+  refund_status: string | null;
+  currency: string | null;
   source_rank: number;
+  subject: string | null;
+  to_value: string | null;
   visibility: AdminOrderTimelineEntry["visibility"];
+};
+
+type ShipmentRow = QueryResultRow & {
+  carrier: string | null;
+  carrierService: string | null;
+  id: string;
+  shipmentNumber: number;
+  shippedAt: Date | string | null;
+  status: string;
+  trackingNumber: string | null;
 };
 
 const orderColumns = `
@@ -334,16 +355,21 @@ function decodeTimelineCursor(value: string) {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
       id?: unknown;
       occurredAt?: unknown;
+      orderId?: unknown;
       rank?: unknown;
+      sort?: unknown;
     };
     if (
       typeof parsed.occurredAt !== "string" ||
       Number.isNaN(Date.parse(parsed.occurredAt)) ||
       typeof parsed.id !== "string" ||
+      typeof parsed.orderId !== "string" ||
+      !/^[0-9a-f-]{36}$/i.test(parsed.orderId) ||
       typeof parsed.rank !== "number" ||
-      !Number.isInteger(parsed.rank)
+      !Number.isInteger(parsed.rank) ||
+      (parsed.sort !== "occurred_asc" && parsed.sort !== "occurred_desc")
     ) throw new Error("invalid");
-    return { id: parsed.id, occurredAt: parsed.occurredAt, rank: parsed.rank };
+    return { id: parsed.id, occurredAt: parsed.occurredAt, orderId: parsed.orderId, rank: parsed.rank, sort: parsed.sort };
   } catch {
     throw new AdminOrderError("INVALID_CURSOR", "Timeline cursor is invalid.", 400);
   }
@@ -520,18 +546,13 @@ export class AdminOrderRepository implements AdminOrderReader {
            order by fulfillment_number, id`,
           [orderId],
         );
-      const shipments = await client.query(
-          `select id, shipment_number as "shipmentNumber", fulfillment_id as "fulfillmentId",
+      const shipments = await client.query<ShipmentRow>(
+          `select id, shipment_number as "shipmentNumber",
                   status, carrier, carrier_service as "carrierService",
-                  tracking_number as "trackingNumber", tracking_url as "trackingUrl",
-                  postage_amount_cents as "postageAmountMinor", currency,
-                  ship_to_name_snapshot as "shipToNameSnapshot",
-                  ship_to_address_snapshot as "shipToAddressSnapshot",
-                  shipped_at as "shippedAt", delivered_at as "deliveredAt",
-                  completed_at as "completedAt", created_at as "createdAt",
-                  updated_at as "updatedAt"
+                  tracking_number as "trackingNumber",
+                  shipped_at as "shippedAt"
            from shipments where order_id = $1::uuid
-           order by shipment_number, id`,
+           order by shipment_number desc, id desc`,
           [orderId],
         );
       return {
@@ -542,7 +563,14 @@ export class AdminOrderRepository implements AdminOrderReader {
         fulfillments: fulfillments.rows,
         items: items.rows.map(orderItem),
         paidAt: iso(base.paid_at),
-        shipments: shipments.rows,
+        shipments: shipments.rows.map((shipment) => ({
+          ...shipment,
+          shippedAt: iso(shipment.shippedAt),
+          trackingUrl: shipment.carrier && shipment.trackingNumber
+            && ["in_transit", "delivered", "completed"].includes(shipment.status)
+            ? deriveTrackingUrl(shipment.carrier, shipment.trackingNumber)
+            : null
+        })),
         shippedAt: iso(base.shipped_at),
         shipping: {
           address: base.shipping_address,
@@ -556,14 +584,18 @@ export class AdminOrderRepository implements AdminOrderReader {
     orderId: string,
     query: AdminOrderTimelineQuery,
   ): Promise<AdminOrderTimelinePage> {
+    const sort = query.sort ?? "occurred_asc";
     const cursor = query.cursor ? decodeTimelineCursor(query.cursor) : null;
+    if (cursor && (cursor.sort !== sort || cursor.orderId !== orderId)) {
+      throw new AdminOrderError("INVALID_CURSOR", "Timeline cursor does not match the requested order and sort.", 400);
+    }
     const client = await this.pool.connect();
     try {
       const exists = await client.query("select id from orders where id = $1::uuid", [orderId]);
       if (!exists.rows[0]) {
         throw new AdminOrderError("ORDER_NOT_FOUND", "Order not found.", 404);
       }
-      const result = await client.query<TimelineRow>(timelineSql, [
+      const result = await client.query<TimelineRow>(timelineSql(sort), [
         orderId,
         cursor?.occurredAt ?? null,
         cursor?.rank ?? null,
@@ -572,24 +604,12 @@ export class AdminOrderRepository implements AdminOrderReader {
       ]);
       const hasMore = result.rows.length > query.limit;
       const rows = result.rows.slice(0, query.limit);
-      const entries = rows.map((row): AdminOrderTimelineEntry => ({
-        actor: {
-          displayName: row.actor_display_name,
-          id: row.actor_id,
-          type: row.actor_type,
-          userId: row.actor_user_id
-        },
-        id: row.id,
-        kind: row.kind,
-        occurredAt: iso(row.occurred_at)!,
-        payload: jsonObject(row.payload),
-        visibility: row.visibility
-      }));
+      const entries = rows.flatMap((row) => timelineEntry(row) ?? []);
       const last = rows.at(-1);
       return {
         entries,
         nextCursor: hasMore && last
-          ? encode({ id: last.id, occurredAt: iso(last.occurred_at), rank: last.source_rank })
+          ? encode({ id: last.id, occurredAt: iso(last.occurred_at), orderId, rank: last.source_rank, sort })
           : null
       };
     } finally {
@@ -609,7 +629,70 @@ export class AdminOrderRepository implements AdminOrderReader {
   }
 }
 
-const timelineSql = `
+const orderStates = new Set<OrderStatus>([
+  "pending_payment", "paid", "in_production", "ready_to_ship", "shipped",
+  "completed", "cancelled", "refunded"
+]);
+const fulfillmentStates = new Set<AdminOrderSummary["fulfillmentStatus"]>([
+  "not_started", "queued", "in_progress", "ready_to_ship", "shipped", "delivered", "cancelled"
+]);
+
+function lifecycleState(value: string | null) {
+  if (!value) return null;
+  const parts = value.split("/");
+  if (parts.length !== 2 || !orderStates.has(parts[0] as OrderStatus)
+    || !fulfillmentStates.has(parts[1] as AdminOrderSummary["fulfillmentStatus"])) return null;
+  return {
+    fulfillmentStatus: parts[1] as AdminOrderSummary["fulfillmentStatus"],
+    orderStatus: parts[0] as OrderStatus
+  };
+}
+
+function timelineEntry(row: TimelineRow): AdminOrderTimelineEntry | null {
+  const actorType: TimelineActorType = row.actor_type === "admin" || row.actor_type === "customer"
+    ? row.actor_type
+    : "system";
+  const actorName = row.actor_display_name
+    ?? (actorType === "admin" ? "Store admin" : actorType === "customer" ? "Customer" : "System");
+  const base = { actorName, actorType, id: row.id, occurredAt: iso(row.occurred_at)! };
+  if (row.kind === "event") {
+    const allowed = new Set(["order.production_started", "order.ready_to_ship", "order.shipment_confirmed"]);
+    return {
+      ...base,
+      eventType: allowed.has(row.event_type ?? "") ? row.event_type as "order.production_started" : "order.updated",
+      from: lifecycleState(row.from_value),
+      kind: "event",
+      to: lifecycleState(row.to_value),
+      visibility: "internal"
+    };
+  }
+  if (row.kind === "internal_note") {
+    if (row.body === null || row.message_status !== "sent") return null;
+    return { ...base, actorType: actorType === "customer" ? "system" : actorType, body: row.body, kind: "internal_note", status: "sent", visibility: "internal" };
+  }
+  if (row.kind === "message") {
+    if (row.body === null || (row.channel !== "email" && row.channel !== "sms")
+      || (row.direction !== "inbound" && row.direction !== "outbound")
+      || !["draft", "queued", "sent", "failed"].includes(row.message_status ?? "")) return null;
+    return { ...base, body: row.body, channel: row.channel, direction: row.direction,
+      kind: "message", status: row.message_status as "sent", subject: row.subject,
+      visibility: "customer_visible" };
+  }
+  if (row.kind === "refund") {
+    const amount = Number(row.amount_minor);
+    if (!Number.isSafeInteger(amount) || amount < 0 || !row.currency?.match(/^[a-z]{3}$/)
+      || !["pending", "succeeded", "failed"].includes(row.refund_status ?? "")) return null;
+    return { ...base, actorType: actorType === "customer" ? "system" : actorType,
+      amountMinor: amount, currency: row.currency, kind: "refund",
+      status: row.refund_status as "pending", visibility: "internal" };
+  }
+  return null;
+}
+
+function timelineSql(sort: NonNullable<AdminOrderTimelineQuery["sort"]>) {
+  const comparator = sort === "occurred_asc" ? ">" : "<";
+  const direction = sort === "occurred_asc" ? "asc" : "desc";
+  return `
   with timeline as (
     select
       events.id::text as id,
@@ -618,15 +701,11 @@ const timelineSql = `
       'event'::text as kind,
       'internal'::text as visibility,
       events.actor_type::text as actor_type,
-      events.actor_id,
-      events.actor_user_id::text as actor_user_id,
       users.display_name as actor_display_name,
-      jsonb_build_object(
-        'eventType', events.event_type,
-        'fromValue', events.from_value,
-        'toValue', events.to_value,
-        'metadata', events.metadata
-      ) as payload
+      events.event_type, events.from_value, events.to_value,
+      null::text as body, null::text as channel, null::text as direction,
+      null::text as message_status, null::text as subject,
+      null::bigint as amount_minor, null::text as currency, null::text as refund_status
     from order_events events
     left join users on users.id = events.actor_user_id
     where events.order_id = $1::uuid
@@ -644,18 +723,11 @@ const timelineSql = `
       case when messages.direction = 'internal' then 'internal_note' else 'message' end,
       case when messages.direction = 'internal' then 'internal' else 'customer_visible' end,
       messages.sender_type::text,
-      messages.sender_user_id,
-      messages.sender_authenticated_user_id::text,
       users.display_name,
-      jsonb_build_object(
-        'channel', messages.channel,
-        'direction', messages.direction,
-        'status', messages.status,
-        'subject', messages.subject,
-        'body', messages.body,
-        'provider', messages.provider,
-        'failureCode', messages.provider_error
-      )
+      null::text, null::text, null::text,
+      messages.body, messages.channel::text, messages.direction::text,
+      messages.status::text, messages.subject,
+      null::bigint, null::text, null::text
     from order_messages messages
     left join users on users.id = messages.sender_authenticated_user_id
     where messages.order_id = $1::uuid
@@ -669,26 +741,18 @@ const timelineSql = `
       'refund',
       'internal',
       case when refunds.origin = 'kapchi' then 'admin' else 'stripe' end,
-      refunds.actor_auth_subject,
-      refunds.actor_user_id::text,
       users.display_name,
-      jsonb_build_object(
-        'amountMinor', refunds.amount_cents,
-        'currency', refunds.currency,
-        'status', refunds.status,
-        'pendingReason', refunds.pending_reason,
-        'reasonCode', refunds.reason_code,
-        'reasonNote', refunds.reason_note,
-        'providerRefundId', refunds.provider_refund_id,
-        'failureCode', refunds.provider_failure_code
-      )
+      null::text, null::text, null::text,
+      null::text, null::text, null::text, null::text, null::text,
+      refunds.amount_cents::bigint, refunds.currency, refunds.status::text
     from refund_operations refunds
     left join users on users.id = refunds.actor_user_id
     where refunds.order_id = $1::uuid
   )
   select * from timeline
   where $2::timestamptz is null
-    or (occurred_at, source_rank, id) > ($2::timestamptz, $3::integer, $4::text)
-  order by occurred_at, source_rank, id
+    or (occurred_at, source_rank, id) ${comparator} ($2::timestamptz, $3::integer, $4::text)
+  order by occurred_at ${direction}, source_rank ${direction}, id ${direction}
   limit $5
 `;
+}

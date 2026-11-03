@@ -95,6 +95,7 @@ async function buildTestServer() {
 describe("ordersPlugin", () => {
   beforeEach(() => {
     mocks.query.mockReset();
+    mocks.query.mockResolvedValue({ rows: [] });
   });
 
   it("looks up an order when the submitted email matches", async () => {
@@ -199,7 +200,12 @@ describe("ordersPlugin", () => {
   it("returns authenticated user's order history", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [orderRow] })
-      .mockResolvedValueOnce({ rows: [itemRow] });
+      .mockResolvedValueOnce({ rows: [itemRow] })
+      .mockResolvedValueOnce({ rows: [{
+        carrier: "Local Courier",
+        order_id: orderRow.id,
+        tracking_number: "LOCAL-1"
+      }] });
 
     const app = await buildTestServer();
     const response = await app.inject({
@@ -213,10 +219,41 @@ describe("ordersPlugin", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().orders).toHaveLength(1);
     expect(response.json().orders[0].publicOrderNumber).toBe("KAP-1001");
+    expect(response.json().orders[0].tracking).toEqual({
+      carrier: "Local Courier",
+      trackingNumber: "LOCAL-1",
+      trackingUrl: null
+    });
     expect(response.body).not.toContain("production_notes");
     expect(response.body).not.toContain("adminNotes");
     expect(mocks.query.mock.calls[0][1]).toEqual(["user_123"]);
 
+    await app.close();
+  });
+
+  it("returns only server-derived tracking on lookup", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [orderRow] })
+      .mockResolvedValueOnce({ rows: [itemRow] })
+      .mockResolvedValueOnce({ rows: [{
+        carrier: "united states postal service",
+        order_id: orderRow.id,
+        tracking_number: "9400 1118-9922"
+      }] });
+
+    const app = await buildTestServer();
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders/lookup",
+      payload: { orderId: "KAP-1001", email: "customer@example.com" }
+    });
+
+    expect(response.json().tracking).toEqual({
+      carrier: "USPS",
+      trackingNumber: "9400 1118-9922",
+      trackingUrl: "https://tools.usps.com/go/TrackConfirmAction?tLabels=9400%201118-9922"
+    });
+    expect(response.body).not.toContain("label_url");
     await app.close();
   });
 
