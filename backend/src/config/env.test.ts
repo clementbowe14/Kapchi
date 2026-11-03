@@ -99,6 +99,7 @@ describe("checkout redirect environment", () => {
     const environment = validateEnvironment({
       ...requiredEnvironment,
       NODE_ENV: "production",
+      ORDER_LOOKUP_BASE_URL: "https://kapchi.test",
       STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
       STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
     });
@@ -109,6 +110,44 @@ describe("checkout redirect environment", () => {
     expect(environment.STRIPE_CHECKOUT_SUCCESS_URL).toBe(
       "https://kapchi.test/orders",
     );
+  });
+
+  it("validates the transactional order lookup origin", () => {
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "test"
+    }).ORDER_LOOKUP_BASE_URL).toBe("http://localhost:3000");
+
+    for (const unsafe of [
+      "http://shop.example.test",
+      "https://user:password@shop.example.test",
+      "https://shop.example.test?order=secret",
+      "https://shop.example.test#order-secret"
+    ]) {
+      expect(() => validateEnvironment({
+        ...requiredEnvironment,
+        NODE_ENV: "test",
+        ORDER_LOOKUP_BASE_URL: unsafe
+      })).toThrow(/ORDER_LOOKUP_BASE_URL/);
+    }
+  });
+
+  it("requires an HTTPS order lookup origin in production", () => {
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "production",
+      ORDER_LOOKUP_BASE_URL: "http://localhost:3000",
+      STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
+      STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
+    })).toThrow(/ORDER_LOOKUP_BASE_URL/);
+
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      NODE_ENV: "production",
+      ORDER_LOOKUP_BASE_URL: "https://shop.kapchi.test/base/path",
+      STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
+      STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
+    }).ORDER_LOOKUP_BASE_URL).toBe("https://shop.kapchi.test/base/path");
   });
 
   it("reports the resolved env file and explains missing Stripe API keys", () => {

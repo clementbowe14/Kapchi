@@ -1,3 +1,9 @@
+import type {
+  NotificationIntentStatus,
+  NotificationKind,
+  SafeNotificationStatus
+} from "../transactional-notifications/types.js";
+
 export type CustomerMessageChannel = "email" | "sms";
 export type ConversationStatus =
   | "awaiting_admin"
@@ -30,6 +36,17 @@ export type ConversationQuery = {
   cursor?: string;
   limit: number;
   status?: ConversationStatus;
+};
+
+export type TransactionalNotificationKind = NotificationKind;
+export type TransactionalNotificationState = NotificationIntentStatus;
+export type TransactionalNotificationView = SafeNotificationStatus;
+
+export type TransactionalNotificationQuery = {
+  failureCode?: string;
+  kind?: TransactionalNotificationKind;
+  limit: number;
+  state?: TransactionalNotificationState;
 };
 
 export type MessageView = {
@@ -66,6 +83,7 @@ export type ConversationDetail = ConversationSummary & {
     sms: boolean;
   };
   messages: MessageView[];
+  transactionalNotifications?: TransactionalNotificationView[];
 };
 
 export type DeliveryMessage = {

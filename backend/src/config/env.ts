@@ -3,6 +3,7 @@ import {
   loadBackendEnvironment,
   type BackendEnvironmentSource
 } from "./load-environment.js";
+import { validateOrderLookupBaseUrl } from "../modules/transactional-notifications/lookup-url.js";
 
 const environmentSource = loadBackendEnvironment();
 
@@ -92,6 +93,11 @@ const environmentSchema = Joi.object({
   MESSAGE_WEBHOOK_SECRET: Joi.string().trim().optional(),
   MESSAGE_FROM_EMAIL: Joi.string().trim().email().optional(),
   MESSAGE_FROM_SMS: Joi.string().trim().optional(),
+  ORDER_LOOKUP_BASE_URL: Joi.when("NODE_ENV", {
+    is: "production",
+    then: Joi.string().required(),
+    otherwise: Joi.string().default("http://localhost:3000")
+  }),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required()
 }).unknown(true);
 
@@ -128,6 +134,7 @@ type EnvironmentShape = {
   MESSAGE_FROM_SMS?: string;
   MESSAGE_WEBHOOK_SECRET?: string;
   NODE_ENV: "development" | "test" | "production";
+  ORDER_LOOKUP_BASE_URL: string;
   PORT: number;
   REDIS_URL: string;
   STRIPE_API_VERSION: string;
@@ -211,6 +218,18 @@ export function validateEnvironment(
     throw new Error(
       "Invalid backend environment configuration:\n" +
         `- DATABASE_POOL_MAX (${environment.DATABASE_POOL_MAX}) exceeds the per-instance budget (${maxPoolPerInstance}) from DATABASE_MAX_CONNECTIONS, DATABASE_RESERVED_CONNECTIONS, and DATABASE_MAX_APP_INSTANCES`,
+    );
+  }
+
+  try {
+    validateOrderLookupBaseUrl(
+      environment.ORDER_LOOKUP_BASE_URL,
+      environment.NODE_ENV,
+    );
+  } catch (error) {
+    throw new Error(
+      "Invalid backend environment configuration:\n" +
+        `- ORDER_LOOKUP_BASE_URL: ${error instanceof Error ? error.message : "invalid URL"}`,
     );
   }
 

@@ -23,10 +23,12 @@ integrationDescribe("shipment confirmation database transaction", () => {
     await pool.query(
       `insert into orders (
          id, public_order_number, status, payment_status, fulfillment_status, paid_at,
-         shipping_name, shipping_address, subtotal_cents, total_cents, currency, revision
-       ) values ($1, $2, 'ready_to_ship', 'paid', 'ready_to_ship', now(), 'Customer',
-         '{"city":"Testville","country":"US"}'::jsonb, 0, 0, 'usd', 4)`,
-      [orderId, `SHIP-${orderId}`],
+         customer_email, preferred_contact_method, shipping_name, shipping_address,
+         subtotal_cents, total_cents, currency, revision
+       ) values ($1, $2, 'ready_to_ship', 'paid', 'ready_to_ship', now(), $3, 'email',
+         'Customer', '{"city":"Testville","country":"US"}'::jsonb,
+         0, 0, 'usd', 4)`,
+      [orderId, `SHIP-${orderId}`, "shipment-customer@example.test"],
     );
     await pool.query(
       `insert into order_fulfillments (
@@ -49,6 +51,10 @@ integrationDescribe("shipment confirmation database transaction", () => {
     const actor = { authSubject, userId };
     const fingerprint = confirmShipmentFingerprint(orderId, input);
     const first = await repository.confirm(orderId, actor, input, "shipment-db-1", fingerprint);
+    await pool.query(
+      `delete from transactional_notification_intents where order_id = $1`,
+      [orderId],
+    );
     const replay = await repository.confirm(orderId, actor, input, "shipment-db-1", fingerprint);
     const semanticReplay = await repository.confirm(orderId, actor, input, "shipment-db-2", fingerprint);
 
@@ -60,7 +66,9 @@ integrationDescribe("shipment confirmation database transaction", () => {
               fulfillments.status as primary_status,
               (select count(*)::integer from shipments where order_id = orders.id) as shipment_count,
               (select count(*)::integer from order_events where order_id = orders.id and event_type = 'order.shipment_confirmed') as event_count,
-              (select count(*)::integer from admin_order_mutation_receipts where order_id = orders.id) as receipt_count
+              (select count(*)::integer from admin_order_mutation_receipts where order_id = orders.id) as receipt_count,
+              (select count(*)::integer from transactional_notification_intents
+                where order_id = orders.id and kind = 'order.shipped') as notification_count
        from orders join order_fulfillments fulfillments
          on fulfillments.order_id = orders.id and fulfillments.fulfillment_number = 1
        where orders.id = $1`,
@@ -68,7 +76,8 @@ integrationDescribe("shipment confirmation database transaction", () => {
     );
     expect(stored.rows[0]).toMatchObject({
       event_count: 1, fulfillment_status: "shipped", primary_status: "shipped",
-      receipt_count: 2, revision: 5, shipment_count: 1, status: "shipped"
+      notification_count: 1, receipt_count: 2, revision: 5,
+      shipment_count: 1, status: "shipped"
     });
   });
 });

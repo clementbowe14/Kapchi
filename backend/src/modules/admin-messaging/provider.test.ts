@@ -68,4 +68,24 @@ describe("HttpMessageProvider", () => {
     expect(error).toBeInstanceOf(MessageProviderError);
     expect(String(error)).not.toContain("secret provider diagnostic");
   });
+
+  it.each([
+    { messageId: "", provider: "sandbox" },
+    { messageId: "message-id", provider: "unsafe provider name" },
+    { messageId: "x".repeat(501), provider: "sandbox" }
+  ])("rejects unsafe provider identities without persisting them", async (payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(payload),
+      { headers: { "content-type": "application/json" }, status: 200 },
+    )));
+    const provider = new HttpMessageProvider({
+      token: "test-token",
+      url: "https://gateway.test/messages"
+    });
+
+    await expect(provider.send(message)).rejects.toEqual(expect.objectContaining({
+      code: "MESSAGE_PROVIDER_INVALID_RESPONSE",
+      retryable: false
+    }));
+  });
 });

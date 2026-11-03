@@ -135,6 +135,39 @@ integrationDescribe("admin messaging database contract", () => {
     expect(await repository.claimDeliveryJobs(10, "note-worker")).toEqual([]);
   });
 
+  it("reclaims expired delivery leases and rejects the stale worker outcome", async () => {
+    const queued = await repository.queueReply(
+      orderId,
+      actor,
+      { body: "Lease recovery test.", channel: "email", subject: "Lease recovery" },
+      `lease-recovery-${orderId}`,
+      senders,
+    );
+    const firstClaim = (await repository.claimDeliveryJobs(10, "expired-worker"))
+      .find((job) => job.message.messageId === queued.message.id);
+    expect(firstClaim).toBeDefined();
+    await pool.query(
+      `update message_delivery_jobs
+       set lease_expires_at = now() - interval '1 minute'
+       where id = $1::uuid`,
+      [firstClaim!.jobId],
+    );
+
+    const recovered = (await repository.claimDeliveryJobs(10, "recovery-worker"))
+      .find((job) => job.jobId === firstClaim!.jobId);
+    expect(recovered).toMatchObject({ attemptCount: 2 });
+    await expect(repository.completeDelivery(
+      firstClaim!,
+      "expired-worker",
+      { messageId: "stale-provider-result", provider: "sandbox" },
+    )).resolves.toBe(false);
+    await expect(repository.completeDelivery(
+      recovered!,
+      "recovery-worker",
+      { messageId: "recovered-provider-result", provider: "sandbox" },
+    )).resolves.toBe(true);
+  });
+
   it("reopens a resolved conversation for a deduplicated verified inbound reply", async () => {
     const current = await repository.detail(orderId);
     await repository.updateConversation(orderId, actor, "resolve", current.version);
@@ -195,7 +228,7 @@ integrationDescribe("admin messaging database contract", () => {
     });
   });
 
-  it("schedules refund notification independently and records terminal delivery failure", async () => {
+  it("keeps provider-confirmed refund delivery successful after a late failure webhook", async () => {
     const operationId = randomUUID();
     await pool.query(
       `insert into refund_operations (
@@ -258,8 +291,17 @@ integrationDescribe("admin messaging database contract", () => {
       [operationId],
     );
     expect(effect.rows[0]).toEqual({
-      last_error_code: "RECIPIENT_REJECTED",
-      status: "failed"
+      last_error_code: null,
+      status: "succeeded"
+    });
+    const deliveredMessage = await pool.query<{ provider_error: string | null; status: string }>(
+      `select status, provider_error from order_messages
+       where provider = 'sandbox' and provider_message_id = $1`,
+      [`refund-provider-${operationId}`],
+    );
+    expect(deliveredMessage.rows[0]).toEqual({
+      provider_error: null,
+      status: "sent"
     });
     const refund = await pool.query<{ status: string }>(
       "select status from refund_operations where id = $1::uuid",

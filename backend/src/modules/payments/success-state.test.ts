@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureOrderConfirmationIntent } from "../transactional-notifications/producer.js";
 import {
   consumeFabricInventory,
   handleCheckoutSessionCompleted,
   handlePaymentIntentSucceeded
 } from "./success-state.js";
+
+vi.mock("../transactional-notifications/producer.js", () => ({
+  ensureOrderConfirmationIntent: vi.fn(async () => ({ created: true, id: "intent" }))
+}));
 
 const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
 
@@ -83,6 +88,12 @@ describe("successful Stripe payment state handling", () => {
       }
     ]);
     expect(client.query.mock.calls[6][0]).toBe("commit");
+    expect(ensureOrderConfirmationIntent).toHaveBeenCalledWith(
+      client,
+      orderId,
+      "http://localhost:3000",
+      "test",
+    );
   });
 
   it("marks an order paid from payment_intent.succeeded", async () => {
@@ -173,6 +184,12 @@ describe("successful Stripe payment state handling", () => {
       orderId
     });
     expect(client.query).toHaveBeenCalledTimes(3);
+    expect(ensureOrderConfirmationIntent).toHaveBeenCalledWith(
+      client,
+      orderId,
+      "http://localhost:3000",
+      "test",
+    );
     expect(client.query.mock.calls[2][0]).toBe("commit");
   });
 

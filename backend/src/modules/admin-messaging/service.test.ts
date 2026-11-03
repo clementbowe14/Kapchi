@@ -62,10 +62,87 @@ describe("AdminMessagingService", () => {
     expect(repository.failDelivery).toHaveBeenCalledWith(
       job,
       expect.any(String),
-      "GATEWAY_TIMEOUT",
+      "MESSAGE_PROVIDER_TIMEOUT",
       true,
     );
     expect(JSON.stringify(observer.warn.mock.calls)).not.toContain(job.message.body);
+  });
+
+  it("runs reconciliation, refund promotion, and materialization before delivery", async () => {
+    const { observer, provider, repository } = dependencies();
+    const order: string[] = [];
+    repository.claimDeliveryJobs = vi.fn(async () => {
+      order.push("delivery");
+      return [];
+    });
+    const notifications = {
+      list: vi.fn(),
+      listForOrder: vi.fn(),
+      materializeIntents: vi.fn().mockImplementation(async () => {
+        order.push("materialize");
+        return { attempted: 1, queued: 1 };
+      }),
+      promoteRefundEffect: vi.fn(),
+      promoteRefundEffects: vi.fn().mockImplementation(async () => {
+        order.push("refunds");
+        return { attempted: 1, scheduled: 1 };
+      }),
+      reconcileLifecycle: vi.fn().mockImplementation(async () => {
+        order.push("reconcile");
+        return { attempted: 1, scheduled: 1 };
+      })
+    };
+    const service = new AdminMessagingService(
+      repository,
+      provider,
+      { email: "support@example.test" },
+      observer,
+      notifications,
+    );
+
+    await expect(service.runDelivery()).resolves.toMatchObject({
+      materialization: { queued: 1 },
+      refundNotifications: { scheduled: 1 }
+    });
+    expect(order).toEqual(["reconcile", "refunds", "materialize", "delivery"]);
+  });
+
+  it("continues later worker phases after a safe phase failure", async () => {
+    const { observer, provider, repository } = dependencies();
+    const notifications = {
+      list: vi.fn(),
+      listForOrder: vi.fn(),
+      materializeIntents: vi.fn().mockResolvedValue({ attempted: 0, queued: 0 }),
+      promoteRefundEffect: vi.fn(),
+      promoteRefundEffects: vi.fn().mockResolvedValue({ attempted: 0, scheduled: 0 }),
+      reconcileLifecycle: vi.fn().mockRejectedValue(new Error("private database detail"))
+    };
+    const service = new AdminMessagingService(
+      repository,
+      provider,
+      { email: "support@example.test" },
+      observer,
+      notifications,
+    );
+
+    await expect(service.runDelivery()).resolves.toMatchObject({
+      delivered: 1,
+      lifecycle: { attempted: 0, failed: 1 }
+    });
+    expect(notifications.promoteRefundEffects).toHaveBeenCalledOnce();
+    expect(notifications.materializeIntents).toHaveBeenCalledOnce();
+    expect(JSON.stringify(observer.error.mock.calls)).not.toContain("private database detail");
+  });
+
+  it("does not report provider acceptance as completed after losing the lease", async () => {
+    const { observer, repository, service } = dependencies();
+    repository.completeDelivery = vi.fn().mockResolvedValue(false);
+
+    await expect(service.runDelivery()).resolves.toMatchObject({ delivered: 0 });
+    expect(observer.warn).toHaveBeenCalledWith(
+      "message.delivery.lease_lost",
+      expect.objectContaining({ resultCode: "MESSAGE_LEASE_LOST" }),
+    );
   });
 
   it("contains refund notification scheduling failures", async () => {

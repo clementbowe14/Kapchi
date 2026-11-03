@@ -75,7 +75,35 @@ function repository() {
   } as unknown as MessagingRepositoryPort;
 }
 
+function notificationOperations() {
+  return {
+    list: vi.fn().mockResolvedValue({
+      notifications: [{
+        channel: null,
+        createdAt: "2026-11-03T12:00:00.000Z",
+        deliveryAttemptCount: 0,
+        failedAt: "2026-11-03T12:01:00.000Z",
+        failureCode: "MESSAGE_CONTACT_UNAVAILABLE",
+        id: "d7af78b8-14d8-4c1c-8058-e83be4a1b1f0",
+        kind: "order.confirmed",
+        materializationAttemptCount: 1,
+        publicOrderNumber: "KAP-TEST",
+        queuedAt: null,
+        state: "failed",
+        succeededAt: null,
+        updatedAt: "2026-11-03T12:01:00.000Z"
+      }]
+    }),
+    listForOrder: vi.fn().mockResolvedValue([]),
+    materializeIntents: vi.fn(),
+    promoteRefundEffect: vi.fn(),
+    promoteRefundEffects: vi.fn(),
+    reconcileLifecycle: vi.fn()
+  };
+}
+
 async function server(repo: MessagingRepositoryPort) {
+  const notifications = notificationOperations();
   const app = fastify({ logger: false });
   app.decorate("pg", {} as never);
   await app.register(adminBoundaryPlugin);
@@ -85,10 +113,11 @@ async function server(repo: MessagingRepositoryPort) {
       senders: { email: "support@example.test", sms: "+15555550100" },
       webhookSecret: "test-webhook-secret"
     },
+    notificationOperationsFactory: () => notifications,
     providerFactory: () => ({ send: vi.fn() }),
     repositoryFactory: () => repo
   }));
-  return app;
+  return { app, notifications };
 }
 
 describe("admin messaging plugin", () => {
@@ -99,7 +128,7 @@ describe("admin messaging plugin", () => {
     { authorization: "Bearer customer-token", statusCode: 403 }
   ])("protects conversation data with the shared admin boundary", async ({ authorization, statusCode }) => {
     const repo = repository();
-    const app = await server(repo);
+    const { app } = await server(repo);
     const response = await app.inject({
       ...(authorization ? { headers: { authorization } } : {}),
       method: "GET",
@@ -113,7 +142,7 @@ describe("admin messaging plugin", () => {
 
   it("queues an admin reply with verified actor and idempotency identity", async () => {
     const repo = repository();
-    const app = await server(repo);
+    const { app } = await server(repo);
     const response = await app.inject({
       headers: {
         authorization: "Bearer admin-token",
@@ -137,7 +166,7 @@ describe("admin messaging plugin", () => {
 
   it("stores internal notes through a separate operation", async () => {
     const repo = repository();
-    const app = await server(repo);
+    const { app } = await server(repo);
     const response = await app.inject({
       headers: {
         authorization: "Bearer admin-token",
@@ -160,7 +189,7 @@ describe("admin messaging plugin", () => {
 
   it("accepts signed inbound events and rejects unsigned requests", async () => {
     const repo = repository();
-    const app = await server(repo);
+    const { app } = await server(repo);
     const payload = {
       body: "Thanks!",
       channel: "email" as const,
@@ -193,6 +222,63 @@ describe("admin messaging plugin", () => {
       payload,
       expect.stringMatching(/^[a-f0-9]{64}$/),
     );
+    await app.close();
+  });
+
+  it("lets admins discover filtered terminal notification failures without private fields", async () => {
+    const repo = repository();
+    const { app, notifications } = await server(repo);
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "GET",
+      url: "/admin/messages/transactional-notifications?state=failed&failureCode=MESSAGE_CONTACT_UNAVAILABLE"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(notifications.list).toHaveBeenCalledWith(expect.objectContaining({
+      failureCode: "MESSAGE_CONTACT_UNAVAILABLE",
+      state: "failed"
+    }));
+    expect(response.json().notifications[0]).toMatchObject({
+      failureCode: "MESSAGE_CONTACT_UNAVAILABLE",
+      publicOrderNumber: "KAP-TEST"
+    });
+    expect(response.body).not.toContain("customer@example.test");
+    expect(response.body).not.toContain("tracking");
+    await app.close();
+  });
+
+  it("adds safe transactional status to conversation detail", async () => {
+    const repo = repository();
+    const { app, notifications } = await server(repo);
+    const statuses = (await notifications.list()).notifications;
+    notifications.listForOrder.mockResolvedValueOnce(statuses);
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "GET",
+      url: `/admin/messages/conversations/${orderId}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().transactionalNotifications[0]).toMatchObject({
+      failureCode: "MESSAGE_CONTACT_UNAVAILABLE",
+      publicOrderNumber: "KAP-TEST"
+    });
+    expect(response.body).not.toContain("customer@example.test");
+    await app.close();
+  });
+
+  it("does not expose transactional notification status to customers", async () => {
+    const repo = repository();
+    const { app, notifications } = await server(repo);
+    const response = await app.inject({
+      headers: { authorization: "Bearer customer-token" },
+      method: "GET",
+      url: "/admin/messages/transactional-notifications"
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(notifications.list).not.toHaveBeenCalled();
     await app.close();
   });
 });
