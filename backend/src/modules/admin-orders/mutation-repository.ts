@@ -18,7 +18,15 @@ type LockedOrderRow = QueryResultRow & {
   paid_at: Date | string | null;
   payment_status: PaymentStatus;
   revision: number;
+  shipping_address: Record<string, unknown> | null;
+  shipping_name: string | null;
   status: OrderStatus;
+};
+
+type LockedFulfillmentRow = QueryResultRow & {
+  id: string;
+  fulfillment_number: number;
+  status: string;
 };
 
 type UpdatedOrderRow = QueryResultRow & {
@@ -179,7 +187,8 @@ export class AdminOrderMutationRepository {
 
       const locked = await client.query<LockedOrderRow>(
         `
-          select id, status, payment_status, fulfillment_status, paid_at, revision
+          select id, status, payment_status, fulfillment_status, paid_at, revision,
+                 shipping_name, shipping_address
           from orders where id = $1::uuid
           for update
         `,
@@ -203,6 +212,93 @@ export class AdminOrderMutationRepository {
         paidAt: before.paid_at === null ? null : iso(before.paid_at),
         paymentStatus: before.payment_status
       });
+
+      const fulfillments = await client.query<LockedFulfillmentRow>(
+        `select id, fulfillment_number, status
+         from order_fulfillments
+         where order_id = $1::uuid
+         order by fulfillment_number, id
+         for update`,
+        [orderId],
+      );
+      let primary = fulfillments.rows.find((row) => row.fulfillment_number === 1);
+
+      if (command === "start_production") {
+        if (!primary) {
+          if (!object(before.shipping_address)) {
+            throw new AdminOrderError(
+              "ORDER_TRANSITION_NOT_ALLOWED",
+              "A stored shipping address is required before production can start.",
+              409,
+            );
+          }
+          const inserted = await client.query<{ id: string }>(
+            `insert into order_fulfillments (
+               order_id, fulfillment_number, status, order_snapshot,
+               shipping_name_snapshot, shipping_address_snapshot
+             ) values ($1::uuid, 1, 'in_progress', $2::jsonb, $3, $4::jsonb)
+             returning id`,
+            [
+              orderId,
+              JSON.stringify({
+                fulfillmentStatus: before.fulfillment_status,
+                orderId: before.id,
+                orderStatus: before.status,
+                paymentStatus: before.payment_status,
+                revision: before.revision
+              }),
+              before.shipping_name,
+              JSON.stringify(before.shipping_address)
+            ],
+          );
+          primary = { id: inserted.rows[0].id, fulfillment_number: 1, status: "in_progress" };
+          await client.query(
+            `insert into order_fulfillment_items (
+               fulfillment_id, order_item_id, quantity, item_snapshot
+             )
+             select $1::uuid, items.id, items.quantity,
+                    jsonb_build_object(
+                      'id', items.id,
+                      'quantity', items.quantity,
+                      'unitAmountMinor', items.unit_amount_cents,
+                      'currency', items.currency,
+                      'listing', items.listing_snapshot,
+                      'fabric', items.fabric_snapshot,
+                      'customization', items.customization_snapshot
+                    )
+             from order_items items where items.order_id = $2::uuid
+             order by items.created_at, items.id`,
+            [primary.id, orderId],
+          );
+        } else {
+          if (primary.status !== "queued") {
+            throw new AdminOrderError(
+              "ORDER_TRANSITION_NOT_ALLOWED",
+              "The primary fulfillment is not queued.",
+              409,
+            );
+          }
+          await client.query(
+            `update order_fulfillments set status = 'in_progress'
+             where id = $1::uuid`,
+            [primary.id],
+          );
+        }
+      } else {
+        if (!primary || primary.status !== "in_progress") {
+          throw new AdminOrderError(
+            "ORDER_TRANSITION_NOT_ALLOWED",
+            "The primary fulfillment is not in production.",
+            409,
+          );
+        }
+        await client.query(
+          `update order_fulfillments
+           set status = 'ready_to_ship', ready_to_ship_at = coalesce(ready_to_ship_at, now())
+           where id = $1::uuid`,
+          [primary.id],
+        );
+      }
       const updated = await client.query<UpdatedOrderRow>(
         `
           update orders

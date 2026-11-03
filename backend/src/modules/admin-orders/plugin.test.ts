@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminOrderError } from "./errors.js";
 import type { AdminOrderMutator } from "./mutation-repository.js";
 import type { AdminOrderReader } from "./repository.js";
+import type { AdminOrderShipmentMutator } from "./shipment-repository.js";
 import type {
   AdminOrderDetail,
   AdminOrderSearchPage,
@@ -106,6 +107,26 @@ describe("admin order plugin", () => {
       userId: "22222222-2222-4222-8222-222222222222"
     }))
   };
+  const shipmentRepository: AdminOrderShipmentMutator = {
+    confirm: vi.fn(async (orderId, _actor, input) => ({
+      command: "confirm_shipment" as const,
+      fulfillmentStatus: "shipped" as const,
+      orderId,
+      orderStatus: "shipped" as const,
+      paymentStatus: "paid" as const,
+      replayed: false,
+      revision: input.expectedRevision + 1,
+      shipment: {
+        carrier: "USPS",
+        carrierService: input.carrierService ?? null,
+        id: "44444444-4444-4444-8444-444444444444",
+        shippedAt: "2026-11-02T18:00:00.000Z",
+        trackingNumber: input.trackingNumber,
+        trackingUrl: "https://tools.usps.com/go/TrackConfirmAction?tLabels=9400"
+      },
+      transitionedAt: "2026-11-02T18:00:00.000Z"
+    }))
+  };
 
   beforeEach(() => {
     vi.mocked(repository.detail).mockClear();
@@ -113,6 +134,7 @@ describe("admin order plugin", () => {
     vi.mocked(repository.timeline).mockClear();
     vi.mocked(mutationRepository.mutate).mockClear();
     vi.mocked(mutationRepository.resolveActor).mockClear();
+    vi.mocked(shipmentRepository.confirm).mockClear();
   });
 
   async function buildServer(
@@ -122,7 +144,8 @@ describe("admin order plugin", () => {
     const app = fastify({ logger: false });
     await app.register(createAdminOrderPlugin({
       mutationRepository: mutator,
-      repository: reader
+      repository: reader,
+      shipmentRepository
     }), {
       prefix: "/admin/orders"
     });
@@ -200,6 +223,52 @@ describe("admin order plugin", () => {
     await app.close();
   });
 
+  it("confirms a shipment through the fulfillment capability boundary", async () => {
+    const app = await buildServer();
+    const response = await app.inject({
+      headers: {
+        authorization: "Bearer admin-token",
+        "idempotency-key": "confirm-shipment-1"
+      },
+      method: "POST",
+      payload: {
+        carrier: "USPS",
+        carrierService: "Priority Mail",
+        expectedRevision: 4,
+        trackingNumber: "9400"
+      },
+      url: `/admin/orders/${order.id}/actions/confirm-shipment`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(shipmentRepository.confirm).toHaveBeenCalledWith(
+      order.id,
+      expect.objectContaining({ authSubject: "user_123" }),
+      expect.objectContaining({ carrier: "USPS", expectedRevision: 4 }),
+      "confirm-shipment-1",
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
+    expect(response.json()).toMatchObject({ command: "confirm_shipment", revision: 5 });
+    await app.close();
+  });
+
+  it.each([
+    { carrier: "USPS\nInjected", expectedRevision: 4, trackingNumber: "9400" },
+    { carrier: "USPS", expectedRevision: 4, trackingNumber: "9400\u0000" },
+    { carrier: "USPS", expectedRevision: 4, trackingNumber: "9400", unknown: true }
+  ])("rejects unsafe shipment input", async (payload) => {
+    const app = await buildServer();
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token", "idempotency-key": "unsafe" },
+      method: "POST",
+      payload,
+      url: `/admin/orders/${order.id}/actions/confirm-shipment`
+    });
+    expect(response.statusCode).toBe(400);
+    expect(shipmentRepository.confirm).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it.each([
     "/admin/orders?createdFrom=2026-02-30",
     "/admin/orders?createdFrom=2026-10-25&createdTo=2026-10-01",
@@ -236,7 +305,7 @@ describe("admin order plugin", () => {
     expect(detailResponse.statusCode).toBe(200);
     expect(detailResponse.json()).toEqual(detail);
     expect(timelineResponse.statusCode).toBe(200);
-    expect(repository.timeline).toHaveBeenCalledWith(order.id, { limit: 10 });
+    expect(repository.timeline).toHaveBeenCalledWith(order.id, { limit: 10, sort: "occurred_asc" });
     await app.close();
   });
 

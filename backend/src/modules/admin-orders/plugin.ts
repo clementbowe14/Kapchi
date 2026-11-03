@@ -12,7 +12,13 @@ import {
   AdminOrderRepository,
   type AdminOrderReader
 } from "./repository.js";
+import {
+  AdminOrderShipmentRepository,
+  confirmShipmentFingerprint,
+  type AdminOrderShipmentMutator
+} from "./shipment-repository.js";
 import type {
+  ConfirmShipmentInput,
   AdminOrderMutationCommand,
   AdminOrderMutationInput,
   AdminOrderSearchQuery,
@@ -67,11 +73,20 @@ const searchQuery = Joi.object<AdminOrderSearchQuery>({
 }).required();
 const timelineQuery = Joi.object<AdminOrderTimelineQuery>({
   cursor: Joi.string().trim().max(1000).optional(),
-  limit: Joi.number().integer().min(1).max(100).default(50)
+  limit: Joi.number().integer().min(1).max(100).default(50),
+  sort: Joi.string().valid("occurred_asc", "occurred_desc").default("occurred_asc")
 }).required();
 const mutationBody = Joi.object<AdminOrderMutationInput>({
   expectedRevision: Joi.number().integer().min(0).required(),
-  reason: Joi.string().trim().min(3).max(500).optional()
+  reason: Joi.string().trim().empty("").min(3).max(500).optional()
+}).required();
+const noControls = /^[^\u0000-\u001f\u007f]*$/;
+const confirmShipmentBody = Joi.object<ConfirmShipmentInput>({
+  carrier: Joi.string().trim().min(1).max(100).pattern(noControls).required(),
+  carrierService: Joi.string().trim().empty("").max(100).pattern(noControls).optional(),
+  expectedRevision: Joi.number().integer().min(0).required(),
+  reason: Joi.string().trim().empty("").min(3).max(500).optional(),
+  trackingNumber: Joi.string().trim().min(1).max(200).pattern(noControls).required()
 }).required();
 
 function day(value: string) {
@@ -150,6 +165,7 @@ function sendError(reply: FastifyReply, error: unknown) {
 export type AdminOrderPluginDependencies = {
   mutationRepository?: AdminOrderMutator;
   repository?: AdminOrderReader;
+  shipmentRepository?: AdminOrderShipmentMutator;
 };
 
 export function createAdminOrderPlugin(
@@ -159,6 +175,8 @@ export function createAdminOrderPlugin(
     const repository = dependencies.repository ?? new AdminOrderRepository(fastify.pg);
     const mutationRepository = dependencies.mutationRepository
       ?? new AdminOrderMutationRepository(fastify.pg);
+    const shipmentRepository = dependencies.shipmentRepository
+      ?? new AdminOrderShipmentRepository(fastify.pg);
 
     fastify.get(
       "/",
@@ -209,7 +227,8 @@ export function createAdminOrderPlugin(
               entryCount: result.entries.length,
               event: "admin.orders.timeline.completed",
               hasNextPage: result.nextCursor !== null,
-              orderId: params.value.orderId
+              orderId: params.value.orderId,
+              sort: query.value.sort
             },
             "Admin order timeline completed",
           );
@@ -309,6 +328,55 @@ export function createAdminOrderPlugin(
         },
       );
     }
+
+    fastify.post<{ Params: { orderId: string } }>(
+      "/:orderId/actions/confirm-shipment",
+      adminRoute("fulfillment:write"),
+      async (request, reply) => {
+        const params = orderParams.validate(request.params, { allowUnknown: false });
+        const body = confirmShipmentBody.validate(request.body, {
+          abortEarly: false,
+          allowUnknown: false
+        });
+        const key = idempotencyKey(request, reply);
+        if (!key) return;
+        if (params.error || body.error) {
+          return validationError(reply, params.error?.message ?? body.error!.message);
+        }
+        try {
+          const actor = await mutationRepository.resolveActor(request.auth!.userId);
+          if (!actor) {
+            return reply.code(403).send({
+              error: "ORDER_ACTOR_UNAVAILABLE",
+              message: "A verified active administrator profile is required.",
+              statusCode: 403
+            });
+          }
+          const result = await shipmentRepository.confirm(
+            params.value.orderId,
+            actor,
+            body.value,
+            key,
+            confirmShipmentFingerprint(params.value.orderId, body.value),
+          );
+          request.log.info(
+            {
+              command: "confirm_shipment",
+              event: "admin.order.shipment.confirmed",
+              fulfillmentStatus: result.fulfillmentStatus,
+              orderId: result.orderId,
+              orderStatus: result.orderStatus,
+              replayed: result.replayed,
+              revision: result.revision
+            },
+            "Admin order shipment confirmation completed",
+          );
+          return reply.code(200).send(result);
+        } catch (error) {
+          return sendError(reply, error);
+        }
+      },
+    );
   };
 
   return fp(plugin, { encapsulate: true, name: "admin-orders-plugin" });

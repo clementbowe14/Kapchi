@@ -54,6 +54,14 @@ describe("admin order mutation repository", () => {
           }]
         };
       }
+      if (sql.includes("from order_fulfillments")) {
+        return { rows: [{
+          fulfillment_number: 1,
+          id: "33333333-3333-4333-8333-333333333333",
+          status: "queued"
+        }] };
+      }
+      if (sql.includes("update order_fulfillments")) return { rows: [] };
       if (sql.includes("update orders")) {
         return {
           rows: [{

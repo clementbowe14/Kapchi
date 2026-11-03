@@ -45,9 +45,11 @@ integrationDescribe("admin order mutation database", () => {
       `
         insert into orders (
           id, public_order_number, status, payment_status, fulfillment_status,
-          paid_at, subtotal_cents, total_cents, currency
+          paid_at, shipping_name, shipping_address, subtotal_cents, total_cents, currency
         ) values (
-          $1, $2, 'paid', 'paid', 'queued', now(), 0, 0, 'usd'
+          $1, $2, 'paid', 'paid', 'queued', now(), 'Test Customer',
+          '{"line1":"1 Test Way","city":"Testville","country":"US"}'::jsonb,
+          0, 0, 'usd'
         )
       `,
       [orderId, `MUTATION-${orderId}`],
@@ -135,6 +137,13 @@ integrationDescribe("admin order mutation database", () => {
       status: "ready_to_ship"
     });
     expect(stored.rows[0].ready_to_ship_at).toBeInstanceOf(Date);
+    const primary = await pool.query<{ status: string; ready_to_ship_at: Date }>(
+      `select status, ready_to_ship_at from order_fulfillments
+       where order_id = $1 and fulfillment_number = 1`,
+      [orderId],
+    );
+    expect(primary.rows[0]).toMatchObject({ status: "ready_to_ship" });
+    expect(primary.rows[0].ready_to_ship_at).toBeInstanceOf(Date);
 
     const events = await pool.query<{
       actor_auth_subject: string;
