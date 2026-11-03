@@ -50,6 +50,7 @@ describe("admin order mutation repository", () => {
             paid_at: "2026-10-26T10:00:00.000Z",
             payment_status: "paid",
             revision: 0,
+            shipping_address_status: "valid",
             status: "paid"
           }]
         };
@@ -192,6 +193,7 @@ describe("admin order mutation repository", () => {
             paid_at: "2026-10-26T10:00:00.000Z",
             payment_status: "paid",
             revision: 2,
+            shipping_address_status: "valid",
             status: "paid"
           }]
         };
@@ -209,5 +211,25 @@ describe("admin order mutation repository", () => {
       adminOrderMutationFingerprint("start_production", orderId, input),
     )).rejects.toBeInstanceOf(AdminOrderError);
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("update orders"))).toBe(false);
+  });
+
+  it("blocks production when Stripe has not verified a shipping address", async () => {
+    const db = database((sql) => {
+      if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
+      if (sql.includes("select metadata from order_events")) return { rows: [] };
+      if (sql.includes("select id from users")) return { rows: [{ id: actor.userId }] };
+      if (sql.includes("select id, status, payment_status")) return { rows: [{
+        fulfillment_status: "queued", id: orderId, paid_at: "2026-10-26T10:00:00.000Z",
+        payment_status: "paid", revision: 0, shipping_address: null,
+        shipping_address_status: "missing", shipping_name: null, status: "paid"
+      }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    await expect(new AdminOrderMutationRepository(db.pool).mutate(
+      orderId, "start_production", actor, input, "missing-address",
+      adminOrderMutationFingerprint("start_production", orderId, input),
+    )).rejects.toMatchObject({ code: "ORDER_TRANSITION_NOT_ALLOWED", statusCode: 409 });
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("from order_fulfillments"))).toBe(false);
   });
 });

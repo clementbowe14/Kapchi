@@ -86,6 +86,7 @@ const confirmShipmentBody = Joi.object<ConfirmShipmentInput>({
   carrierService: Joi.string().trim().empty("").max(100).pattern(noControls).optional(),
   expectedRevision: Joi.number().integer().min(0).required(),
   reason: Joi.string().trim().empty("").min(3).max(500).optional(),
+  shipmentId: uuid.optional(),
   trackingNumber: Joi.string().trim().min(1).max(200).pattern(noControls).required()
 }).required();
 
@@ -122,9 +123,18 @@ function validationError(reply: FastifyReply, message: string) {
   });
 }
 
-function idempotencyKey(request: FastifyRequest, reply: FastifyReply) {
+function idempotencyKey(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  minimumLength = 1,
+) {
   const value = request.headers["idempotency-key"];
-  if (typeof value !== "string" || value.length < 1 || value.length > 128) {
+  if (
+    typeof value !== "string" ||
+    value.length < minimumLength ||
+    value.length > 128 ||
+    !/^[\x20-\x7e]+$/.test(value)
+  ) {
     validationError(reply, "A valid Idempotency-Key header is required.");
     return null;
   }
@@ -338,7 +348,7 @@ export function createAdminOrderPlugin(
           abortEarly: false,
           allowUnknown: false
         });
-        const key = idempotencyKey(request, reply);
+        const key = idempotencyKey(request, reply, 16);
         if (!key) return;
         if (params.error || body.error) {
           return validationError(reply, params.error?.message ?? body.error!.message);

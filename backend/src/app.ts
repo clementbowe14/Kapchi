@@ -72,7 +72,7 @@ export async function buildServer() {
   await app.register(ordersPlugin);
   await app.register(paymentsPlugin, { prefix: "/payments" });
   await app.register(refundsPlugin, { prefix: "/admin" });
-  await app.register(shippingPlugin, { prefix: "/shipping" });
+  await app.register(shippingPlugin, { prefix: "/admin" });
 
   registerErrorHandler(app);
 

@@ -36,12 +36,13 @@ async function main() {
       `insert into orders (
          id, public_order_number, user_id, authenticated_user_id, status,
          payment_status, fulfillment_status, customer_email, shipping_name,
-         shipping_address, subtotal_cents, total_cents, currency, paid_at, revision
+         shipping_address, shipping_address_status, subtotal_cents, total_cents,
+         currency, paid_at, revision
        ) values (
          $1::uuid, 'KAP-E2E-22', $2, $3::uuid, 'paid', 'paid', 'queued',
          'e2e-customer@example.test', 'E2E Customer',
-         '{"line1":"22 Test Way","city":"Testville","region":"NY","postalCode":"10001","country":"US"}'::jsonb,
-         5000, 5000, 'usd', '2026-11-02T12:00:00Z', 0
+         '{"line1":"22 Test Way","city":"Testville","state":"NY","postalCode":"10001","country":"US"}'::jsonb,
+         'valid', 5000, 5000, 'usd', '2026-11-02T12:00:00Z', 0
        )`,
       [E2E_ADMIN_ORDER_ID, authSubject, user.rows[0].id],
     );

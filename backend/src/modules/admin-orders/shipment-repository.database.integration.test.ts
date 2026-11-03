@@ -14,6 +14,8 @@ integrationDescribe("shipment confirmation database transaction", () => {
   const authSubject = `shipment-admin-${userId}`;
   const orderId = randomUUID();
   const fulfillmentId = randomUUID();
+  const shipmentId = randomUUID();
+  const batchId = randomUUID();
 
   beforeAll(async () => {
     const { createDatabasePool } = await import("../../database/client.js");
@@ -36,16 +38,47 @@ integrationDescribe("shipment confirmation database transaction", () => {
          '{"city":"Testville","country":"US"}'::jsonb)`,
       [fulfillmentId, orderId],
     );
+    await pool.query(
+      `insert into shipping_export_batches (
+         id, actor_user_id, actor_auth_subject, request_id, idempotency_key_hash,
+         request_fingerprint, row_count, file_sha256, file_size_bytes
+       ) values ($1, $2, $3, 'shipment-integration', $4, $5, 1, $6, 1)`,
+      [batchId, userId, authSubject, "a".repeat(64), "b".repeat(64), "c".repeat(64)],
+    );
+    await pool.query(
+      `insert into shipments (
+         id, order_id, fulfillment_id, shipment_number, status,
+         ship_to_name_snapshot, ship_to_address_snapshot,
+         active_shipping_export_batch_id, exported_at
+       ) values ($1, $2, $3, 1, 'label_pending', 'Customer',
+                 '{"city":"Testville","country":"US"}'::jsonb, $4, now())`,
+      [shipmentId, orderId, fulfillmentId, batchId],
+    );
+    await pool.query(
+      `insert into shipping_export_batch_items (
+         batch_id, order_id, shipment_id, row_number, row_snapshot,
+         row_sha256, reconciliation_token_hash
+       ) values ($1, $2, $3, 1, '{}'::jsonb, $4, $5)`,
+      [batchId, orderId, shipmentId, "d".repeat(64), "e".repeat(64)],
+    );
+    await pool.query(
+      `insert into shipping_export_active_memberships (batch_id, order_id, shipment_id)
+       values ($1, $2, $3)`,
+      [batchId, orderId, shipmentId],
+    );
   });
 
   afterAll(async () => {
+    await pool?.query("delete from shipping_export_active_memberships where batch_id = $1", [batchId]);
+    await pool?.query("delete from shipping_export_batch_items where batch_id = $1", [batchId]);
+    await pool?.query("delete from shipping_export_batches where id = $1", [batchId]);
     await pool?.query("delete from orders where id = $1", [orderId]);
     await pool?.query("delete from users where id = $1", [userId]);
     await pool?.end();
   });
 
   it("commits one shipment, fulfillment/order transition, event, and durable replay receipt", async () => {
-    const input = { carrier: "USPS", expectedRevision: 4, reason: "Carrier handoff", trackingNumber: "9400-TEST" };
+    const input = { carrier: "USPS", expectedRevision: 4, reason: "Carrier handoff", shipmentId, trackingNumber: "9400-TEST" };
     const actor = { authSubject, userId };
     const fingerprint = confirmShipmentFingerprint(orderId, input);
     const first = await repository.confirm(orderId, actor, input, "shipment-db-1", fingerprint);
@@ -70,5 +103,10 @@ integrationDescribe("shipment confirmation database transaction", () => {
       event_count: 1, fulfillment_status: "shipped", primary_status: "shipped",
       receipt_count: 2, revision: 5, shipment_count: 1, status: "shipped"
     });
+    const membership = await pool.query(
+      `select order_id from shipping_export_active_memberships where order_id = $1`,
+      [orderId],
+    );
+    expect(membership.rows).toEqual([]);
   });
 });

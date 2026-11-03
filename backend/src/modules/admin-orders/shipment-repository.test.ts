@@ -33,6 +33,8 @@ describe("shipment confirmation repository", () => {
         shipping_address_snapshot: { city: "Testville" }, shipping_name_snapshot: "Customer",
         status: "ready_to_ship"
       }] };
+      if (sql.includes("from shipping_export_active_memberships")) return { rows: [] };
+      if (sql.includes("from shipping_export_batch_items")) return { rows: [] };
       if (sql.includes("from shipments")) return { rows: [] };
       if (sql.includes("insert into shipments")) return { rows: [{ id: "44444444-4444-4444-8444-444444444444" }] };
       if (sql.includes("update order_fulfillments")) return { rows: [] };
@@ -106,6 +108,8 @@ describe("shipment confirmation repository", () => {
         shipping_address_snapshot: { city: "Testville" }, shipping_name_snapshot: "Customer",
         status: "ready_to_ship"
       }] };
+      if (sql.includes("from shipping_export_active_memberships")) return { rows: [] };
+      if (sql.includes("from shipping_export_batch_items")) return { rows: [] };
       if (sql.includes("from shipments")) return { rows: [{
         carrier: "UPS", id: "44444444-4444-4444-8444-444444444444",
         shipment_number: 1, status: "label_purchased", tracking_number: "DIFFERENT"
@@ -135,6 +139,8 @@ describe("shipment confirmation repository", () => {
         shipping_address_snapshot: { city: "Testville" }, shipping_name_snapshot: "Customer",
         status: "ready_to_ship"
       }] };
+      if (sql.includes("from shipping_export_active_memberships")) return { rows: [] };
+      if (sql.includes("from shipping_export_batch_items")) return { rows: [] };
       if (sql.includes("from shipments")) return { rows: [{
         carrier: null, id: "44444444-4444-4444-8444-444444444444",
         shipment_number: 3, status: "voided", tracking_number: null
@@ -152,6 +158,76 @@ describe("shipment confirmation repository", () => {
     );
     const insert = db.query.mock.calls.find(([sql]) => String(sql).includes("insert into shipments"));
     expect(insert?.[1]?.[2]).toBe(4);
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("update shipments"))).toBe(false);
+  });
+
+  it("requires the exact shipment ID for an active export membership", async () => {
+    const shipmentId = "44444444-4444-4444-8444-444444444444";
+    const db = database((sql) => {
+      if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
+      if (sql.includes("from admin_order_mutation_receipts")) return { rows: [] };
+      if (sql.includes("select id from users")) return { rows: [{ id: actor.userId }] };
+      if (sql.includes("from orders where id")) return { rows: [{
+        fulfillment_status: "ready_to_ship", id: orderId, paid_at: "2026-11-02T12:00:00Z",
+        payment_status: "paid", revision: 4, shipped_at: null,
+        shipping_address: { city: "Testville" }, shipping_name: "Customer", status: "ready_to_ship"
+      }] };
+      if (sql.includes("from order_fulfillments")) return { rows: [{
+        fulfillment_number: 1, id: "33333333-3333-4333-8333-333333333333",
+        shipping_address_snapshot: { city: "Testville" }, shipping_name_snapshot: "Customer",
+        status: "ready_to_ship"
+      }] };
+      if (sql.includes("from shipments")) return { rows: [{
+        active_shipping_export_batch_id: "77777777-7777-4777-8777-777777777777",
+        carrier: null, id: shipmentId, shipment_number: 1,
+        status: "label_pending", tracking_number: null
+      }] };
+      if (sql.includes("from shipping_export_active_memberships")) return { rows: [{
+        batch_id: "77777777-7777-4777-8777-777777777777", shipment_id: shipmentId, status: "prepared"
+      }] };
+      if (sql.includes("from shipping_export_batch_items")) return { rows: [{ shipment_id: shipmentId }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    await expect(new AdminOrderShipmentRepository(db.pool).confirm(
+      orderId, actor, input, "exported-confirm", confirmShipmentFingerprint(orderId, input),
+    )).rejects.toMatchObject({ code: "SHIPMENT_ID_REQUIRED", statusCode: 409 });
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("update shipments"))).toBe(false);
+  });
+
+  it("rejects confirmation for a cancelled or released export shipment", async () => {
+    const shipmentId = "44444444-4444-4444-8444-444444444444";
+    const exportedInput = { ...input, shipmentId };
+    const db = database((sql) => {
+      if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
+      if (sql.includes("from admin_order_mutation_receipts")) return { rows: [] };
+      if (sql.includes("select id from users")) return { rows: [{ id: actor.userId }] };
+      if (sql.includes("from orders where id")) return { rows: [{
+        fulfillment_status: "ready_to_ship", id: orderId, paid_at: "2026-11-02T12:00:00Z",
+        payment_status: "paid", revision: 4, shipped_at: null,
+        shipping_address: { city: "Testville" }, shipping_name: "Customer", status: "ready_to_ship"
+      }] };
+      if (sql.includes("from order_fulfillments")) return { rows: [{
+        fulfillment_number: 1, id: "33333333-3333-4333-8333-333333333333",
+        shipping_address_snapshot: { city: "Testville" }, shipping_name_snapshot: "Customer",
+        status: "ready_to_ship"
+      }] };
+      if (sql.includes("from shipments")) return { rows: [{
+        active_shipping_export_batch_id: null, carrier: null, id: shipmentId,
+        shipment_number: 1, status: "label_pending", tracking_number: null
+      }] };
+      if (sql.includes("from shipping_export_active_memberships")) return { rows: [] };
+      if (sql.includes("from shipping_export_batch_items")) return { rows: [{ shipment_id: shipmentId }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    await expect(new AdminOrderShipmentRepository(db.pool).confirm(
+      orderId,
+      actor,
+      exportedInput,
+      "released-export-confirm",
+      confirmShipmentFingerprint(orderId, exportedInput),
+    )).rejects.toMatchObject({ code: "SHIPMENT_NOT_FOUND", statusCode: 409 });
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("update shipments"))).toBe(false);
   });
 });

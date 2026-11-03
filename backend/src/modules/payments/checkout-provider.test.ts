@@ -40,6 +40,7 @@ describe("StripeCheckoutProvider", () => {
         metadata: { order_id: "order-123" },
         mode: "payment",
         payment_intent_data: { metadata: { order_id: "order-123" } },
+        shipping_address_collection: { allowed_countries: ["US"] },
         success_url: "https://kapchi.test/orders"
       },
       { idempotencyKey: "cart-checkout:order-123" },

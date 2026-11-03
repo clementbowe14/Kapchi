@@ -176,6 +176,65 @@ describe("successful Stripe payment state handling", () => {
     expect(client.query.mock.calls[2][0]).toBe("commit");
   });
 
+  it("persists a valid checkout address even when the payment intent arrived first", async () => {
+    const client = createClient();
+    client.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [createOrderRow({
+        paid_at: new Date("2026-06-01T12:05:00.000Z"),
+        payment_status: "paid", status: "paid", fulfillment_status: "queued"
+      })] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await handleCheckoutSessionCompleted(client, {
+      collected_information: { shipping_details: {
+        address: {
+          city: "Boston", country: "US", line1: "123 Main", line2: null,
+          postal_code: "02108", state: "MA"
+        },
+        name: "Customer Example"
+      } },
+      id: "cs_test_123",
+      metadata: { order_id: orderId },
+      payment_intent: "pi_test_123"
+    });
+
+    expect(result).toEqual({ outcome: "already_paid", orderId });
+    expect(client.query.mock.calls[2][0]).toContain("shipping_address_status = 'valid'");
+    expect(client.query.mock.calls[2][0]).toContain("stripe_checkout_session_id = $4");
+    expect(client.query.mock.calls[2][1]).toEqual([
+      orderId,
+      "Customer Example",
+      JSON.stringify({
+        city: "Boston", country: "US", line1: "123 Main", postalCode: "02108", state: "MA"
+      }),
+      "cs_test_123"
+    ]);
+    expect(client.query.mock.calls[3][0]).toBe("commit");
+  });
+
+  it("records a terminal missing-address issue without retrying the payment", async () => {
+    const client = createClient();
+    client.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [createOrderRow({
+        paid_at: new Date("2026-06-01T12:05:00.000Z"),
+        payment_status: "paid", status: "paid", fulfillment_status: "queued"
+      })] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(handleCheckoutSessionCompleted(client, {
+      collected_information: { shipping_details: null },
+      id: "cs_test_123", metadata: { order_id: orderId }, payment_intent: "pi_test_123"
+    })).resolves.toEqual({ outcome: "already_paid", orderId });
+    expect(client.query.mock.calls[2][1]).toEqual([
+      orderId, "missing", "ADDRESS_MISSING", "cs_test_123"
+    ]);
+    expect(client.query.mock.calls[3][0]).toBe("commit");
+  });
+
   it("does not downgrade terminal orders", async () => {
     const client = createClient();
     client.query

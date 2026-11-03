@@ -45,11 +45,12 @@ integrationDescribe("admin order mutation database", () => {
       `
         insert into orders (
           id, public_order_number, status, payment_status, fulfillment_status,
-          paid_at, shipping_name, shipping_address, subtotal_cents, total_cents, currency
+          paid_at, shipping_name, shipping_address, shipping_address_status,
+          subtotal_cents, total_cents, currency
         ) values (
           $1, $2, 'paid', 'paid', 'queued', now(), 'Test Customer',
-          '{"line1":"1 Test Way","city":"Testville","country":"US"}'::jsonb,
-          0, 0, 'usd'
+          '{"line1":"1 Test Way","city":"Testville","state":"MA","postalCode":"02108","country":"US"}'::jsonb,
+          'valid', 0, 0, 'usd'
         )
       `,
       [orderId, `MUTATION-${orderId}`],
