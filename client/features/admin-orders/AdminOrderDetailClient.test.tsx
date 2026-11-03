@@ -241,6 +241,71 @@ describe("AdminOrderDetailClient integration", () => {
     expect(vi.mocked(fetch).mock.calls.every(([, init]) => init?.method !== "POST")).toBe(true);
   });
 
+  it("binds tracking confirmation to the shipment recovered from an export", async () => {
+    const user = userEvent.setup();
+    const shipmentId = "44444444-4444-4444-8444-444444444444";
+    const base = createAdminOrderDetail();
+    let current = createAdminOrderDetail({
+      fulfillmentStatus: "ready_to_ship",
+      fulfillments: [{ ...base.fulfillments[0], status: "ready_to_ship" }],
+      shipments: [{ carrier: null, carrierService: null, id: shipmentId, shippedAt: null, shipmentNumber: 1, status: "label_pending", trackingNumber: null, trackingUrl: null }],
+      status: "ready_to_ship",
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = requestPath(input);
+      if (init?.method === "POST" && path.endsWith("/confirm-shipment")) {
+        current = createAdminOrderDetail({ ...current, fulfillmentStatus: "shipped", revision: 3, status: "shipped" });
+        return json({
+          command: "confirm_shipment", fulfillmentStatus: "shipped", orderId: current.id,
+          orderStatus: "shipped", paymentStatus: "paid", replayed: false, revision: 3,
+          shipment: { carrier: "USPS", carrierService: null, id: shipmentId, shippedAt: "2026-11-03T12:00:00.000Z", trackingNumber: "9400111899", trackingUrl: null },
+          transitionedAt: "2026-11-03T12:00:00.000Z",
+        });
+      }
+      return path.endsWith("/timeline") ? json(emptyTimeline) : json(current);
+    });
+    render(<AdminOrderDetailClient expectedShipmentId={shipmentId} orderId={current.id} returnHref="/admin/orders" />);
+
+    await user.click(await screen.findByRole("button", { name: "Confirm shipment" }));
+    expect(screen.getByLabelText("Shipment from export")).toHaveValue(shipmentId);
+    expect(screen.getByLabelText("Shipment from export")).toBeDisabled();
+    await user.type(screen.getByLabelText("Carrier"), "USPS");
+    await user.type(screen.getByLabelText("Tracking number"), "9400111899");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm shipment" }));
+
+    const post = vi.mocked(fetch).mock.calls.find(([input, init]) => requestPath(input).endsWith("/confirm-shipment") && init?.method === "POST");
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+      carrier: "USPS", expectedRevision: 2, shipmentId, trackingNumber: "9400111899",
+    });
+  });
+
+  it("submits a guarded U.S. address correction before re-export", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = requestPath(input);
+      if (init?.method === "POST" && path.endsWith("/correct-shipping-address")) return json({ orderId: "11111111-1111-4111-8111-111111111111", replayed: false, revision: 3 });
+      return path.endsWith("/timeline") ? json(emptyTimeline) : json(createAdminOrderDetail());
+    });
+    render(<AdminOrderDetailClient orderId="11111111-1111-4111-8111-111111111111" returnHref="/admin/orders" />);
+
+    await user.click(await screen.findByRole("button", { name: "Correct address" }));
+    const dialog = screen.getByRole("dialog", { name: "Correct shipping address" });
+    await user.clear(within(dialog).getByLabelText("ZIP code"));
+    await user.type(within(dialog).getByLabelText("ZIP code"), "01234");
+    await user.type(within(dialog).getByLabelText("Internal correction reason"), "Customer confirmed corrected ZIP");
+    await user.click(within(dialog).getByText(/I verified this address/));
+    await user.click(within(dialog).getByRole("button", { name: "Save corrected address" }));
+
+    const post = vi.mocked(fetch).mock.calls.find(([input, init]) => requestPath(input).endsWith("/correct-shipping-address") && init?.method === "POST");
+    expect(post?.[1]?.headers).toEqual(expect.objectContaining({ "Idempotency-Key": expect.any(String) }));
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual(expect.objectContaining({
+      address: expect.objectContaining({ country: "US", postalCode: "01234", state: "NY" }),
+      expectedRevision: 2,
+      intent: "correct_shipping_address",
+      reason: "Customer confirmed corrected ZIP",
+    }));
+  });
+
   it("adds a trimmed internal note and clears it only after verification", async () => {
     const user = userEvent.setup();
     vi.mocked(fetch).mockImplementation(async (input, init) => {

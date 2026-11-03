@@ -42,6 +42,8 @@ type OrderRow = QueryResultRow & {
   revision: number;
   shipped_at: Date | string | null;
   shipping_address: Record<string, unknown> | null;
+  shipping_address_issue_code: string | null;
+  shipping_address_status: "valid" | "missing" | "invalid";
   shipping_name: string | null;
   status: AdminOrderSummary["status"];
   succeeded_refund_cents: number | string;
@@ -115,6 +117,8 @@ const orderColumns = `
   orders.total_cents,
   orders.shipping_name,
   orders.shipping_address,
+  orders.shipping_address_status,
+  orders.shipping_address_issue_code,
   orders.paid_at,
   orders.cancelled_at,
   orders.shipped_at,
@@ -574,7 +578,9 @@ export class AdminOrderRepository implements AdminOrderReader {
         shippedAt: iso(base.shipped_at),
         shipping: {
           address: base.shipping_address,
-          name: base.shipping_name
+          issueCode: base.shipping_address_issue_code,
+          name: base.shipping_name,
+          status: base.shipping_address_status
         }
       };
     });

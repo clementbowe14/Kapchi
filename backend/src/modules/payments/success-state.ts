@@ -8,9 +8,40 @@ type StripeMetadata = {
 };
 
 export type CheckoutSessionCompletedPayload = {
+  collected_information?: {
+    shipping_details?: StripeShippingDetails | null;
+  } | null;
   id: string;
   metadata?: StripeMetadata | null;
   payment_intent?: string | { id: string } | null;
+  shipping?: ShippingProjection | null;
+  shipping_details?: StripeShippingDetails | null;
+};
+
+type StripeShippingDetails = {
+  address?: {
+    city?: string | null;
+    country?: string | null;
+    line1?: string | null;
+    line2?: string | null;
+    postal_code?: string | null;
+    state?: string | null;
+  } | null;
+  name?: string | null;
+};
+
+export type ShippingProjection = {
+  address?: {
+    city: string;
+    country: "US";
+    line1: string;
+    line2?: string;
+    postalCode: string;
+    state: string;
+  };
+  issueCode?: "ADDRESS_INCOMPLETE" | "ADDRESS_INVALID" | "ADDRESS_MISSING" | "ADDRESS_UNSUPPORTED_COUNTRY";
+  name?: string;
+  status: "invalid" | "missing" | "valid";
 };
 
 export type PaymentIntentSucceededPayload = {
@@ -43,6 +74,7 @@ type SuccessfulPaymentIdentifiers = {
   eventType: "checkout.session.completed" | "payment_intent.succeeded";
   metadataOrderId?: string | null;
   paymentIntentId?: string;
+  shipping?: ShippingProjection;
 };
 
 type FabricOrderItemRow = QueryResultRow & {
@@ -75,12 +107,64 @@ export async function handleCheckoutSessionCompleted(
   client: QueryableClient,
   session: CheckoutSessionCompletedPayload,
 ) {
+  const hasShippingProjection = session.shipping !== undefined ||
+    session.collected_information !== undefined ||
+    session.shipping_details !== undefined;
   return handleSuccessfulPayment(client, {
     checkoutSessionId: session.id,
     eventType: "checkout.session.completed",
     metadataOrderId: session.metadata?.order_id,
-    paymentIntentId: getPaymentIntentId(session.payment_intent)
+    paymentIntentId: getPaymentIntentId(session.payment_intent),
+    ...(hasShippingProjection ? {
+      shipping: session.shipping ?? normalizeStripeShippingDetails(
+        session.collected_information?.shipping_details ?? session.shipping_details,
+      )
+    } : {})
   });
+}
+
+function normalized(value: string | null | undefined) {
+  return value?.normalize("NFKC").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ").trim() ?? "";
+}
+
+export function normalizeStripeShippingDetails(
+  details: StripeShippingDetails | null | undefined,
+): ShippingProjection {
+  if (!details) return { issueCode: "ADDRESS_MISSING", status: "missing" };
+  const name = normalized(details.name);
+  const source = details.address;
+  if (!source) return { issueCode: "ADDRESS_MISSING", status: "missing" };
+  const country = normalized(source.country).toUpperCase();
+  if (country && country !== "US") {
+    return { issueCode: "ADDRESS_UNSUPPORTED_COUNTRY", status: "invalid" };
+  }
+  const address = {
+    city: normalized(source.city),
+    country: "US" as const,
+    line1: normalized(source.line1),
+    line2: normalized(source.line2),
+    postalCode: normalized(source.postal_code),
+    state: normalized(source.state).toUpperCase()
+  };
+  if (!name || !address.line1 || !address.city || !address.state || !address.postalCode) {
+    return { issueCode: "ADDRESS_INCOMPLETE", status: "invalid" };
+  }
+  if (!/^[A-Z]{2}$/.test(address.state) || !/^\d{5}(?:-\d{4})?$/.test(address.postalCode)) {
+    return { issueCode: "ADDRESS_INVALID", status: "invalid" };
+  }
+  return {
+    address: {
+      city: address.city,
+      country: "US",
+      line1: address.line1,
+      ...(address.line2 ? { line2: address.line2 } : {}),
+      postalCode: address.postalCode,
+      state: address.state
+    },
+    name,
+    status: "valid"
+  };
 }
 
 export async function handlePaymentIntentSucceeded(
@@ -106,6 +190,10 @@ async function handleSuccessfulPayment(
     if (!order) {
       await client.query("commit");
       return { outcome: "unknown_order" };
+    }
+
+    if (identifiers.eventType === "checkout.session.completed" && identifiers.shipping) {
+      await applyShippingProjection(client, order, identifiers);
     }
 
     if (order.payment_status === "paid") {
@@ -151,6 +239,36 @@ async function handleSuccessfulPayment(
     await client.query("rollback");
     throw error;
   }
+}
+
+async function applyShippingProjection(
+  client: QueryableClient,
+  order: OrderPaymentRow,
+  identifiers: SuccessfulPaymentIdentifiers,
+) {
+  const shipping = identifiers.shipping!;
+  if (shipping.status === "valid" && shipping.address && shipping.name) {
+    await client.query(
+      `update orders
+       set shipping_name = $2,
+           shipping_address = $3::jsonb,
+           shipping_address_status = 'valid',
+           shipping_address_issue_code = null,
+           updated_at = now()
+       where id = $1::uuid and stripe_checkout_session_id = $4`,
+      [order.id, shipping.name, JSON.stringify(shipping.address), identifiers.checkoutSessionId],
+    );
+    return;
+  }
+  await client.query(
+    `update orders
+     set shipping_address_status = $2,
+         shipping_address_issue_code = $3,
+         updated_at = now()
+     where id = $1::uuid and shipping_address is null
+       and stripe_checkout_session_id = $4`,
+    [order.id, shipping.status, shipping.issueCode ?? "ADDRESS_INVALID", identifiers.checkoutSessionId],
+  );
 }
 
 export async function consumeFabricInventory(

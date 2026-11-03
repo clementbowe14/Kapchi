@@ -77,6 +77,7 @@ export type AdminOrderMutationResult = {
 export type ConfirmShipmentInput = AdminOrderMutationInput & {
   carrier: string;
   carrierService?: string;
+  shipmentId?: string;
   trackingNumber: string;
 };
 
@@ -203,7 +204,9 @@ export type AdminOrderDetail = AdminOrderSummary & {
   shippedAt: string | null;
   shipping: {
     address: Record<string, unknown> | null;
+    issueCode: string | null;
     name: string | null;
+    status: "valid" | "missing" | "invalid";
   };
 };
 

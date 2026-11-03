@@ -640,6 +640,7 @@ export async function confirmAdminShipment(
     carrierService?: string;
     expectedRevision: number;
     reason?: string;
+    shipmentId?: string;
     trackingNumber: string;
   },
   idempotencyKey: string,

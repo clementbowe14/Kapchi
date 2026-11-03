@@ -96,6 +96,9 @@ export class StripeCheckoutProvider implements CheckoutProvider {
           payment_intent_data: {
             metadata: { order_id: input.orderId }
           },
+          shipping_address_collection: {
+            allowed_countries: ["US"]
+          },
           success_url: input.successUrl
         },
         { idempotencyKey },

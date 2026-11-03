@@ -77,7 +77,7 @@ const detail: AdminOrderDetail = {
   paidAt: "2026-10-25T12:00:00.000Z",
   shipments: [],
   shippedAt: null,
-  shipping: { address: null, name: "Customer" }
+  shipping: { address: null, issueCode: "ADDRESS_NOT_COLLECTED", name: "Customer", status: "missing" }
 };
 const timeline: AdminOrderTimelinePage = { entries: [], nextCursor: null };
 

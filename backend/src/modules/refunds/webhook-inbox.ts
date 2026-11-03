@@ -3,7 +3,8 @@ import type { Pool } from "pg";
 import type Stripe from "stripe";
 import {
   handleCheckoutSessionCompleted,
-  handlePaymentIntentSucceeded
+  handlePaymentIntentSucceeded,
+  normalizeStripeShippingDetails
 } from "../payments/success-state.js";
 import type { RefundProvider } from "./provider.js";
 import { RefundRepository } from "./repository.js";
@@ -39,13 +40,19 @@ export function projectStripeEvent(event: Stripe.Event) {
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
+    const legacyShipping = (session as unknown as {
+      shipping_details?: Parameters<typeof normalizeStripeShippingDetails>[0];
+    }).shipping_details;
     return {
       ...common,
       kind: "checkout_session_completed",
       metadata: allowlistedMetadata(session.metadata),
       paymentIntentId: idOf(session.payment_intent),
       paymentStatus: session.payment_status,
-      sessionId: session.id
+      sessionId: session.id,
+      shipping: normalizeStripeShippingDetails(
+        session.collected_information?.shipping_details ?? legacyShipping,
+      )
     };
   }
   if (event.type === "payment_intent.succeeded") {
@@ -146,6 +153,9 @@ export class StripeWebhookInbox {
           update stripe_webhook_events
           set processing_status = $2::stripe_webhook_processing_status,
               processed_at = case when $2 = 'processed' then now() else null end,
+              event_projection = case when $2 = 'processed'
+                then (event_projection - 'shipping') || '{"piiScrubbed":true}'::jsonb
+                else event_projection end,
               next_attempt_at = case when $2 in ('retryable', 'unmatched') then now() + interval '1 minute' else null end,
               attempt_count = attempt_count + 1,
               lease_owner = null, lease_expires_at = null
@@ -209,6 +219,9 @@ export class StripeWebhookInbox {
             update stripe_webhook_events
             set processing_status = $2::stripe_webhook_processing_status,
                 processed_at = case when $2 = 'processed' then now() else null end,
+                event_projection = case when $2 = 'processed'
+                  then (event_projection - 'shipping') || '{"piiScrubbed":true}'::jsonb
+                  else event_projection end,
                 attempt_count = attempt_count + 1,
                 next_attempt_at = case when $2 in ('retryable', 'unmatched') then now() + interval '5 minutes' else null end,
                 lease_owner = null, lease_expires_at = null
@@ -226,6 +239,9 @@ export class StripeWebhookInbox {
           `
             update stripe_webhook_events
             set processing_status = case when attempt_count >= 9 then 'exhausted'::stripe_webhook_processing_status else 'retryable'::stripe_webhook_processing_status end,
+                event_projection = case when attempt_count >= 9
+                  then (event_projection - 'shipping') || '{"piiScrubbed":true}'::jsonb
+                  else event_projection end,
                 attempt_count = attempt_count + 1,
                 next_attempt_at = case when attempt_count >= 9 then null else now() + make_interval(mins => least(60, (2 ^ least(attempt_count, 5))::int)) end,
                 last_error_code = $2,
@@ -293,7 +309,8 @@ export class StripeWebhookInbox {
           payment_intent:
             typeof projection.paymentIntentId === "string"
               ? projection.paymentIntentId
-              : null
+              : null,
+          shipping: projection.shipping as Parameters<typeof handleCheckoutSessionCompleted>[1]["shipping"]
         }),
       );
       return "processed";

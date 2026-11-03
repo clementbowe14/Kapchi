@@ -19,6 +19,7 @@ type LockedOrderRow = QueryResultRow & {
   payment_status: PaymentStatus;
   revision: number;
   shipping_address: Record<string, unknown> | null;
+  shipping_address_status: string;
   shipping_name: string | null;
   status: OrderStatus;
 };
@@ -188,7 +189,7 @@ export class AdminOrderMutationRepository {
       const locked = await client.query<LockedOrderRow>(
         `
           select id, status, payment_status, fulfillment_status, paid_at, revision,
-                 shipping_name, shipping_address
+                 shipping_name, shipping_address, shipping_address_status
           from orders where id = $1::uuid
           for update
         `,
@@ -212,6 +213,14 @@ export class AdminOrderMutationRepository {
         paidAt: before.paid_at === null ? null : iso(before.paid_at),
         paymentStatus: before.payment_status
       });
+
+      if (command === "start_production" && before.shipping_address_status !== "valid") {
+        throw new AdminOrderError(
+          "ORDER_TRANSITION_NOT_ALLOWED",
+          "A verified shipping address is required before production can start.",
+          409,
+        );
+      }
 
       const fulfillments = await client.query<LockedFulfillmentRow>(
         `select id, fulfillment_number, status

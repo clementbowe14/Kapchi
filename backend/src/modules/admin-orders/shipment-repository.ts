@@ -27,11 +27,18 @@ type LockedFulfillment = QueryResultRow & {
 };
 
 type LockedShipment = QueryResultRow & {
+  active_shipping_export_batch_id: string | null;
   carrier: string | null;
   id: string;
   shipment_number: number;
   status: string;
   tracking_number: string | null;
+};
+
+type ActiveExportMembership = QueryResultRow & {
+  batch_id: string;
+  shipment_id: string;
+  status: "prepared" | "expired";
 };
 
 type Receipt = QueryResultRow & {
@@ -175,7 +182,8 @@ export class AdminOrderShipmentRepository {
         [orderId],
       );
       const shipmentResult = await client.query<LockedShipment>(
-        `select id, shipment_number, status, carrier, tracking_number
+        `select id, shipment_number, status, carrier, tracking_number,
+                active_shipping_export_batch_id
          from shipments where order_id = $1::uuid
          order by shipment_number, id for update`,
         [orderId],
@@ -183,7 +191,35 @@ export class AdminOrderShipmentRepository {
       const primary = fulfillmentResult.rows.find((row) => row.fulfillment_number === 1);
       const confirmed = shipmentResult.rows.find((row) => isConfirmedShipmentStatus(row.status));
 
+      const membershipResult = await client.query<ActiveExportMembership>(
+        `select m.shipment_id, m.batch_id, b.status
+         from shipping_export_active_memberships m
+         join shipping_export_batches b on b.id = m.batch_id
+         where m.order_id = $1::uuid for update of m`,
+        [orderId],
+      );
+      const membership = membershipResult.rows[0];
+      const exportHistoryResult = await client.query<{ shipment_id: string }>(
+        `select distinct shipment_id
+         from shipping_export_batch_items
+         where order_id = $1::uuid`,
+        [orderId],
+      );
+      const exportedShipmentIds = new Set(
+        exportHistoryResult.rows.map((row) => row.shipment_id),
+      );
+      if (membership && membership.status !== "prepared" && membership.status !== "expired") {
+        throw new AdminOrderError(
+          "SHIPMENT_NOT_FOUND",
+          "The exported shipment is no longer active.",
+          409,
+        );
+      }
+
       if (confirmed) {
+        if (input.shipmentId && input.shipmentId !== confirmed.id) {
+          throw new AdminOrderError("SHIPMENT_ALREADY_CONFIRMED", "A different shipment is already confirmed for this order.", 409);
+        }
         const same = confirmed.carrier !== null && confirmed.tracking_number !== null
           && confirmedTrackingIdentity(confirmed.carrier, confirmed.tracking_number) === input.trackingIdentity;
         if (same && order.status === "shipped" && order.fulfillment_status === "shipped" && primary?.status === "shipped") {
@@ -220,7 +256,34 @@ export class AdminOrderShipmentRepository {
         throw new AdminOrderError("ORDER_TRANSITION_NOT_ALLOWED", "The order is not ready for shipment confirmation.", 409);
       }
 
-      const reusable = shipmentResult.rows.find((row) => isReusableShipmentStatus(row.status));
+      const reusableCandidates = shipmentResult.rows.filter((row) => isReusableShipmentStatus(row.status));
+      if (membership && (!input.shipmentId || input.shipmentId !== membership.shipment_id)) {
+        throw new AdminOrderError(
+          "SHIPMENT_ID_REQUIRED",
+          "The exact exported shipment must be selected for confirmation.",
+          409,
+        );
+      }
+      if (!input.shipmentId && reusableCandidates.length > 1) {
+        throw new AdminOrderError(
+          "SHIPMENT_ID_REQUIRED",
+          "The exact shipment must be selected for confirmation.",
+          409,
+        );
+      }
+      const reusable = input.shipmentId
+        ? reusableCandidates.find((row) => row.id === input.shipmentId)
+        : reusableCandidates[0];
+      if (input.shipmentId && !reusable) {
+        throw new AdminOrderError("SHIPMENT_NOT_FOUND", "The selected shipment is not available for confirmation.", 409);
+      }
+      if (!membership && reusable && exportedShipmentIds.has(reusable.id)) {
+        throw new AdminOrderError(
+          "SHIPMENT_NOT_FOUND",
+          "A cancelled or released export shipment cannot be confirmed.",
+          409,
+        );
+      }
       if (reusable?.tracking_number
         && (!reusable.carrier
           || confirmedTrackingIdentity(reusable.carrier, reusable.tracking_number) !== input.trackingIdentity)) {
@@ -234,7 +297,8 @@ export class AdminOrderShipmentRepository {
           `update shipments set fulfillment_id = $2::uuid, status = 'in_transit',
              carrier = $3, carrier_service = $4, tracking_number = $5, tracking_url = $6,
              ship_to_name_snapshot = $7, ship_to_address_snapshot = $8::jsonb,
-             shipped_at = $9::timestamptz
+             shipped_at = $9::timestamptz,
+             active_shipping_export_batch_id = null
            where id = $1::uuid returning id`,
           [reusable.id, primary.id, input.carrier, input.carrierService ?? null,
             input.trackingNumber, input.trackingUrl, primary.shipping_name_snapshot,
@@ -255,6 +319,14 @@ export class AdminOrderShipmentRepository {
             JSON.stringify(primary.shipping_address_snapshot), shippedAt],
         );
         shipmentId = inserted.rows[0].id;
+      }
+
+      if (membership) {
+        await client.query(
+          `delete from shipping_export_active_memberships
+           where order_id = $1::uuid and shipment_id = $2::uuid and batch_id = $3::uuid`,
+          [orderId, shipmentId, membership.batch_id],
+        );
       }
 
       await client.query(
