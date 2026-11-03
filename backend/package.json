@@ -17,6 +17,7 @@
     "refunds:reconcile": "tsx src/scripts/reconcile-refunds.ts",
     "inventory:reconcile": "tsx src/scripts/reconcile-fabric-inventory.ts",
     "messages:dispatch": "tsx src/scripts/dispatch-messages.ts",
+    "e2e:admin-orders:reset": "tsx src/scripts/reset-admin-order-e2e.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

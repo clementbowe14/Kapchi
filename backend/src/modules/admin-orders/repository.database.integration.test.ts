@@ -415,10 +415,11 @@ integrationDescribe("AdminOrderRepository database", () => {
       ],
     );
 
-    const first = await repository.timeline(orderId, { limit: 2 });
+    const first = await repository.timeline(orderId, { limit: 2, sort: "occurred_asc" });
     const second = await repository.timeline(orderId, {
       cursor: first.nextCursor!,
-      limit: 10
+      limit: 10,
+      sort: "occurred_asc"
     });
     const entries = [...first.entries, ...second.entries];
 
@@ -427,11 +428,26 @@ integrationDescribe("AdminOrderRepository database", () => {
     );
     expect(entries.filter((entry) => entry.kind === "internal_note")).toHaveLength(1);
     expect(entries.filter((entry) => entry.kind === "refund")).toHaveLength(2);
-    expect(entries.some((entry) => entry.kind === "event" && entry.payload.eventType === "order_note.created")).toBe(false);
+    expect(entries.filter((entry) => entry.kind === "event")).toHaveLength(1);
     expect(entries.find((entry) => entry.kind === "internal_note")).toMatchObject({
       visibility: "internal",
-      payload: { body: "Production-only note" }
+      body: "Production-only note"
     });
+
+    const newest = await repository.timeline(orderId, { limit: 10, sort: "occurred_desc" });
+    expect(newest.entries.map((entry) => entry.occurredAt)).toEqual(
+      [...newest.entries.map((entry) => entry.occurredAt)].sort().reverse(),
+    );
+    await expect(repository.timeline(orderId, {
+      cursor: first.nextCursor!,
+      limit: 10,
+      sort: "occurred_desc"
+    })).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+    await expect(repository.timeline(randomUUID(), {
+      cursor: first.nextCursor!,
+      limit: 10,
+      sort: "occurred_asc"
+    })).rejects.toMatchObject({ code: "INVALID_CURSOR" });
   });
 
   it("refuses to combine captured and refund money across currencies", async () => {

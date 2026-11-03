@@ -46,6 +46,7 @@ export type AdminOrderSearchQuery = {
 export type AdminOrderTimelineQuery = {
   cursor?: string;
   limit: number;
+  sort?: "occurred_asc" | "occurred_desc";
 };
 
 export type AdminOrderMutationCommand =
@@ -70,6 +71,31 @@ export type AdminOrderMutationResult = {
   paymentStatus: PaymentStatus;
   replayed: boolean;
   revision: number;
+  transitionedAt: string;
+};
+
+export type ConfirmShipmentInput = AdminOrderMutationInput & {
+  carrier: string;
+  carrierService?: string;
+  trackingNumber: string;
+};
+
+export type ConfirmShipmentResult = {
+  command: "confirm_shipment";
+  fulfillmentStatus: "shipped";
+  orderId: string;
+  orderStatus: "shipped";
+  paymentStatus: "paid" | "partially_refunded";
+  replayed: boolean;
+  revision: number;
+  shipment: {
+    carrier: string;
+    carrierService: string | null;
+    id: string;
+    shippedAt: string;
+    trackingNumber: string;
+    trackingUrl: string | null;
+  };
   transitionedAt: string;
 };
 
@@ -181,19 +207,51 @@ export type AdminOrderDetail = AdminOrderSummary & {
   };
 };
 
-export type AdminOrderTimelineEntry = {
-  actor: {
-    displayName: string | null;
-    id: string | null;
-    type: string;
-    userId: string | null;
-  };
+export type TimelineActorType = "admin" | "customer" | "system";
+
+export type TimelineLifecycleState = {
+  fulfillmentStatus: FulfillmentStatus;
+  orderStatus: OrderStatus;
+};
+
+type TimelineBase = {
+  actorName: string;
+  actorType: TimelineActorType;
   id: string;
-  kind: "event" | "internal_note" | "message" | "refund";
   occurredAt: string;
-  payload: Record<string, unknown>;
   visibility: "customer_visible" | "internal";
 };
+
+export type AdminOrderTimelineEntry =
+  | TimelineBase & {
+      eventType: "order.production_started" | "order.ready_to_ship" | "order.shipment_confirmed" | "order.updated";
+      from: TimelineLifecycleState | null;
+      kind: "event";
+      to: TimelineLifecycleState | null;
+      visibility: "internal";
+    }
+  | TimelineBase & {
+      body: string;
+      kind: "internal_note";
+      status: "sent";
+      visibility: "internal";
+    }
+  | TimelineBase & {
+      body: string;
+      channel: "email" | "sms";
+      direction: "inbound" | "outbound";
+      kind: "message";
+      status: "draft" | "queued" | "sent" | "failed";
+      subject: string | null;
+      visibility: "customer_visible";
+    }
+  | TimelineBase & {
+      amountMinor: number;
+      currency: string;
+      kind: "refund";
+      status: "pending" | "succeeded" | "failed";
+      visibility: "internal";
+    };
 
 export type AdminOrderTimelinePage = {
   entries: AdminOrderTimelineEntry[];

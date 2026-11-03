@@ -3,6 +3,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import Joi from "joi";
 import { getDatabasePool } from "../../database/index.js";
 import { authMiddleware, requireAuth } from "../auth/index.js";
+import { loadCustomerTracking, type CustomerTracking } from "./customer-tracking.js";
 
 type OrderRow = {
   id: string;
@@ -173,6 +174,7 @@ function serializeOrderItem(item: OrderItemRow): CustomerSafeOrderItem {
 function serializeOrder(
   order: OrderRow,
   itemsByOrderId: Map<string, OrderItemRow[]>,
+  trackingByOrderId: Map<string, CustomerTracking>,
 ): CustomerSafeOrder {
   return {
     id: order.id,
@@ -187,7 +189,7 @@ function serializeOrder(
     createdAt: datestring(order.created_at) ?? "",
     paidAt: datestring(order.paid_at),
     items: (itemsByOrderId.get(order.id) ?? []).map(serializeOrderItem),
-    tracking: null
+    tracking: trackingByOrderId.get(order.id) ?? null
   };
 }
 
@@ -270,8 +272,9 @@ const ordersPlugin: FastifyPluginAsync = async (fastify) => {
     }
 
     const items = await loadOrderItems([order.id]);
+    const tracking = await loadCustomerTracking(getDatabasePool(), [order.id]);
 
-    return serializeOrder(order, groupItemsByOrderId(items));
+    return serializeOrder(order, groupItemsByOrderId(items), tracking);
   });
 
   fastify.get(
@@ -293,9 +296,10 @@ const ordersPlugin: FastifyPluginAsync = async (fastify) => {
       const orderIds = orderResult.rows.map((order) => order.id);
       const items = await loadOrderItems(orderIds);
       const itemsByOrderId = groupItemsByOrderId(items);
+      const trackingByOrderId = await loadCustomerTracking(getDatabasePool(), orderIds);
 
       return {
-        orders: orderResult.rows.map((order) => serializeOrder(order, itemsByOrderId))
+        orders: orderResult.rows.map((order) => serializeOrder(order, itemsByOrderId, trackingByOrderId))
       };
     },
   );
