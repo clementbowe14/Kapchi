@@ -144,6 +144,10 @@ export class RefundService {
   }
 
   private async recover(current: StoredRefundOperation) {
+    if (current.manualReviewRequired) {
+      return current;
+    }
+
     if (current.providerRefundId) {
       try {
         const refund = await this.provider.retrieveRefund(

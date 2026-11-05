@@ -349,6 +349,40 @@ describe("syncStripeTestCatalog", () => {
     );
   });
 
+  it("uses a caller-selected advisory lock for the full synchronization", async () => {
+    const stripe = createStripe();
+    const database = createDatabase();
+    const advisoryLockId = 85_000_001;
+
+    await syncStripeTestCatalog({
+      ...syncInput(database.database, stripe.client),
+      advisoryLockId
+    });
+
+    expect(database.queries[0].values).toEqual([advisoryLockId]);
+    expect(database.queries.at(-1)?.values).toEqual([advisoryLockId]);
+  });
+
+  it("rolls back catalog mappings when the before-commit attestation fails", async () => {
+    const stripe = createStripe();
+    const database = createDatabase();
+    const beforeCommit = vi.fn(async () => {
+      throw new Error("attestation rejected");
+    });
+
+    await expect(
+      syncStripeTestCatalog({
+        ...syncInput(database.database, stripe.client),
+        beforeCommit
+      }),
+    ).rejects.toThrow("attestation rejected");
+
+    expect(beforeCommit).toHaveBeenCalledOnce();
+    expect(database.queries.some(({ sql }) => sql === "rollback")).toBe(true);
+    expect(database.queries.some(({ sql }) => sql === "commit")).toBe(false);
+    expect(database.queries.at(-1)?.sql).toContain("pg_advisory_unlock");
+  });
+
   it("reuses products and prices on repeated synchronization", async () => {
     const stripe = createStripe();
     const firstDatabase = createDatabase();
