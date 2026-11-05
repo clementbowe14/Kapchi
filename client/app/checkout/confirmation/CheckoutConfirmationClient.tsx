@@ -4,6 +4,8 @@ import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { buildApiUrl } from "@/lib/api";
+import { OrderPolicies } from "@/components/OrderPolicies";
+import { parseCustomerPolicySnapshot } from "@/lib/policies";
 import {
   CheckoutApiError,
   type CheckoutStatusResult,
@@ -36,20 +38,29 @@ const FAILED_STATUSES = new Set([
   "refunded",
 ]);
 
-function isStatusResult(value: unknown): value is CheckoutStatusResult {
+function parseStatusResult(value: unknown): CheckoutStatusResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
+    throw new Error("Invalid checkout status response.");
   }
 
   const result = value as Record<string, unknown>;
-  return (
+  if (!(
     typeof result.orderId === "string" &&
     Boolean(result.orderId) &&
     typeof result.publicOrderNumber === "string" &&
     Boolean(result.publicOrderNumber) &&
     typeof result.paymentStatus === "string" &&
     Boolean(result.paymentStatus)
-  );
+  )) {
+    throw new Error("Invalid checkout status response.");
+  }
+  return {
+    orderId: result.orderId,
+    orderStatus: typeof result.orderStatus === "string" ? result.orderStatus : undefined,
+    paymentStatus: result.paymentStatus,
+    publicOrderNumber: result.publicOrderNumber,
+    policySnapshot: parseCustomerPolicySnapshot(result.policySnapshot),
+  };
 }
 
 function statusErrorMessage(error: unknown) {
@@ -186,8 +197,10 @@ export function CheckoutConfirmationClient({
           throw await readCheckoutApiError(response);
         }
 
-        const result: unknown = await response.json();
-        if (!isStatusResult(result)) {
+        let result: CheckoutStatusResult;
+        try {
+          result = parseStatusResult(await response.json());
+        } catch {
           throw new CheckoutApiError(
             "INVALID_STATUS_RESPONSE",
             502,
@@ -354,6 +367,8 @@ export function CheckoutConfirmationClient({
             ) : null}
           </div>
         )}
+
+        {status ? <OrderPolicies snapshot={status.policySnapshot} /> : null}
 
         {!busy ? (
           <nav className="mt-8 flex flex-wrap gap-4 border-t border-slate-200 pt-5" aria-label="Order actions">

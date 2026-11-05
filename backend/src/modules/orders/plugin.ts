@@ -5,6 +5,11 @@ import Joi from "joi";
 import type { Pool } from "pg";
 import { getDatabasePool } from "../../database/index.js";
 import { authMiddleware, requireAuth } from "../auth/index.js";
+import {
+  serializePolicySnapshot,
+  type CustomerPolicySnapshot,
+  type PersistedPolicyAssertionRow
+} from "../policies/policy-contract.js";
 import { loadCustomerTracking, type CustomerTracking } from "./customer-tracking.js";
 
 type OrderRow = {
@@ -50,6 +55,7 @@ type CustomerSafeOrder = {
   currency: string;
   createdAt: string;
   paidAt?: string | null;
+  policySnapshot: CustomerPolicySnapshot | null;
   items: CustomerSafeOrderItem[];
   tracking?: {
     carrier?: string | null;
@@ -212,6 +218,7 @@ function serializeOrder(
   order: OrderRow,
   itemsByOrderId: Map<string, OrderItemRow[]>,
   trackingByOrderId: Map<string, CustomerTracking>,
+  policyByOrderId: Map<string, CustomerPolicySnapshot>,
 ): CustomerSafeOrder {
   return {
     id: order.id,
@@ -225,9 +232,38 @@ function serializeOrder(
     currency: order.currency,
     createdAt: datestring(order.created_at) ?? "",
     paidAt: datestring(order.paid_at),
+    policySnapshot: policyByOrderId.get(order.id) ?? null,
     items: (itemsByOrderId.get(order.id) ?? []).map(serializeOrderItem),
     tracking: trackingByOrderId.get(order.id) ?? null
   };
+}
+
+async function loadPolicySnapshots(pool: Pick<Pool, "query">, orderIds: string[]) {
+  if (orderIds.length === 0) {
+    return new Map<string, CustomerPolicySnapshot>();
+  }
+
+  const result = await pool.query<PersistedPolicyAssertionRow & { order_id: string }>(
+    `
+      select
+        order_id,
+        schema_version,
+        bundle_version,
+        effective_date,
+        checkout_statement_version,
+        checkout_statement_digest,
+        documents,
+        assertions,
+        statement_submitted_at
+      from order_policy_assertions
+      where order_id = any($1::uuid[])
+    `,
+    [orderIds],
+  );
+
+  return new Map(
+    result.rows.map((row) => [row.order_id, serializePolicySnapshot(row)!]),
+  );
 }
 
 function groupItemsByOrderId(items: OrderItemRow[]) {
@@ -344,8 +380,9 @@ export function createOrdersPlugin(dependencies: OrdersPluginDependencies = {}) 
 
     const items = await loadOrderItems(pool, [order.id]);
     const tracking = await loadCustomerTracking(pool, [order.id]);
+    const policies = await loadPolicySnapshots(pool, [order.id]);
 
-    return serializeOrder(order, groupItemsByOrderId(items), tracking);
+    return serializeOrder(order, groupItemsByOrderId(items), tracking, policies);
     });
 
     fastify.get(
@@ -368,9 +405,12 @@ export function createOrdersPlugin(dependencies: OrdersPluginDependencies = {}) 
       const items = await loadOrderItems(pool, orderIds);
       const itemsByOrderId = groupItemsByOrderId(items);
       const trackingByOrderId = await loadCustomerTracking(pool, orderIds);
+      const policyByOrderId = await loadPolicySnapshots(pool, orderIds);
 
       return {
-        orders: orderResult.rows.map((order) => serializeOrder(order, itemsByOrderId, trackingByOrderId))
+        orders: orderResult.rows.map((order) =>
+          serializeOrder(order, itemsByOrderId, trackingByOrderId, policyByOrderId),
+        )
       };
     },
     );

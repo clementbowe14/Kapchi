@@ -14,6 +14,10 @@ export type CheckoutEventName =
   | "checkout.provider.session_reused"
   | "checkout.session.terminal"
   | "checkout.persistence.failed"
+  | "checkout.policy.bundle_read"
+  | "checkout.policy.existing_order_reused"
+  | "checkout.policy.persisted"
+  | "checkout.policy.rejected"
   | "checkout.review.required"
   | "checkout.status.denied"
   | "checkout.status.read"
@@ -42,8 +46,11 @@ export type CheckoutEventFields = {
   orderId?: string;
   providerOperation?: "create" | "retrieve";
   providerSessionId?: string;
+  currentBundleVersion?: string;
+  requestedBundleVersion?: string;
   resultCode?: string;
   reusedOrder?: boolean;
+  storedBundleVersion?: string;
   reviewIssueCount?: number;
   webhookEventId?: string;
   webhookEventType?: string;

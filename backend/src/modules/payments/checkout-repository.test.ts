@@ -58,6 +58,33 @@ const contact = {
   customerPhone: null,
   preferredContactMethod: "email" as const
 };
+const policyAssertion = {
+  bundleVersion: "2026-11-03.1",
+  returnsAcknowledged: true as const,
+  termsAgreed: true as const
+};
+const persistedPolicyRow = {
+  assertions: { returnsAcknowledged: true, termsAgreed: true },
+  bundle_version: policyAssertion.bundleVersion,
+  checkout_statement_digest:
+    "58800f076cfc08d6132b32d21bb68c7b8ce8de4ec17c97f7532b08a5311bd50b",
+  checkout_statement_version: policyAssertion.bundleVersion,
+  documents: [
+    ["shipping", "notice", "b"],
+    ["returns", "acknowledgment", "f"],
+    ["privacy", "notice", "d"],
+    ["terms", "agreement", "9"]
+  ].map(([key, role, digest]) => ({
+    digest: digest.repeat(64),
+    key,
+    path: `/policies/${key}/${policyAssertion.bundleVersion}`,
+    role,
+    version: policyAssertion.bundleVersion
+  })),
+  effective_date: "2026-11-03",
+  schema_version: 1,
+  statement_submitted_at: "2026-11-03T12:00:00.000Z"
+};
 
 function cartRow() {
   return {
@@ -181,9 +208,12 @@ function mutableStateResult(
 }
 
 function createPool(handler: (sql: string, values: unknown[]) => { rows: unknown[] }) {
-  const query = vi.fn(async (sql: string, values: unknown[] = []) =>
-    handler(sql, values),
-  );
+  const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes("insert into order_policy_assertions")) {
+      return { rows: [persistedPolicyRow] };
+    }
+    return handler(sql, values);
+  });
   const release = vi.fn();
   const client = { query, release } as unknown as PoolClient;
   const pool = {
@@ -194,6 +224,48 @@ function createPool(handler: (sql: string, values: unknown[]) => { rows: unknown
 }
 
 describe("CheckoutRepository", () => {
+  it("rejects a stale policy before creating an order or assertion", async () => {
+    const row = itemRow();
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts")) {
+        return { rows: [cartRow()] };
+      }
+      if (sql.includes("from orders")) {
+        return { rows: [] };
+      }
+      const mutableState = mutableStateResult(sql, row);
+      if (mutableState) {
+        return mutableState;
+      }
+      if (sql.includes("from cart_items ci")) {
+        return { rows: [row] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(context, contact, {
+        ...policyAssertion,
+        bundleVersion: "2026-10-01.1"
+      }),
+    ).rejects.toMatchObject({
+      name: "CheckoutPolicyVersionStaleError",
+      requestedBundleVersion: "2026-10-01.1"
+    });
+    expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
+    ).toBe(false);
+    expect(
+      query.mock.calls.some(([sql]) =>
+        String(sql).includes("insert into order_policy_assertions"),
+      ),
+    ).toBe(false);
+  });
+
   it("commits needs_reprice without creating an order for a stale price", async () => {
     const row = itemRow({ current_unit_amount_cents: 9000 });
     const { pool, query } = createPool((sql) => {
@@ -217,7 +289,7 @@ describe("CheckoutRepository", () => {
     });
     const repository = new CheckoutRepository(pool);
 
-    await expect(repository.prepareCheckout(context, contact)).rejects.toMatchObject({
+    await expect(repository.prepareCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       issues: [
         {
           cartItemId: ids.cartItem,
@@ -341,7 +413,7 @@ describe("CheckoutRepository", () => {
     });
 
     await expect(
-      new CheckoutRepository(pool).prepareCheckout(context, contact),
+      new CheckoutRepository(pool).prepareCheckout(context, contact, policyAssertion),
     ).rejects.toMatchObject({ name: "CheckoutNeedsReviewError" });
 
     const statusUpdate = query.mock.calls.find(([sql]) =>
@@ -407,11 +479,15 @@ describe("CheckoutRepository", () => {
     });
     const repository = new CheckoutRepository(pool);
 
-    const result = await repository.prepareCheckout(context, {
-      ...contact,
-      customerPhone: "+15550101010",
-      preferredContactMethod: "phone"
-    });
+    const result = await repository.prepareCheckout(
+      context,
+      {
+        ...contact,
+        customerPhone: "+15550101010",
+        preferredContactMethod: "phone"
+      },
+      policyAssertion,
+    );
 
     expect(result.lines).toEqual([
       expect.objectContaining({
@@ -491,7 +567,7 @@ describe("CheckoutRepository", () => {
     });
 
     await expect(
-      new CheckoutRepository(pool).prepareCheckout(context, contact),
+      new CheckoutRepository(pool).prepareCheckout(context, contact, policyAssertion),
     ).rejects.toMatchObject({ name: "CheckoutNeedsReviewError" });
 
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
@@ -534,7 +610,7 @@ describe("CheckoutRepository", () => {
     });
 
     await expect(
-      new CheckoutRepository(pool).prepareCheckout(context, contact),
+      new CheckoutRepository(pool).prepareCheckout(context, contact, policyAssertion),
     ).rejects.toMatchObject({
       message: "A fabric reservation changed while checkout was starting.",
       name: "CheckoutNeedsReviewError"
@@ -560,7 +636,7 @@ describe("CheckoutRepository", () => {
     });
     const repository = new CheckoutRepository(pool);
 
-    await expect(repository.prepareCheckout(context, contact)).rejects.toMatchObject({
+    await expect(repository.prepareCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       name: "CheckoutCartNotFoundError"
     });
     expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
@@ -584,6 +660,7 @@ describe("CheckoutRepository", () => {
       new CheckoutRepository(pool).prepareCheckout(
         { authSubject: "user_clerk_123" },
         contact,
+        policyAssertion,
       ),
     ).rejects.toMatchObject({ name: "CheckoutCartNotFoundError" });
 
@@ -615,6 +692,7 @@ describe("CheckoutRepository", () => {
       new CheckoutRepository(pool).prepareCheckout(
         { authSubject: "user_clerk_123", cartId: ids.cart },
         contact,
+        policyAssertion,
       ),
     ).rejects.toMatchObject({ name: "CheckoutCartNotFoundError" });
 
@@ -643,6 +721,7 @@ describe("CheckoutRepository", () => {
           expectedRevision: 3
         },
         contact,
+        policyAssertion,
       ),
     ).rejects.toMatchObject({ name: "CheckoutNeedsReviewError" });
 
@@ -671,6 +750,7 @@ describe("CheckoutRepository", () => {
         return {
           rows: [
             {
+              ...persistedPolicyRow,
               customer_email: "original@example.com",
               id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
               public_order_number: "KAP-ORIGINAL1001",
@@ -694,7 +774,11 @@ describe("CheckoutRepository", () => {
       return { rows: [] };
     });
 
-    const result = await new CheckoutRepository(pool).prepareCheckout(context, contact);
+    const result = await new CheckoutRepository(pool).prepareCheckout(
+      context,
+      contact,
+      { ...policyAssertion, bundleVersion: "2026-10-01.1" },
+    );
 
     expect(result).toMatchObject({
       cartId: ids.cart,
@@ -706,6 +790,7 @@ describe("CheckoutRepository", () => {
       publicOrderNumber: "KAP-ORIGINAL1001",
       reusedOrder: true
     });
+    expect(result.policySnapshot.bundleVersion).toBe(policyAssertion.bundleVersion);
     expect(
       query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
     ).toBe(false);
@@ -718,9 +803,157 @@ describe("CheckoutRepository", () => {
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
   });
 
+  it("records a fresh assertion for a sessionless pre-migration order", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "commit", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts")) {
+        return { rows: [{ ...cartRow(), status: "checkout_started" }] };
+      }
+      const mutableState = mutableStateResult(sql, itemRow());
+      if (mutableState) {
+        return mutableState;
+      }
+      if (sql.includes("from cart_items ci")) {
+        return { rows: [itemRow()] };
+      }
+      if (sql.includes("from orders")) {
+        return {
+          rows: [{
+            customer_email: "original@example.com",
+            id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+            public_order_number: "KAP-LEGACY1001",
+            stripe_checkout_session_id: null
+          }]
+        };
+      }
+      if (sql.includes("from order_items")) {
+        return {
+          rows: [{
+            currency: "usd",
+            id: "5863e978-6764-41f4-96bd-ea2337d11204",
+            quantity: 1,
+            stripe_price_id: "price_test_stole"
+          }]
+        };
+      }
+      return { rows: [] };
+    });
+
+    const result = await new CheckoutRepository(pool).prepareCheckout(
+      context,
+      contact,
+      policyAssertion,
+    );
+
+    expect(result).toMatchObject({
+      existingStripeSessionId: null,
+      orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+      policySnapshot: { bundleVersion: policyAssertion.bundleVersion },
+      reusedOrder: true
+    });
+    expect(
+      query.mock.calls.filter(([sql]) =>
+        String(sql).includes("insert into order_policy_assertions"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
+    ).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
+
+  it("does not backfill a sessionless pre-migration order with a stale assertion", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts")) {
+        return { rows: [{ ...cartRow(), status: "checkout_started" }] };
+      }
+      const mutableState = mutableStateResult(sql, itemRow());
+      if (mutableState) {
+        return mutableState;
+      }
+      if (sql.includes("from cart_items ci")) {
+        return { rows: [itemRow()] };
+      }
+      if (sql.includes("from orders")) {
+        return {
+          rows: [{
+            customer_email: "original@example.com",
+            id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+            public_order_number: "KAP-LEGACY1001",
+            stripe_checkout_session_id: null
+          }]
+        };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(context, contact, {
+        ...policyAssertion,
+        bundleVersion: "2026-10-01.1"
+      }),
+    ).rejects.toMatchObject({ name: "CheckoutPolicyVersionStaleError" });
+    expect(
+      query.mock.calls.some(([sql]) =>
+        String(sql).includes("insert into order_policy_assertions"),
+      ),
+    ).toBe(false);
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("from order_items")),
+    ).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
+  });
+
+  it("refuses to invent evidence for a legacy checkout with a provider session", async () => {
+    const { pool, query } = createPool((sql) => {
+      if (["begin", "rollback"].includes(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes("from carts")) {
+        return { rows: [{ ...cartRow(), status: "checkout_started" }] };
+      }
+      const mutableState = mutableStateResult(sql, itemRow());
+      if (mutableState) {
+        return mutableState;
+      }
+      if (sql.includes("from cart_items ci")) {
+        return { rows: [itemRow()] };
+      }
+      if (sql.includes("from orders")) {
+        return {
+          rows: [{
+            customer_email: "original@example.com",
+            id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+            public_order_number: "KAP-LEGACY1001",
+            stripe_checkout_session_id: "cs_test_legacy"
+          }]
+        };
+      }
+      return { rows: [] };
+    });
+
+    await expect(
+      new CheckoutRepository(pool).prepareCheckout(
+        context,
+        contact,
+        policyAssertion,
+      ),
+    ).rejects.toMatchObject({ name: "CheckoutPolicyEvidenceMissingError" });
+    expect(
+      query.mock.calls.some(([sql]) => String(sql).includes("from order_items")),
+    ).toBe(false);
+    expect(query.mock.calls.at(-1)?.[0]).toBe("rollback");
+  });
+
   it("loads status only through authenticated Clerk ownership", async () => {
     const query = vi.fn(async (_sql: string, _values: unknown[] = []) => ({
       rows: [{
+        ...persistedPolicyRow,
         id: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
         payment_status: "paid",
         public_order_number: "KAP-2DB9F8E1D0F0"
@@ -736,7 +969,11 @@ describe("CheckoutRepository", () => {
     expect(status).toEqual({
       orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
       paymentStatus: "paid",
-      publicOrderNumber: "KAP-2DB9F8E1D0F0"
+      publicOrderNumber: "KAP-2DB9F8E1D0F0",
+      policySnapshot: expect.objectContaining({
+        bundleVersion: policyAssertion.bundleVersion,
+        statementSubmittedAt: persistedPolicyRow.statement_submitted_at
+      })
     });
     expect(String(query.mock.calls[0][0])).toContain("u.auth_subject = $2");
     expect(String(query.mock.calls[0][0])).toContain(

@@ -166,13 +166,13 @@ export default function AboutPage() {
           </section>
         </div>
       </div>
-      <footer id="about-page-end" className="about-footer">
+      <section id="about-page-end" className="about-footer" aria-label="Explore Kapchi">
         <Link href="/">Kapchi</Link>
         <span>Heritage. Achievement. Your story.</span>
         <Link href="/listings">
           Explore the stoles <span aria-hidden="true">↗</span>
         </Link>
-      </footer>
+      </section>
     </main>
   );
 }

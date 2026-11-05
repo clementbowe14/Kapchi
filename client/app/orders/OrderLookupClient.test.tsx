@@ -69,6 +69,20 @@ function createOrder(overrides: Partial<CustomerOrder> = {}): CustomerOrder {
   };
 }
 
+const policySnapshot = {
+  schemaVersion: 1 as const,
+  bundleVersion: "2026-11-03.1",
+  effectiveDate: "2026-11-03",
+  statementSubmittedAt: "2026-11-03T15:00:00.000Z",
+  checkoutStatement: { version: "2026-11-03.1", digest: "a".repeat(64) },
+  documents: [
+    { key: "shipping" as const, role: "notice" as const, version: "2026-11-03.1", digest: "b".repeat(64), path: "/policies/shipping/2026-11-03.1" },
+    { key: "returns" as const, role: "acknowledgment" as const, version: "2026-11-03.1", digest: "c".repeat(64), path: "/policies/returns/2026-11-03.1" },
+    { key: "privacy" as const, role: "notice" as const, version: "2026-11-03.1", digest: "d".repeat(64), path: "/policies/privacy/2026-11-03.1" },
+    { key: "terms" as const, role: "agreement" as const, version: "2026-11-03.1", digest: "e".repeat(64), path: "/policies/terms/2026-11-03.1" },
+  ],
+};
+
 describe("OrderLookupClient", () => {
   beforeEach(() => {
     authState.getToken.mockReset();
@@ -144,5 +158,18 @@ describe("OrderLookupClient", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/orders/me", {
       headers: { Authorization: "Bearer test-token" },
     });
+  });
+
+  it("renders exact archived policy links for an order snapshot", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(createOrder({ policySnapshot })), { status: 200 }));
+
+    render(<OrderLookupClient />);
+    await user.type(screen.getByLabelText("Order ID"), "KAP-1004");
+    await user.type(screen.getByLabelText("Email"), "buyer@example.com");
+    await user.click(screen.getByRole("button", { name: "View Order" }));
+
+    expect(await screen.findByRole("heading", { name: "Policies for this order" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/policies/privacy/2026-11-03.1");
   });
 });

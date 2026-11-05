@@ -1,4 +1,5 @@
 import { parseCartAggregate, totalPhysicalQuantity } from "./cart-state";
+import type { CustomerPolicySnapshot } from "./policies";
 
 export type PreferredContactMethod = "email" | "phone";
 
@@ -69,6 +70,7 @@ export type CheckoutStatusResult = {
   orderStatus?: string;
   paymentStatus: string;
   publicOrderNumber: string;
+  policySnapshot: CustomerPolicySnapshot | null;
 };
 
 export type CheckoutFieldErrors = {
@@ -437,6 +439,10 @@ export function checkoutErrorMessage(error: unknown) {
         return "We could not merge your guest cart with your account. Your account cart has been loaded instead.";
       case "VALIDATION_ERROR":
         return "Check your contact details and try again.";
+      case "POLICY_ASSERTION_REQUIRED":
+        return "Review and acknowledge the current store policies before continuing.";
+      case "POLICY_VERSION_STALE":
+        return "The store policies changed. Review the refreshed version before continuing.";
       case "INVALID_CHECKOUT_URL":
         return "We could not open secure checkout. Refresh your cart and try again.";
       case "UNAUTHORIZED":

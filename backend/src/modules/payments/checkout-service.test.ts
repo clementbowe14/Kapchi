@@ -8,6 +8,8 @@ import {
   CheckoutService,
   type CheckoutServiceDependencies
 } from "./checkout-service.js";
+import { CheckoutPolicyVersionStaleError } from "./checkout-errors.js";
+import { activePolicyBundle } from "../policies/policy-contract.js";
 
 const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
 const replacementOrderId = "7ad85754-c339-4214-af6e-519eabc38501";
@@ -19,6 +21,22 @@ const contact = {
   customerEmail: "customer@example.com",
   customerPhone: null,
   preferredContactMethod: "email" as const
+};
+const policyAssertion = {
+  bundleVersion: "2026-11-03.1",
+  returnsAcknowledged: true as const,
+  termsAgreed: true as const
+};
+const policySnapshot = {
+  bundleVersion: policyAssertion.bundleVersion,
+  checkoutStatement: {
+    digest: "5".repeat(64),
+    version: policyAssertion.bundleVersion
+  },
+  documents: [],
+  effectiveDate: "2026-11-03",
+  schemaVersion: 1 as const,
+  statementSubmittedAt: "2026-11-03T12:00:00.000Z"
 };
 const redirects = {
   cancelUrl: "https://kapchi.test/cart",
@@ -45,6 +63,7 @@ function preparedCheckout(
       }
     ],
     orderId: id,
+    policySnapshot,
     publicOrderNumber: `KAP-${id.replace(/-/g, "").slice(0, 12).toUpperCase()}`,
     reusedOrder: existingStripeSessionId !== null
   };
@@ -120,13 +139,31 @@ describe("CheckoutService", () => {
     return { observer, provider, repository, service };
   }
 
+  it("does not call Stripe when repository policy validation rejects checkout", async () => {
+    const repository = createRepository();
+    repository.prepareCheckout.mockRejectedValue(
+      new CheckoutPolicyVersionStaleError("2026-10-01.1", activePolicyBundle),
+    );
+    const { service } = createService({ repository });
+
+    await expect(
+      service.startCheckout(context, contact, {
+        ...policyAssertion,
+        bundleVersion: "2026-10-01.1"
+      }),
+    ).rejects.toMatchObject({ name: "CheckoutPolicyVersionStaleError" });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(retrieveSession).not.toHaveBeenCalled();
+    expect(repository.finalizeCheckout).not.toHaveBeenCalled();
+  });
+
   it("uses injected redirects and durable identity for provider creation", async () => {
     const repository = createRepository();
     const observer = createObserver();
     createSession.mockResolvedValue(providerSession());
     const { service } = createService({ observer, repository });
 
-    const result = await service.startCheckout(context, contact);
+    const result = await service.startCheckout(context, contact, policyAssertion);
 
     expect(result).toEqual({
       checkoutSessionId: "cs_test_123",
@@ -168,7 +205,7 @@ describe("CheckoutService", () => {
     retrieveSession.mockResolvedValue(providerSession());
     const { service } = createService({ observer, repository });
 
-    const result = await service.startCheckout(context, contact);
+    const result = await service.startCheckout(context, contact, policyAssertion);
 
     expect(retrieveSession).toHaveBeenCalledWith("cs_test_123");
     expect(createSession).not.toHaveBeenCalled();
@@ -202,7 +239,7 @@ describe("CheckoutService", () => {
       repository
     });
 
-    const result = await service.startCheckout(context, contact);
+    const result = await service.startCheckout(context, contact, policyAssertion);
 
     expect(repository.retireTerminalCheckout).toHaveBeenCalledWith(
       orderId,
@@ -228,7 +265,7 @@ describe("CheckoutService", () => {
     );
     const { service } = createService({ repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       checkoutSessionId: "cs_test_complete",
       name: "CheckoutAlreadyCompleteError",
       orderId,
@@ -244,7 +281,7 @@ describe("CheckoutService", () => {
     createSession.mockResolvedValue(providerSession({ url: null }));
     const { service } = createService({ repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       name: "CheckoutProviderError"
     });
     expect(repository.retireTerminalCheckout).toHaveBeenCalledWith(
@@ -263,7 +300,7 @@ describe("CheckoutService", () => {
     );
     const { service } = createService({ observer, repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       message: "Unable to start checkout. Please try again.",
       name: "CheckoutProviderError"
     });
@@ -289,7 +326,7 @@ describe("CheckoutService", () => {
     );
     const { service } = createService({ observer, repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       code: "CHECKOUT_CATALOG_UNAVAILABLE",
       message:
         "Checkout is unavailable for one or more items. Please contact Kapchi support.",
@@ -332,7 +369,7 @@ describe("CheckoutService", () => {
     repository.markCatalogUnavailable.mockRejectedValue(persistenceError);
     const { service } = createService({ observer, repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toBe(
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toBe(
       persistenceError,
     );
     expect(repository.markProviderFailure).not.toHaveBeenCalled();
@@ -358,7 +395,7 @@ describe("CheckoutService", () => {
     );
     const { service } = createService({ observer, repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       code: "ECONNRESET"
     });
     expect(observer.error).toHaveBeenCalledWith("checkout.persistence.failed", {
@@ -381,7 +418,7 @@ describe("CheckoutService", () => {
     createSession.mockResolvedValue(providerSession());
     const { service } = createService({ observer, repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toBe(
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toBe(
       databaseError,
     );
     expect(observer.error).toHaveBeenCalledWith("checkout.persistence.failed", {
@@ -403,10 +440,10 @@ describe("CheckoutService", () => {
       .mockResolvedValueOnce(providerSession());
     const { service } = createService({ repository });
 
-    await expect(service.startCheckout(context, contact)).rejects.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
       name: "CheckoutProviderError"
     });
-    await expect(service.startCheckout(context, contact)).resolves.toMatchObject({
+    await expect(service.startCheckout(context, contact, policyAssertion)).resolves.toMatchObject({
       orderId
     });
     expect(createSession.mock.calls[0][1]).toBe(`cart-checkout:${orderId}`);

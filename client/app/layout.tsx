@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Navbar } from "@/components/Navbar";
+import { StorePolicyFooter } from "@/components/StorePolicyFooter";
 import { getClerkPublishableKey } from "@/lib/clerk";
 import "./globals.css";
 
@@ -41,6 +42,7 @@ export default function RootLayout({
           <div className="flex min-h-screen flex-col">
             <Navbar />
             <div className="flex flex-1 flex-col">{children}</div>
+            <StorePolicyFooter />
           </div>
         </ClerkProvider>
       </body>
