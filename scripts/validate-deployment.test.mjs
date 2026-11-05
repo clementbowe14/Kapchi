@@ -3,13 +3,13 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateMigrationWorkflow, validateProCronTemplate, validateVercelConfiguration } from "./validate-deployment.mjs";
+import { validateFastifyEntrypoint, validateMigrationWorkflow, validateProCronTemplate } from "./validate-deployment.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("Vercel configuration declares the Fastify function without Hobby-blocking crons", async () => {
-  const text = await readFile(path.join(root, "backend/vercel.json"), "utf8");
-  assert.deepEqual(validateVercelConfiguration(text), { entrypoint: "src/server.ts", platform: "vercel" });
+test("Fastify uses Vercel zero-configuration entrypoint detection", async () => {
+  const text = await readFile(path.join(root, "backend/src/server.ts"), "utf8");
+  assert.deepEqual(validateFastifyEntrypoint(text), { entrypoint: "src/server.ts", platform: "vercel-zero-config" });
 });
 
 test("Pro cron template preserves the required production cadence", async () => {
@@ -22,7 +22,7 @@ test("production migrations are protected, serialized, and use the Vercel enviro
   assert.deepEqual(validateMigrationWorkflow(text), { migrationEnvironment: "vercel-production", serialized: true });
 });
 
-test("configuration validator rejects real-looking credentials", () => {
+test("cron template validator rejects real-looking credentials", () => {
   const fakeCredential = ["sk", "live", "synthetic_validation_value"].join("_");
-  assert.throws(() => validateVercelConfiguration(fakeCredential), /secret-like value/);
+  assert.throws(() => validateProCronTemplate(fakeCredential), /secret-like value/);
 });

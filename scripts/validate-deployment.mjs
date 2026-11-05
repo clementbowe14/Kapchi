@@ -28,14 +28,16 @@ function assertNoSecretLikeValues(text, label) {
   }
 }
 
-export function validateVercelConfiguration(text) {
-  assertNoSecretLikeValues(text, "Vercel configuration");
-  const configuration = JSON.parse(text);
-  assert.equal(configuration.$schema, "https://openapi.vercel.sh/vercel.json");
-  assert.deepEqual(Object.keys(configuration.functions ?? {}), ["src/server.ts"], "Fastify must use its documented Vercel entrypoint");
-  assert.equal(configuration.functions["src/server.ts"].maxDuration, 60, "backend function must have a bounded duration");
-  assert.ok(!("crons" in configuration), "active sub-daily crons would prevent Hobby preview deployments");
-  return { entrypoint: "src/server.ts", platform: "vercel" };
+export function validateFastifyEntrypoint(text) {
+  for (const fragment of [
+    'import { buildServer } from "./app.js"',
+    "const server = await buildServer()",
+    "await server.listen({"
+  ]) {
+    assert.ok(text.includes(fragment), `Fastify entrypoint is missing: ${fragment}`);
+  }
+  assert.ok(!text.includes("createServer("), "Fastify entrypoint must use zero-configuration framework detection");
+  return { entrypoint: "src/server.ts", platform: "vercel-zero-config" };
 }
 
 export function validateProCronTemplate(text) {
@@ -68,7 +70,7 @@ export function validateMigrationWorkflow(text) {
 
 async function main() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const configuration = validateVercelConfiguration(await readFile(path.join(root, "backend/vercel.json"), "utf8"));
+  const configuration = validateFastifyEntrypoint(await readFile(path.join(root, "backend/src/server.ts"), "utf8"));
   const cronTemplate = validateProCronTemplate(await readFile(path.join(root, "deploy/vercel.crons.pro.template.json"), "utf8"));
   const workflow = validateMigrationWorkflow(await readFile(path.join(root, ".github/workflows/production-migrate.yml"), "utf8"));
   console.log(JSON.stringify({ event: "deployment.configuration.validated", ...configuration, ...cronTemplate, ...workflow }));

@@ -32,7 +32,7 @@ hook, or image digest. `/health` and `/ready` report the full Git SHA and backen
 Vercel deployment ID.
 
 `deploy/vercel.crons.pro.template.json` defines the required five authenticated
-GET cron schedules. They stay out of the active `backend/vercel.json` until the
+GET cron schedules. There is no active `backend/vercel.json` until the
 project supports minute-level cadence, because Vercel rejects sub-daily cron
 expressions on Hobby. Vercel sends `Authorization: Bearer <CRON_SECRET>`. Each route performs constant-time auth,
 acquires a token-owned Redis lock, executes one bounded batch, emits structured
@@ -42,7 +42,9 @@ returns `202 already_running`. Service-level idempotency remains authoritative.
 Minute-level schedules require an eligible Vercel plan. If the account cannot
 support them, launch remains blocked until an external scheduler invokes the
 same routes at the documented cadence. Preview deployment must remain possible
-before that operational purchase or scheduler decision.
+before that operational purchase or scheduler decision. Fastify otherwise uses
+Vercel's zero-configuration detection of `backend/src/server.ts`; configure the
+function duration in the backend project's Functions settings.
 
 ## Configuration And Secrets
 

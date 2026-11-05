@@ -45,7 +45,7 @@ node scripts/verify-production.mjs \
   --deployment-id dpl_BACKEND_DEPLOYMENT_ID
 ```
 
-6. If using Vercel Cron, merge the reviewed template schedules into
+6. If using Vercel Cron, install the reviewed template as
    `backend/vercel.json`, redeploy, and confirm all five cron routes are present,
    authenticated, and producing success or intentional `already_running` logs.
    Never invoke them with a secret in a URL.
