@@ -1,14 +1,28 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { config } from "../../config/index.js";
 import type { AuthContext } from "../../types/auth.js";
 import { normalizePermissions, normalizeStoreRoles } from "./claims.js";
 
 const jwks = createRemoteJWKSet(new URL(config.auth.clerk.jwksUrl));
 
-export async function verifyClerkToken(token: string): Promise<AuthContext> {
-  const { payload } = await jwtVerify(token, jwks, {
+export async function verifyClerkTokenWithKeySet(
+  token: string,
+  keySet: JWTVerifyGetKey,
+  trust: { audience?: string; authorizedParties: readonly string[]; issuer: string } = {
+    audience: config.auth.clerk.jwtAudience,
+    authorizedParties: config.auth.clerk.authorizedParties,
     issuer: config.auth.clerk.jwtIssuer
+  },
+): Promise<AuthContext> {
+  const { payload } = await jwtVerify(token, keySet, {
+    audience: trust.audience,
+    issuer: trust.issuer
   });
+
+  if (trust.authorizedParties.length > 0 &&
+      (typeof payload.azp !== "string" || !trust.authorizedParties.includes(payload.azp))) {
+    throw new Error("Verified Clerk token has an unauthorized party claim.");
+  }
 
   const userId =
     typeof payload.sub === "string" ? payload.sub : typeof payload.user_id === "string" ? payload.user_id : null;
@@ -25,4 +39,8 @@ export async function verifyClerkToken(token: string): Promise<AuthContext> {
     token,
     userId
   };
+}
+
+export async function verifyClerkToken(token: string): Promise<AuthContext> {
+  return verifyClerkTokenWithKeySet(token, jwks);
 }

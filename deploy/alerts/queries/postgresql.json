@@ -1,0 +1,7 @@
+{
+  "provider": "digitalocean",
+  "source": "managed-database-metrics-and-readiness",
+  "query": "current_connections / recorded_plan_connection_limit >= 0.80 OR failedDependencyCodes contains DATABASE_UNAVAILABLE",
+  "aggregation": ["five-minute-window"],
+  "redaction": "never export connection strings, database users, hosts, or SQL"
+}

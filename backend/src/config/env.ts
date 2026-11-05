@@ -16,11 +16,16 @@ const environmentSchema = Joi.object({
   LOG_LEVEL: Joi.string()
     .valid("fatal", "error", "warn", "info", "debug", "trace", "silent")
     .default("info"),
+  CORS_ALLOWED_ORIGINS: Joi.string().trim().default("http://localhost:3000,http://127.0.0.1:3000"),
+  RELEASE_SHA: Joi.string().trim().optional(),
+  RELEASE_IMAGE_DIGEST: Joi.string().trim().optional(),
 
   CLERK_PUBLISHABLE_KEY: Joi.string().trim().required(),
   CLERK_SECRET_KEY: Joi.string().trim().required(),
   CLERK_JWT_ISSUER: Joi.string().uri({ scheme: ["http", "https"] }).required(),
   CLERK_JWKS_URL: Joi.string().uri({ scheme: ["http", "https"] }).required(),
+  CLERK_JWT_AUDIENCE: Joi.string().trim().optional(),
+  CLERK_AUTHORIZED_PARTIES: Joi.string().trim().optional(),
   CLERK_WEBHOOK_SECRET: Joi.string().trim().required(),
 
   STRIPE_SECRET_KEY: Joi.string().trim().required(),
@@ -61,6 +66,11 @@ const environmentSchema = Joi.object({
     .trim()
     .default("image/jpeg,image/png,image/webp"),
   ASSET_UPLOAD_CALLBACK_SECRET: Joi.string().trim().optional(),
+  ASSET_UPLOAD_CALLBACK_SECRET_CURRENT: Joi.string().trim().optional(),
+  ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT: Joi.string().trim().pattern(/^[A-Za-z0-9_-]{8,64}$/).optional(),
+  ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS: Joi.string().trim().optional(),
+  ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS: Joi.string().trim().pattern(/^[A-Za-z0-9_-]{8,64}$/).optional(),
+  ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT: Joi.string().isoDate().optional(),
   ASSET_UPLOAD_MAX_IMAGE_BYTES: Joi.number()
     .integer()
     .min(1)
@@ -98,6 +108,7 @@ const environmentSchema = Joi.object({
     then: Joi.string().required(),
     otherwise: Joi.string().default("http://localhost:3000")
   }),
+  MESSAGE_CANARY_DESTINATION: Joi.string().trim().optional(),
   REDIS_URL: Joi.string().uri({ scheme: ["redis", "rediss"] }).required()
 }).unknown(true);
 
@@ -108,11 +119,18 @@ type EnvironmentShape = {
   ASSET_PRIVATE_TOTAL_TIMEOUT_MS: number;
   ASSET_UPLOAD_ALLOWED_IMAGE_TYPES: string;
   ASSET_UPLOAD_CALLBACK_SECRET?: string;
+  ASSET_UPLOAD_CALLBACK_SECRET_CURRENT?: string;
+  ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT?: string;
+  ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS?: string;
+  ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS?: string;
+  ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT?: string;
   ASSET_UPLOAD_MAX_IMAGE_BYTES: number;
   BLOB_READ_WRITE_TOKEN?: string;
   BLOB_STORE_ID?: string;
   CLERK_JWKS_URL: string;
   CLERK_JWT_ISSUER: string;
+  CLERK_JWT_AUDIENCE?: string;
+  CLERK_AUTHORIZED_PARTIES?: string;
   CLERK_PUBLISHABLE_KEY: string;
   CLERK_SECRET_KEY: string;
   CLERK_WEBHOOK_SECRET: string;
@@ -125,6 +143,7 @@ type EnvironmentShape = {
   DATABASE_SSL_MODE?: "disable" | "require" | "no-verify";
   DATABASE_MAX_CONNECTIONS: number;
   DATABASE_RESERVED_CONNECTIONS: number;
+  CORS_ALLOWED_ORIGINS: string;
   DATABASE_MAX_APP_INSTANCES: number;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -133,10 +152,13 @@ type EnvironmentShape = {
   MESSAGE_FROM_EMAIL?: string;
   MESSAGE_FROM_SMS?: string;
   MESSAGE_WEBHOOK_SECRET?: string;
+  MESSAGE_CANARY_DESTINATION?: string;
   NODE_ENV: "development" | "test" | "production";
   ORDER_LOOKUP_BASE_URL: string;
   PORT: number;
   REDIS_URL: string;
+  RELEASE_IMAGE_DIGEST?: string;
+  RELEASE_SHA?: string;
   STRIPE_API_VERSION: string;
   STRIPE_CHECKOUT_CANCEL_URL: string;
   STRIPE_CHECKOUT_SUCCESS_URL: string;
@@ -179,6 +201,136 @@ function buildEnvironmentGuidance(error: Joi.ValidationError) {
   );
 }
 
+function splitList(value: string | undefined) {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function isExactOrigin(value: string, requireHttps: boolean) {
+  try {
+    const url = new URL(value);
+    return (!requireHttps || url.protocol === "https:") &&
+      ["http:", "https:"].includes(url.protocol) &&
+      url.origin === value &&
+      !url.username &&
+      !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function productionConfigurationErrors(environment: EnvironmentShape) {
+  if (environment.NODE_ENV !== "production") return [];
+
+  const errors: string[] = [];
+  const origins = splitList(environment.CORS_ALLOWED_ORIGINS);
+  const parties = splitList(environment.CLERK_AUTHORIZED_PARTIES);
+  const require = (name: keyof EnvironmentShape, present: boolean) => {
+    if (!present) errors.push(`- ${name}: is required in production`);
+  };
+  const secureSecret = (name: keyof EnvironmentShape, value: string | undefined) => {
+    if (value && Buffer.byteLength(value, "utf8") < 32) {
+      errors.push(`- ${name}: must contain at least 32 bytes in production`);
+    }
+  };
+  const requireHttps = (name: keyof EnvironmentShape, value: string | undefined) => {
+    if (value && !value.startsWith("https://")) {
+      errors.push(`- ${name}: must use HTTPS in production`);
+    }
+  };
+
+  require("DATABASE_DIRECT_URL", Boolean(environment.DATABASE_DIRECT_URL));
+  require("CLERK_JWT_AUDIENCE", Boolean(environment.CLERK_JWT_AUDIENCE));
+  require("CLERK_AUTHORIZED_PARTIES", parties.length > 0);
+  require("RELEASE_SHA", Boolean(environment.RELEASE_SHA));
+  require("RELEASE_IMAGE_DIGEST", Boolean(environment.RELEASE_IMAGE_DIGEST));
+  require("BLOB_READ_WRITE_TOKEN", Boolean(environment.BLOB_READ_WRITE_TOKEN));
+  require("ASSET_UPLOAD_CALLBACK_SECRET_CURRENT", Boolean(environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT));
+  require("ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT", Boolean(environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT));
+  if (environment.ASSET_UPLOAD_CALLBACK_SECRET) {
+    errors.push("- ASSET_UPLOAD_CALLBACK_SECRET: legacy callback authentication is forbidden in production");
+  }
+
+  if (origins.length !== 1 || !isExactOrigin(origins[0] ?? "", true)) {
+    errors.push("- CORS_ALLOWED_ORIGINS: must contain exactly one HTTPS origin in production");
+  }
+  if (new Set(origins).size !== origins.length || origins.some((origin) => origin === "*")) {
+    errors.push("- CORS_ALLOWED_ORIGINS: contains a duplicate or wildcard origin");
+  }
+  if (parties.some((party) => !isExactOrigin(party, true))) {
+    errors.push("- CLERK_AUTHORIZED_PARTIES: must contain exact HTTPS origins");
+  }
+  if (new Set(parties).size !== parties.length) {
+    errors.push("- CLERK_AUTHORIZED_PARTIES: contains a duplicate origin");
+  }
+  if (origins.length === 1 && !parties.includes(origins[0])) {
+    errors.push("- CLERK_AUTHORIZED_PARTIES: must include the production client origin");
+  }
+
+  requireHttps("CLERK_JWT_ISSUER", environment.CLERK_JWT_ISSUER);
+  requireHttps("CLERK_JWKS_URL", environment.CLERK_JWKS_URL);
+  requireHttps("MESSAGE_DELIVERY_URL", environment.MESSAGE_DELIVERY_URL);
+  if (environment.REDIS_URL && !environment.REDIS_URL.startsWith("rediss://")) {
+    errors.push("- REDIS_URL: must use TLS (rediss://) in production");
+  }
+  if (environment.DATABASE_SSL_MODE === "disable" || environment.DATABASE_SSL_MODE === "no-verify") {
+    errors.push("- DATABASE_SSL_MODE: must verify TLS in production");
+  }
+  if (/^(sk_test_|rk_test_|test|placeholder)/i.test(environment.STRIPE_SECRET_KEY)) {
+    errors.push("- STRIPE_SECRET_KEY: test or placeholder credentials are forbidden in production");
+  }
+  for (const [name, value] of [
+    ["CLERK_PUBLISHABLE_KEY", environment.CLERK_PUBLISHABLE_KEY],
+    ["CLERK_SECRET_KEY", environment.CLERK_SECRET_KEY]
+  ] as const) {
+    if (/^(pk_test_|sk_test_|test|placeholder)/i.test(value)) {
+      errors.push(`- ${name}: test or placeholder credentials are forbidden in production`);
+    }
+  }
+
+  secureSecret("CLERK_WEBHOOK_SECRET", environment.CLERK_WEBHOOK_SECRET);
+  secureSecret("STRIPE_WEBHOOK_SECRET", environment.STRIPE_WEBHOOK_SECRET);
+  secureSecret("ASSET_UPLOAD_CALLBACK_SECRET_CURRENT", environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT);
+  secureSecret("ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS", environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS);
+  secureSecret("MESSAGE_WEBHOOK_SECRET", environment.MESSAGE_WEBHOOK_SECRET);
+
+  const previousFields = [
+    environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS,
+    environment.ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS,
+    environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT
+  ];
+  if (previousFields.some(Boolean) && !previousFields.every(Boolean)) {
+    errors.push("- ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS: previous callback rotation fields must be configured together");
+  }
+  if (environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT) {
+    const expiry = Date.parse(environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT);
+    if (!Number.isFinite(expiry) || expiry > Date.now() + 24 * 60 * 60 * 1000) {
+      errors.push("- ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT: overlap must not exceed 24 hours");
+    }
+  }
+  if (environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT &&
+      environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT === environment.ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS) {
+    errors.push("- ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS: must differ from the current key ID");
+  }
+  if (environment.VERCEL_OIDC_TOKEN || environment.BLOB_STORE_ID) {
+    errors.push("- VERCEL_OIDC_TOKEN: backend production runtime must use BLOB_READ_WRITE_TOKEN only");
+  }
+
+  const messagingValues = [
+    environment.MESSAGE_DELIVERY_URL,
+    environment.MESSAGE_DELIVERY_TOKEN,
+    environment.MESSAGE_WEBHOOK_SECRET
+  ];
+  if (messagingValues.some(Boolean) &&
+      (!messagingValues.every(Boolean) || !(environment.MESSAGE_FROM_EMAIL || environment.MESSAGE_FROM_SMS))) {
+    errors.push("- MESSAGE_DELIVERY_URL: messaging configuration requires URL, token, webhook secret, and at least one sender");
+  }
+
+  return errors;
+}
+
 export function validateEnvironment(
   environmentInput: NodeJS.ProcessEnv = process.env,
   source: BackendEnvironmentSource = environmentSource,
@@ -200,6 +352,14 @@ export function validateEnvironment(
   }
 
   const environment = value as EnvironmentShape;
+  const productionErrors = productionConfigurationErrors(environment);
+  if (productionErrors.length > 0) {
+    throw new Error([
+      "Invalid backend environment configuration:",
+      ...productionErrors,
+      buildEnvironmentSourceMessage(source)
+    ].join("\n"));
+  }
   const availableDatabaseConnections =
     environment.DATABASE_MAX_CONNECTIONS -
     environment.DATABASE_RESERVED_CONNECTIONS;
@@ -245,10 +405,13 @@ const environment = validateEnvironment(process.env, environmentSource);
 
 export const config = Object.freeze({
   app: {
+    allowedOrigins: splitList(environment.CORS_ALLOWED_ORIGINS),
     host: environment.HOST,
     logLevel: environment.LOG_LEVEL,
     nodeEnv: environment.NODE_ENV,
-    port: environment.PORT
+    port: environment.PORT,
+    releaseImageDigest: environment.RELEASE_IMAGE_DIGEST ?? "development",
+    releaseSha: environment.RELEASE_SHA ?? "development"
   },
   assets: {
     allowedImageContentTypes: environment.ASSET_UPLOAD_ALLOWED_IMAGE_TYPES.split(
@@ -268,12 +431,22 @@ export const config = Object.freeze({
         token: environment.BLOB_READ_WRITE_TOKEN
       }
     },
-    uploadCallbackSecret: environment.ASSET_UPLOAD_CALLBACK_SECRET
+    uploadCallbackSecret: environment.ASSET_UPLOAD_CALLBACK_SECRET,
+    uploadCallbackKeys: {
+      current: environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT && environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT
+        ? { id: environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT, secret: environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT }
+        : undefined,
+      previous: environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS && environment.ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS && environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT
+        ? { expiresAt: environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS_EXPIRES_AT, id: environment.ASSET_UPLOAD_CALLBACK_KEY_ID_PREVIOUS, secret: environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS }
+        : undefined
+    }
   },
   auth: {
     clerk: {
       jwksUrl: environment.CLERK_JWKS_URL,
       jwtIssuer: environment.CLERK_JWT_ISSUER,
+      jwtAudience: environment.CLERK_JWT_AUDIENCE,
+      authorizedParties: splitList(environment.CLERK_AUTHORIZED_PARTIES ?? environment.CORS_ALLOWED_ORIGINS),
       publishableKey: environment.CLERK_PUBLISHABLE_KEY,
       secretKey: environment.CLERK_SECRET_KEY,
       webhookSecret: environment.CLERK_WEBHOOK_SECRET

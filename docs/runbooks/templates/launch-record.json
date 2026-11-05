@@ -1,0 +1,44 @@
+{
+  "recordVersion": 1,
+  "release": {
+    "sha": "0000000000000000000000000000000000000000",
+    "backendImageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "workerImageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "vercelDeploymentId": "PLACEHOLDER_VERCEL_DEPLOYMENT_ID",
+    "digitalOceanDeploymentId": "PLACEHOLDER_DIGITALOCEAN_DEPLOYMENT_ID"
+  },
+  "domains": {
+    "client": "https://shop.example.invalid",
+    "api": "https://api.example.invalid"
+  },
+  "owners": {
+    "release": "OWNER_NAME",
+    "database": "OWNER_NAME",
+    "payments": "OWNER_NAME",
+    "auth": "OWNER_NAME",
+    "messaging": "OWNER_NAME",
+    "incident": "OWNER_NAME"
+  },
+  "observationWindow": {
+    "startedAt": "2026-01-01T00:00:00.000Z",
+    "endedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "blockers": ["PLACEHOLDER_BLOCKER_OR_REMOVE_ARRAY_ENTRY"],
+  "evidence": {
+    "topology": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_TOPOLOGY"] },
+    "secrets": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_SECRETS"] },
+    "migration": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_MIGRATION"] },
+    "health": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_HEALTH"] },
+    "auth": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_AUTH"] },
+    "stripe": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_STRIPE"] },
+    "blob": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_BLOB"] },
+    "messaging": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_MESSAGING"] },
+    "backup": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_BACKUP"] },
+    "restoreDrill": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_RESTORE"] },
+    "rollbackRehearsal": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_ROLLBACK"] },
+    "alerts": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_ALERTS"] },
+    "smoke": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_SMOKE"] },
+    "observation": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_OBSERVATION"] },
+    "decision": { "owner": "OWNER_NAME", "status": "pending", "checkedAt": "2026-01-01T00:00:00.000Z", "releaseSha": "0000000000000000000000000000000000000000", "references": ["https://example.invalid/EVIDENCE_URL_DECISION"], "value": "NO-GO", "signedBy": "OWNER_NAME", "signedAt": "2026-01-01T00:00:00.000Z" }
+  }
+}

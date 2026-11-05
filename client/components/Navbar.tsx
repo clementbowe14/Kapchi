@@ -14,6 +14,7 @@ import {
   subscribeToCartInvalidations,
 } from "@/lib/cart-state";
 import { NAV_ITEMS } from "@/lib/navigation";
+import { buildApiUrl } from "@/lib/api";
 
 function Brand() {
   return (
@@ -176,7 +177,7 @@ export function Navbar() {
         headers.Authorization = `Bearer ${token}`;
       }
 
-      const response = await fetch("/api/cart/summary", {
+      const response = await fetch(buildApiUrl("/cart/summary"), {
         cache: "no-store",
         credentials: "include",
         headers,

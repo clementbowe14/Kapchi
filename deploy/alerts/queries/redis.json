@@ -1,0 +1,7 @@
+{
+  "provider": "better-stack",
+  "source": "fastify-json-logs-and-readiness",
+  "query": "failedDependencyCodes:REDIS_UNAVAILABLE OR event:redis.connection.failed",
+  "aggregation": ["continuous-two-minute-window"],
+  "redaction": "never export Redis URLs, commands, keys, or values"
+}

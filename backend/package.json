@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "db:migrate:apply": "tsx src/database/migrate.ts apply",
+    "db:migrate:check": "tsx src/database/migrate.ts check",
+    "db:migrate:baseline-checksums": "tsx src/database/migrate.ts baseline-checksums",
     "db:migrate:create": "tsx src/database/migrate.ts create",
     "db:migrate:history": "tsx src/database/migrate.ts history",
     "db:migrate:reset": "tsx src/database/migrate.ts reset",
@@ -23,8 +25,13 @@
     "inventory:reconcile": "tsx src/scripts/reconcile-fabric-inventory.ts",
     "policies:assert-enforcement-ready": "tsx src/scripts/assert-policy-enforcement-ready.ts",
     "messages:dispatch": "tsx src/scripts/dispatch-messages.ts",
+    "operations:health": "tsx src/operations/health.ts",
+    "worker": "tsx src/worker.ts",
     "e2e:admin-orders:reset": "tsx src/scripts/reset-admin-order-e2e.ts",
     "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "release:validate": "node ../scripts/validate-launch-record.mjs",
+    "release:verify-production": "node ../scripts/verify-production.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
