@@ -4,12 +4,5 @@
     "src/server.ts": {
       "maxDuration": 60
     }
-  },
-  "crons": [
-    { "path": "/internal/cron/messages", "schedule": "* * * * *" },
-    { "path": "/internal/cron/refunds", "schedule": "* * * * *" },
-    { "path": "/internal/cron/inventory", "schedule": "*/5 * * * *" },
-    { "path": "/internal/cron/maintenance", "schedule": "*/15 * * * *" },
-    { "path": "/internal/cron/health", "schedule": "*/15 * * * *" }
-  ]
+  }
 }

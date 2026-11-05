@@ -14,7 +14,8 @@ and the distinct client/backend Vercel deployment IDs.
 ## Preflight
 
 Confirm same-site staging and production domains, Vercel plan support for the
-declared cron cadence, exact auth origins, live Stripe ownership, Blob private
+cadence in `deploy/vercel.crons.pro.template.json` or an equivalent external
+scheduler, exact auth origins, live Stripe ownership, Blob private
 read access, messaging allowlist, current managed-database backup, Redis TLS,
 and alert destinations. Run the provider canary contracts without printing
 credentials or customer data.
@@ -44,9 +45,10 @@ node scripts/verify-production.mjs \
   --deployment-id dpl_BACKEND_DEPLOYMENT_ID
 ```
 
-6. Confirm all five cron routes are present, authenticated, and producing
-   success or intentional `already_running` logs. Never invoke them with a
-   secret in a URL.
+6. If using Vercel Cron, merge the reviewed template schedules into
+   `backend/vercel.json`, redeploy, and confirm all five cron routes are present,
+   authenticated, and producing success or intentional `already_running` logs.
+   Never invoke them with a secret in a URL.
 7. Promote the matching client preview and repeat storefront smoke checks.
 
 ## Smoke Tests

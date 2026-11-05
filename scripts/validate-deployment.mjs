@@ -22,19 +22,31 @@ const forbiddenSecretValuePatterns = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/
 ];
 
-export function validateVercelConfiguration(text) {
+function assertNoSecretLikeValues(text, label) {
   for (const pattern of forbiddenSecretValuePatterns) {
-    assert.ok(!pattern.test(text), `Vercel configuration contains a secret-like value: ${pattern}`);
+    assert.ok(!pattern.test(text), `${label} contains a secret-like value: ${pattern}`);
   }
+}
+
+export function validateVercelConfiguration(text) {
+  assertNoSecretLikeValues(text, "Vercel configuration");
   const configuration = JSON.parse(text);
   assert.equal(configuration.$schema, "https://openapi.vercel.sh/vercel.json");
   assert.deepEqual(Object.keys(configuration.functions ?? {}), ["src/server.ts"], "Fastify must use its documented Vercel entrypoint");
   assert.equal(configuration.functions["src/server.ts"].maxDuration, 60, "backend function must have a bounded duration");
-  assert.equal(configuration.crons?.length, expectedCrons.size, "unexpected cron route count");
+  assert.ok(!("crons" in configuration), "active sub-daily crons would prevent Hobby preview deployments");
+  return { entrypoint: "src/server.ts", platform: "vercel" };
+}
+
+export function validateProCronTemplate(text) {
+  assertNoSecretLikeValues(text, "Vercel cron template");
+  const configuration = JSON.parse(text);
+  assert.equal(configuration.$schema, "https://openapi.vercel.sh/vercel.json");
+  assert.equal(configuration.crons?.length, expectedCrons.size, "unexpected planned cron route count");
   for (const cron of configuration.crons) {
     assert.equal(expectedCrons.get(cron.path), cron.schedule, `unexpected cron definition for ${cron.path}`);
   }
-  return { cronCount: configuration.crons.length, entrypoint: "src/server.ts", platform: "vercel" };
+  return { plannedCronCount: configuration.crons.length, requiredPlan: "pro-or-external-scheduler" };
 }
 
 export function validateMigrationWorkflow(text) {
@@ -57,8 +69,9 @@ export function validateMigrationWorkflow(text) {
 async function main() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const configuration = validateVercelConfiguration(await readFile(path.join(root, "backend/vercel.json"), "utf8"));
+  const cronTemplate = validateProCronTemplate(await readFile(path.join(root, "deploy/vercel.crons.pro.template.json"), "utf8"));
   const workflow = validateMigrationWorkflow(await readFile(path.join(root, ".github/workflows/production-migrate.yml"), "utf8"));
-  console.log(JSON.stringify({ event: "deployment.configuration.validated", ...configuration, ...workflow }));
+  console.log(JSON.stringify({ event: "deployment.configuration.validated", ...configuration, ...cronTemplate, ...workflow }));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

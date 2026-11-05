@@ -31,15 +31,18 @@ single function. There is no permanent worker process, pre-deploy container
 hook, or image digest. `/health` and `/ready` report the full Git SHA and backend
 Vercel deployment ID.
 
-`backend/vercel.json` defines five authenticated GET cron routes. Vercel sends
-`Authorization: Bearer <CRON_SECRET>`. Each route performs constant-time auth,
+`deploy/vercel.crons.pro.template.json` defines the required five authenticated
+GET cron schedules. They stay out of the active `backend/vercel.json` until the
+project supports minute-level cadence, because Vercel rejects sub-daily cron
+expressions on Hobby. Vercel sends `Authorization: Bearer <CRON_SECRET>`. Each route performs constant-time auth,
 acquires a token-owned Redis lock, executes one bounded batch, emits structured
 start/success/failure logs, and releases only its own lock. Duplicate delivery
 returns `202 already_running`. Service-level idempotency remains authoritative.
 
 Minute-level schedules require an eligible Vercel plan. If the account cannot
 support them, launch remains blocked until an external scheduler invokes the
-same routes at the documented cadence.
+same routes at the documented cadence. Preview deployment must remain possible
+before that operational purchase or scheduler decision.
 
 ## Configuration And Secrets
 

@@ -25,11 +25,13 @@ GitHub Actions. The backend project owns PostgreSQL, Redis, Stripe, Clerk, Blob,
 messaging, callback-signing, and cron values. The client owns browser-safe
 public values and its server-only Blob callback values.
 
-`backend/vercel.json` defines bounded cron invocations. Its minute-level
-schedules require a Vercel plan that supports that cadence; otherwise configure
-an external scheduler with the same `Authorization: Bearer $CRON_SECRET`
-contract. The jobs are idempotent and Redis-locked because cron delivery can be
-duplicated and is not automatically retried.
+`backend/vercel.json` intentionally contains no active cron definitions so Hobby
+preview deployments remain valid. `deploy/vercel.crons.pro.template.json`
+records the required production cadence. Merge those definitions into the
+backend configuration only after enabling a plan that supports minute-level
+schedules, or configure an external scheduler with the same `Authorization:
+Bearer $CRON_SECRET` contract. The jobs are idempotent and Redis-locked because
+scheduled delivery can be duplicated and is not automatically retried.
 
 Production database changes run through the protected, serialized
 `.github/workflows/production-migrate.yml` workflow. It obtains the backend
