@@ -79,13 +79,13 @@ export async function verifyProduction({
   apiUrl,
   clientUrl,
   releaseSha,
-  releaseImageDigest,
+  releaseDeploymentId,
   timeoutMs = defaultTimeoutMs,
   allowHttp = false,
   fetchImpl = fetch
 }) {
   assert.match(releaseSha, /^[0-9a-f]{40}$/i, "release SHA must be a full Git SHA");
-  assert.match(releaseImageDigest, /^sha256:[0-9a-f]{64}$/i, "release image digest must be sha256");
+  assert.match(releaseDeploymentId, /^dpl_[A-Za-z0-9]+$/, "release deployment ID must be a Vercel deployment ID");
   assert.ok(Number.isInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 15000, "timeout must be 100-15000ms");
 
   const apiOrigin = exactOrigin(apiUrl, "API URL", allowHttp);
@@ -97,7 +97,7 @@ export async function verifyProduction({
   assert.equal(healthResponse.status, 200, "health must return 200");
   const health = await readBoundedJson(healthResponse, "health");
   assert.equal(health.releaseSha, releaseSha, "health release SHA does not match");
-  assert.equal(health.releaseImageDigest, releaseImageDigest, "health image digest does not match");
+  assert.equal(health.releaseDeploymentId, releaseDeploymentId, "health deployment ID does not match");
   checks.push("health");
 
   const readyResponse = await boundedFetch(fetchImpl, `${apiOrigin}/ready`, { method: "GET" }, timeoutMs);
@@ -105,7 +105,7 @@ export async function verifyProduction({
   const readiness = await readBoundedJson(readyResponse, "readiness");
   assert.equal(readiness.status, "ready", "readiness status must be ready");
   assert.equal(readiness.releaseSha, releaseSha, "readiness release SHA does not match");
-  assert.equal(readiness.releaseImageDigest, releaseImageDigest, "readiness image digest does not match");
+  assert.equal(readiness.releaseDeploymentId, releaseDeploymentId, "readiness deployment ID does not match");
   assert.deepEqual(readiness.failedDependencyCodes, [], "readiness reports failed dependencies");
   for (const dependency of ["database", "redis", "migrations", "privateAssetProvider"]) {
     assert.equal(readiness.dependencies?.[dependency], "ready", `${dependency} is not ready`);
@@ -150,7 +150,7 @@ export async function verifyProduction({
   return {
     event: "production.verification.completed",
     releaseSha,
-    releaseImageDigest,
+    releaseDeploymentId,
     checkedAt: new Date().toISOString(),
     checks
   };
@@ -162,7 +162,7 @@ async function main() {
     apiUrl: args["api-url"],
     clientUrl: args["client-url"],
     releaseSha: args["release-sha"],
-    releaseImageDigest: args["image-digest"],
+    releaseDeploymentId: args["deployment-id"],
     timeoutMs: args["timeout-ms"] ? Number(args["timeout-ms"]) : defaultTimeoutMs,
     allowHttp: args.allowHttp
   });

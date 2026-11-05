@@ -4,7 +4,6 @@ import { evidenceKeys, validateLaunchRecord } from "./validate-launch-record.mjs
 
 const now = new Date("2026-11-05T18:00:00.000Z");
 const sha = "a".repeat(40);
-const digest = `sha256:${"b".repeat(64)}`;
 
 function validRecord() {
   const evidence = Object.fromEntries(evidenceKeys.map((key) => [key, {
@@ -24,10 +23,8 @@ function validRecord() {
     recordVersion: 1,
     release: {
       sha,
-      backendImageDigest: digest,
-      workerImageDigest: digest,
-      vercelDeploymentId: "dpl_123",
-      digitalOceanDeploymentId: "do-deploy-123"
+      clientVercelDeploymentId: "dpl_client123",
+      backendVercelDeploymentId: "dpl_backend123"
     },
     domains: {
       client: "https://shop.kapchi.test",

@@ -1,7 +1,7 @@
 {
-  "provider": "digitalocean",
-  "source": "app-platform-alerts",
-  "query": "DEPLOYMENT_FAILED OR FAILED_JOB_INVOCATION",
+  "provider": "vercel",
+  "source": "vercel-deployment-events-and-github-actions",
+  "query": "VERCEL_DEPLOYMENT_FAILED OR PRODUCTION_MIGRATION_WORKFLOW_FAILED",
   "aggregation": ["any-event"],
   "redaction": "record deployment/job IDs and sanitized migration error codes only"
 }

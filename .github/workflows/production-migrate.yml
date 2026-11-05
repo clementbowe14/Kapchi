@@ -1,0 +1,55 @@
+name: Production database migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full Git SHA that will be promoted
+        required: true
+        type: string
+      confirmation:
+        description: Type MIGRATE_PRODUCTION
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-database-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply production migrations
+    if: inputs.confirmation == 'MIGRATE_PRODUCTION'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_BACKEND_PROJECT_ID }}
+    steps:
+      - name: Check out requested release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 1
+      - name: Verify immutable release SHA
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.release_sha }}"
+      - name: Use Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+      - name: Pull the backend production environment
+        working-directory: backend
+        run: npx --yes vercel@65.9.0 pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+      - name: Apply and verify migrations with Vercel-owned environment
+        working-directory: backend
+        run: |
+          npx --yes vercel@65.9.0 env run -e production -- npm run db:migrate:apply
+          npx --yes vercel@65.9.0 env run -e production -- npm run db:migrate:check

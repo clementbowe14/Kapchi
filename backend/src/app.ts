@@ -17,6 +17,7 @@ import cartPlugin from "./modules/cart/plugin.js";
 import healthPlugin from "./modules/health/plugin.js";
 import listingsPlugin from "./modules/listings/plugin.js";
 import ordersPlugin from "./modules/orders/plugin.js";
+import operationsPlugin from "./modules/operations/plugin.js";
 import paymentsPlugin from "./modules/payments/plugin.js";
 import refundsPlugin from "./modules/refunds/plugin.js";
 import shippingPlugin from "./modules/shipping/plugin.js";
@@ -64,6 +65,7 @@ export async function buildServer() {
   await app.register(authPlugin);
   await app.register(adminBoundaryPlugin);
   await app.register(healthPlugin);
+  await app.register(operationsPlugin);
 
   await app.register(adminAnalyticsPlugin, { prefix: "/admin/analytics" });
   await app.register(adminAssetsPlugin, { prefix: "/admin/orders" });

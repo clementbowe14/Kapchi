@@ -9,7 +9,7 @@ type DependencyState = "ready" | "unready" | "unconfigured";
 type ReadinessResult = {
   dependencies: Record<ReadinessDependency, DependencyState>;
   failedDependencyCodes: ReadinessCode[];
-  releaseImageDigest: string;
+  releaseDeploymentId: string;
   releaseSha: string;
   status: "ready" | "unready";
 };
@@ -76,7 +76,7 @@ export function createReadinessProbe(
     return {
       dependencies,
       failedDependencyCodes: [...new Set(failedDependencyCodes)].sort(),
-      releaseImageDigest: config.app.releaseImageDigest,
+      releaseDeploymentId: config.app.releaseDeploymentId,
       releaseSha: config.app.releaseSha,
       status: failedDependencyCodes.length === 0 ? "ready" : "unready"
     };
@@ -89,7 +89,7 @@ export function createReadinessProbe(
       .catch((): ReadinessResult => ({
         dependencies: { database: "unready", redis: "unready", migrations: "unready", privateAssetProvider: "unready" },
         failedDependencyCodes: ["READINESS_TIMEOUT"],
-        releaseImageDigest: config.app.releaseImageDigest,
+        releaseDeploymentId: config.app.releaseDeploymentId,
         releaseSha: config.app.releaseSha,
         status: "unready"
       }))
@@ -121,7 +121,7 @@ const healthPlugin: FastifyPluginAsync<HealthPluginOptions> = async (fastify, op
   });
 
   fastify.get("/health", async () => ({
-    releaseImageDigest: config.app.releaseImageDigest,
+    releaseDeploymentId: config.app.releaseDeploymentId,
     releaseSha: config.app.releaseSha,
     service: "kapchi-backend",
     status: "ok"

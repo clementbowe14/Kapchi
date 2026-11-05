@@ -24,7 +24,7 @@ export const evidenceKeys = [
 ];
 const ownerKeys = ["release", "database", "payments", "auth", "messaging", "incident"];
 const statuses = new Set(["pass", "fail", "pending"]);
-const providerReference = /^(?:https:\/\/|vercel:\/\/|digitalocean:\/\/|stripe:\/\/|clerk:\/\/|betterstack:\/\/)/;
+const providerReference = /^(?:https:\/\/|vercel:\/\/|stripe:\/\/|clerk:\/\/|betterstack:\/\/)/;
 const placeholderPattern = /(?:PLACEHOLDER|REPLACE_ME|EXAMPLE|TBD|OWNER_NAME|EVIDENCE_URL|000000)/i;
 
 function validDate(value, label) {
@@ -44,11 +44,14 @@ function registrableSuffix(hostname) {
 export function validateLaunchRecord(record, { now = new Date(), template = false } = {}) {
   assert.equal(record.recordVersion, 1, "recordVersion must be 1");
   assert.match(record.release?.sha ?? "", /^[0-9a-f]{40}$/i, "release.sha must be a full Git SHA");
-  assert.match(record.release?.backendImageDigest ?? "", /^sha256:[0-9a-f]{64}$/i, "backend image digest is invalid");
-  assert.match(record.release?.workerImageDigest ?? "", /^sha256:[0-9a-f]{64}$/i, "worker image digest is invalid");
-  assert.equal(record.release.backendImageDigest, record.release.workerImageDigest, "API and worker must use the same image digest");
-  assert.ok(String(record.release.vercelDeploymentId ?? "").trim(), "Vercel deployment ID is required");
-  assert.ok(String(record.release.digitalOceanDeploymentId ?? "").trim(), "DigitalOcean deployment ID is required");
+  if (template) {
+    assert.ok(String(record.release?.clientVercelDeploymentId ?? "").trim(), "client Vercel deployment ID is required");
+    assert.ok(String(record.release?.backendVercelDeploymentId ?? "").trim(), "backend Vercel deployment ID is required");
+  } else {
+    assert.match(record.release?.clientVercelDeploymentId ?? "", /^dpl_[A-Za-z0-9]+$/, "client Vercel deployment ID is invalid");
+    assert.match(record.release?.backendVercelDeploymentId ?? "", /^dpl_[A-Za-z0-9]+$/, "backend Vercel deployment ID is invalid");
+  }
+  assert.notEqual(record.release.clientVercelDeploymentId, record.release.backendVercelDeploymentId, "client and backend must use distinct Vercel deployments");
 
   for (const key of ownerKeys) {
     assert.ok(String(record.owners?.[key] ?? "").trim(), `owners.${key} is required`);

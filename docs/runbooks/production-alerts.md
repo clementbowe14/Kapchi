@@ -1,84 +1,42 @@
 # Production Alerts
 
-`deploy/alerts/inventory.json` is the stable alert contract. Better Stack owns
-external uptime and log alerts; DigitalOcean owns App Platform and managed
-database alerts. Validate repository definitions with:
+Better Stack owns external uptime and log-derived alerts. Vercel owns function,
+deployment, and cron observability. The actual PostgreSQL and Redis providers
+own resource-level saturation and availability alerts. Every stable alert ID in
+`deploy/alerts/inventory.json` routes to primary and secondary destinations.
 
-```sh
-node scripts/validate-alerts.mjs
-```
+## Public Readiness
 
-The `--require-evidence` mode is used only on an operator copy whose evidence
-fields contain real HTTPS provider links.
+Monitor HTTPS `/ready` from at least two regions. Page after two consecutive
+failures or a non-ready response. Store only bounded dependency codes.
 
-## Better Stack
+## Vercel Functions And Cron
 
-Create HTTPS monitors for the storefront, API `/health`, and API `/ready` with
-TLS verification. Configure `/ready` from at least one US and one EU region. Two
-consecutive failures in both regions page; one-region failure warns only. Forward
-redacted Fastify and worker JSON logs to a Better Stack source. Implement the
-checked-in query definitions for backend 5xx count/percentage, Stripe webhook
-failure, Redis failure, and operational/background failure.
+Alert on backend 5xx rate, function timeout/duration, failed deployments, and
+`cron.operation.failed`. Vercel Cron has no automatic retry guarantee and may
+invoke a job more than once; the Redis lock and service idempotency protect work,
+while alerting calls for operator review.
 
-Use the named incident owner as primary and one independent secondary channel.
-Test log alerts with a uniquely tagged synthetic log event. Test uptime alerts
-against a staged release endpoint, never by interrupting the production domain.
+## PostgreSQL And Redis
 
-## DigitalOcean
+Configure provider-native connection, CPU/storage, and availability thresholds
+for the purchased plans. Better Stack also derives `DATABASE_UNAVAILABLE`,
+`MIGRATION_DRIFT`, and `REDIS_UNAVAILABLE` from redacted readiness/log events.
 
-The App Spec declares only rules supported in source: deployment/domain/scaling
-failures and component CPU, memory, restart, and latency signals. In the
-DigitalOcean Alerts UI/API, separately configure failed job invocation and any
-other app-level controls not represented by the template. Export redacted alert
-configuration and use provider test notifications or a disposable failed job.
+## Stripe And Durable Work
 
-Configure PostgreSQL connection saturation from the managed database's current
-connections metric divided by the recorded plan connection limit. Alert at 80%
-for five minutes. Reconcile the plan limit with reserved connections, API/worker
-instance counts, `DATABASE_MAX_CONNECTIONS`, and each pool maximum. Do not infer
-connection saturation from application logs.
+Page when Stripe webhook processing is exhausted or stale, refund reconciliation
+requires review, messages remain failed/stale, or operational-health counts are
+nonzero. Never export payloads, signatures, customer data, URLs, keys, or values.
 
-## Response Sections
+## Deployment And Migration
 
-### Backend 5xx
+GitHub environment reviewers receive migration workflow failures. Vercel alerts
+cover failed promotions. The release owner stops promotion on either signal and
+records sanitized evidence.
 
-Page at five responses or two percent in five minutes. Correlate bounded request
-IDs and release identity; never search by customer payload.
+## Testing
 
-### Public Readiness
-
-Stop rollout on two consecutive failures from both regions. Inspect stable failed
-dependency codes and the current release/image identity.
-
-### PostgreSQL
-
-Halt deployment and background work on readiness failure or 80% saturation.
-Verify provider status and pool budgets before any scaling change.
-
-### Redis
-
-Protect guest/cart flows on two minutes of readiness or connection failure.
-Inspect the managed service without logging keys, commands, or values.
-
-### Stripe Webhook
-
-Reconcile provider event IDs through bounded admin tooling when any
-`stripe.webhook.failed` event or exhausted inbox count appears.
-
-### Background Jobs
-
-Inspect stable category codes when operational health reports exhausted work or a
-worker operation fails. The health command observes work; it does not process it.
-
-### Deployment And Migration
-
-Any failed deployment, predeploy migration, or scheduled health invocation blocks
-`GO`. Record sanitized migration error codes and deployment/job IDs only.
-
-## Evidence
-
-For each stable alert ID, record the provider URL/ID, redacted configuration,
-timestamped safe test signal, received incident/notification link,
-acknowledgement, and recovery. Confirm both primary and secondary delivery paths.
-Never test by interrupting production databases, Redis, workers, or customer
-traffic.
+Before GO, safely trigger each alert ID, verify both destinations, acknowledge
+it, and attach an HTTPS/provider reference to the launch record. Do not lower a
+threshold permanently to manufacture evidence.

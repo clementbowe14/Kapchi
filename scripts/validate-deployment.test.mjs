@@ -3,21 +3,21 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateBackendDockerfile, validateDeploymentTemplate } from "./validate-deployment.mjs";
+import { validateMigrationWorkflow, validateVercelConfiguration } from "./validate-deployment.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("DigitalOcean template is digest-pinned and contains all execution components", async () => {
-  const text = await readFile(path.join(root, "deploy/digitalocean.backend.template.yaml"), "utf8");
-  assert.equal(validateDeploymentTemplate(text).componentCount, 4);
+test("Vercel configuration declares the Fastify function and bounded cron routes", async () => {
+  const text = await readFile(path.join(root, "backend/vercel.json"), "utf8");
+  assert.deepEqual(validateVercelConfiguration(text), { cronCount: 5, entrypoint: "src/server.ts", platform: "vercel" });
 });
 
-test("backend image is non-root and carries compiled migration assets", async () => {
-  const text = await readFile(path.join(root, "backend/Dockerfile"), "utf8");
-  assert.deepEqual(validateBackendDockerfile(text), { runtimeUser: "node", port: 4000 });
+test("production migrations are protected, serialized, and use the Vercel environment", async () => {
+  const text = await readFile(path.join(root, ".github/workflows/production-migrate.yml"), "utf8");
+  assert.deepEqual(validateMigrationWorkflow(text), { migrationEnvironment: "vercel-production", serialized: true });
 });
 
-test("template validator rejects real-looking credentials", () => {
+test("configuration validator rejects real-looking credentials", () => {
   const fakeCredential = ["sk", "live", "synthetic_validation_value"].join("_");
-  assert.throws(() => validateDeploymentTemplate(fakeCredential), /secret-like value/);
+  assert.throws(() => validateVercelConfiguration(fakeCredential), /secret-like value/);
 });

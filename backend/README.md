@@ -318,9 +318,8 @@ production secrets.
 placeholder. Keep real Redis URLs, usernames, passwords, and provider tokens in
 untracked local env files or the deployment platform's secret manager.
 
-For production, configure `REDIS_URL` as a runtime secret in the hosting
-provider, for example DigitalOcean App Platform encrypted environment variables,
-using the managed Redis provider's connection string. Do not paste production
+For production, configure `REDIS_URL` as an encrypted runtime secret in the
+backend Vercel project using the managed Redis provider's connection string. Do not paste production
 Redis credentials into README snippets, issue comments, screenshots, committed
 `.env` files, or test fixtures.
 
@@ -493,8 +492,8 @@ deployment provider's encrypted environment or secret manager. Do not commit
 production `.env` files, database console exports, screenshots, connection URLs,
 usernames, passwords, certificates, or access tokens to this repository.
 
-For DigitalOcean App Platform, set the PostgreSQL connection strings as runtime
-environment variables or managed database bindings on the backend service. Keep
+For the backend Vercel project, set the PostgreSQL connection strings as encrypted
+runtime environment variables supplied by the managed database integration. Keep
 `DATABASE_DIRECT_URL` restricted to migrations or admin jobs that need a direct
 connection, and use the provider's pooled connection endpoint for `DATABASE_URL`
 when the production database plan requires pooling.
