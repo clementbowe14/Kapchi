@@ -91,7 +91,11 @@ seeding. This is an explicit development command and is never run by server
 startup:
 
 ```bash
+npm run db:migrate:apply
+npm run db:fixtures:init -- --confirm-database kapchi_local
+# Add the printed KAPCHI_FIXTURE_DATABASE_TOKEN to backend/.env.
 npm run db:seed:local
+npm run db:seed:verify
 npm run stripe:catalog:sync:local
 ```
 
@@ -517,7 +521,9 @@ for the repository if the account plan supports them.
 ```bash
 npm install
 npm run dev
+npm run db:fixtures:init -- --confirm-database kapchi_local
 npm run db:seed:local
+npm run db:seed:verify
 npm run stripe:catalog:sync:local
 npm test
 npm run test:watch

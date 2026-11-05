@@ -26,7 +26,10 @@ Start the backend from the backend workspace:
 ```bash
 cd backend
 npm run db:migrate:apply
+npm run db:fixtures:init -- --confirm-database kapchi_local
+# Add the printed KAPCHI_FIXTURE_DATABASE_TOKEN to backend/.env.
 npm run db:seed:local
+npm run db:seed:verify
 npm run stripe:catalog:sync:local
 npm run dev
 ```

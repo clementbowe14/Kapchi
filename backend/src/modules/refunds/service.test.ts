@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RefundError, RefundProviderError } from "./errors.js";
+import { refundRequestFingerprint } from "./fingerprint.js";
 import type { RefundProvider } from "./provider.js";
 import type { StoredRefundOperation } from "./repository.js";
 import { RefundService, type RefundRepositoryPort } from "./service.js";
@@ -247,6 +248,56 @@ describe("RefundService", () => {
     await service.getOperation(current.id);
 
     expect(provider.retrieveRefund).toHaveBeenCalledWith("re_live", true);
+  });
+
+  it("returns a manual-review operation without contacting the provider", async () => {
+    const { provider, repository, setStored } = dependencies();
+    const current = pendingOperation({
+      dispatchEverClaimed: true,
+      manualReviewRequired: true,
+      nextReconciliationAt: null,
+      pendingReason: "unknown_outcome",
+      providerRefundId: "re_test_fixture_manual_review"
+    });
+    setStored(current);
+    provider.reconcilePayment.mockRejectedValue(new Error("provider must not be called"));
+    provider.retrieveRefund.mockRejectedValue(new Error("provider must not be called"));
+    const service = new RefundService(repository, provider);
+
+    await expect(service.getOperation(current.id)).resolves.toEqual(current);
+
+    expect(provider.reconcilePayment).not.toHaveBeenCalled();
+    expect(provider.retrieveRefund).not.toHaveBeenCalled();
+    expect(repository.applyProviderResult).not.toHaveBeenCalled();
+    expect(repository.applyReconciliation).not.toHaveBeenCalled();
+  });
+
+  it("returns a manual-review idempotent replay without provider recovery", async () => {
+    const { provider, repository, setStored } = dependencies();
+    const fingerprint = refundRequestFingerprint(
+      pendingOperation().orderId,
+      actor,
+      request,
+    );
+    const current = pendingOperation({
+      dispatchEverClaimed: true,
+      manualReviewRequired: true,
+      nextReconciliationAt: null,
+      pendingReason: "unknown_outcome",
+      requestFingerprint: fingerprint
+    });
+    setStored(current);
+    provider.reconcilePayment.mockRejectedValue(new Error("provider must not be called"));
+    provider.retrieveRefund.mockRejectedValue(new Error("provider must not be called"));
+    const service = new RefundService(repository, provider);
+
+    await expect(
+      service.create(current.orderId, actor, request, current.clientIdempotencyKey),
+    ).resolves.toEqual({ operation: current, replayed: true });
+
+    expect(provider.createRefund).not.toHaveBeenCalled();
+    expect(provider.reconcilePayment).not.toHaveBeenCalled();
+    expect(provider.retrieveRefund).not.toHaveBeenCalled();
   });
 
   it("rejects reuse of a client key for different input", async () => {

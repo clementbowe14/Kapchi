@@ -111,6 +111,11 @@ export type StripeCatalogDatabaseClient = {
 };
 
 export type StripeCatalogSyncInput = {
+  advisoryLockId?: number;
+  beforeCommit?: (
+    client: StripeCatalogDatabaseClient,
+    context: Pick<StripeCatalogSyncResult, "accountId" | "bindings">,
+  ) => Promise<void>;
   catalog?: readonly SeedListing[];
   database: StripeCatalogDatabase;
   databaseUrl: string | undefined;
@@ -939,6 +944,7 @@ export async function findProtectedReplacedPriceIds(
 async function persistPreparedCatalog(
   client: StripeCatalogDatabaseClient,
   prepared: PreparedListing[],
+  beforeCommit?: () => Promise<void>,
 ) {
   try {
     await client.query("begin");
@@ -948,6 +954,7 @@ async function persistPreparedCatalog(
       client,
       explicitReplacedPriceIds(prepared),
     );
+    await beforeCommit?.();
     await client.query("commit");
     return { protectedPriceIds, recovered };
   } catch (error) {
@@ -1017,13 +1024,14 @@ export async function syncStripeTestCatalog(input: StripeCatalogSyncInput) {
   const catalog = input.catalog ?? seedListings;
   assertLocalSeedCatalog(catalog);
   const client = await input.database.connect();
+  const advisoryLockId = input.advisoryLockId ?? stripeCatalogSyncAdvisoryLockId;
   let lockAcquired = false;
   let operationError: unknown;
 
   try {
     const lock = await client.query<{ acquired: boolean }>(
       "select pg_try_advisory_lock($1) as acquired",
-      [stripeCatalogSyncAdvisoryLockId],
+      [advisoryLockId],
     );
     if (lock.rows[0]?.acquired !== true) {
       throw new StripeCatalogSyncAlreadyRunningError();
@@ -1036,9 +1044,21 @@ export async function syncStripeTestCatalog(input: StripeCatalogSyncInput) {
     }
 
     const prepared = await prepareRemoteCatalog(input.stripe, catalog);
+    const bindings = prepared.map((listing) => ({
+      prices: listing.prices.map((price) => ({
+        id: price.id,
+        lookupKey: price.lookupKey,
+        variantKey: price.variantKey
+      })),
+      productId: listing.productId,
+      slug: listing.slug
+    }));
     const { protectedPriceIds, recovered } = await persistPreparedCatalog(
       client,
       prepared,
+      input.beforeCommit
+        ? () => input.beforeCommit!(client, { accountId: account.id, bindings })
+        : undefined,
     );
     const cleanupFailures = await cleanupReplacedPrices(
       input.stripe,
@@ -1048,15 +1068,7 @@ export async function syncStripeTestCatalog(input: StripeCatalogSyncInput) {
 
     return {
       accountId: account.id,
-      bindings: prepared.map((listing) => ({
-        prices: listing.prices.map((price) => ({
-          id: price.id,
-          lookupKey: price.lookupKey,
-          variantKey: price.variantKey
-        })),
-        productId: listing.productId,
-        slug: listing.slug
-      })),
+      bindings,
       cartsReactivated: recovered.filter((row) => row.cart_reactivated).length,
       cleanupFailures,
       ordersRecovered: recovered.length,
@@ -1079,7 +1091,7 @@ export async function syncStripeTestCatalog(input: StripeCatalogSyncInput) {
       try {
         const unlock = await client.query<{ released: boolean }>(
           "select pg_advisory_unlock($1) as released",
-          [stripeCatalogSyncAdvisoryLockId],
+          [advisoryLockId],
         );
         if (unlock.rows[0]?.released !== true) {
           throw new Error("Stripe catalog sync advisory lock was not released.");
