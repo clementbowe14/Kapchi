@@ -1,0 +1,4 @@
+# Superseded commit 65beada contained synthetic values/code expressions only.
+# Keep these exact fingerprints narrow so new findings still fail CI.
+65beada6aeabca078a56cb4cc6a4b88f25db388f:backend/src/config/env.test.ts:postgres-connection-url:32
+65beada6aeabca078a56cb4cc6a4b88f25db388f:scripts/restore-drill.mjs:database-password-assignment:70

@@ -25,6 +25,7 @@ import { createLoggerOptions } from "./observability/logger.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
 import postgresPlugin from "./plugins/postgres.js";
 import redisPlugin from "./plugins/redis.js";
+import originSecurityPlugin, { isAllowedBrowserOrigin } from "./plugins/origin-security.js";
 import requestObservabilityPlugin, {
   generateRequestId
 } from "./plugins/request-observability.js";
@@ -43,8 +44,12 @@ export async function buildServer() {
 
   await app.register(cors, {
     credentials: true,
-    origin: true
+    origin(origin, callback) {
+      callback(null, isAllowedBrowserOrigin(origin, config.app.allowedOrigins) && Boolean(origin));
+    }
   });
+
+  await app.register(originSecurityPlugin);
 
   await app.register(helmet);
   await app.register(sensible);

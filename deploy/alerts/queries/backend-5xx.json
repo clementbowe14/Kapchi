@@ -1,0 +1,7 @@
+{
+  "provider": "better-stack",
+  "source": "fastify-json-logs",
+  "query": "event:http.request.completed AND statusCode:[500 TO 599]",
+  "aggregation": ["count", "percentage-of-event:http.request.completed"],
+  "redaction": "request IDs may be retained; authorization, cookies, URLs with query strings, and bodies must be absent"
+}

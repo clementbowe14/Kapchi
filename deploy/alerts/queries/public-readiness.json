@@ -1,0 +1,7 @@
+{
+  "provider": "better-stack",
+  "source": "uptime-monitors",
+  "query": "HTTPS GET /ready; TLS verification enabled; expect 200 and status=ready",
+  "aggregation": ["two-consecutive-failures", "both-us-and-eu-regions"],
+  "redaction": "store bounded dependency codes only"
+}

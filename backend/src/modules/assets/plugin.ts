@@ -8,6 +8,13 @@ import { hasStoreAdminRole } from "../admin-auth/index.js";
 import { authMiddleware } from "../auth/index.js";
 import { getGuestCartContext, hashSessionId } from "../cart/guest-session.js";
 import { buildAssetPathname } from "./pathname.js";
+import {
+  callbackBusinessFingerprint,
+  callbackTimestampIsFresh,
+  isExpectedVercelBlob,
+  verifyCallbackEnvelope,
+  type CallbackEnvelope
+} from "./callback-security.js";
 
 type AssetContext = "customization_image" | "catalog_listing_image" | "fabric_image";
 type AssetVisibility = "private" | "public_catalog";
@@ -49,6 +56,7 @@ type UploadIntentBody = {
 
 type UploadPayload = UploadIntentBody & {
   assetId: string;
+  callbackNonce?: string;
   issuedAt: string;
 };
 
@@ -102,6 +110,7 @@ const intentSchema = Joi.object<UploadIntentBody>({
 const payloadSchema = intentSchema.concat(
   Joi.object({
     assetId: Joi.string().guid().required(),
+    callbackNonce: Joi.string().guid().optional(),
     issuedAt: Joi.string().isoDate().required()
   }),
 );
@@ -177,7 +186,7 @@ function storageKeyFromBlob(blob: BlobCompletion) {
   return new URL(blob.url).pathname.replace(/^\/+/, "");
 }
 
-function assertConfiguredCallbackSecret(request: FastifyRequest, reply: FastifyReply) {
+function assertLegacyCallbackSecret(request: FastifyRequest, reply: FastifyReply) {
   const expectedSecret = config.assets.uploadCallbackSecret;
 
   if (!expectedSecret) {
@@ -201,6 +210,15 @@ function assertConfiguredCallbackSecret(request: FastifyRequest, reply: FastifyR
   }
 
   return true;
+}
+
+function readCallbackEnvelope(request: FastifyRequest): CallbackEnvelope | null {
+  const keyId = request.headers["x-kapchi-callback-key-id"];
+  const nonce = request.headers["x-kapchi-callback-nonce"];
+  const signature = request.headers["x-kapchi-callback-signature"];
+  const timestamp = request.headers["x-kapchi-callback-timestamp"];
+  if ([keyId, nonce, signature, timestamp].some((value) => typeof value !== "string")) return null;
+  return { keyId: keyId as string, nonce: nonce as string, signature: signature as string, timestamp: timestamp as string };
 }
 
 async function findInternalUserId(authSubject: string | undefined) {
@@ -437,12 +455,13 @@ async function authorizeUpload(
   return authorizeCustomerUpload(request, reply, body);
 }
 
-function buildTokenPayload(body: UploadIntentBody, assetId: string): UploadPayload {
+function buildTokenPayload(body: UploadIntentBody, assetId: string, callbackNonce: string): UploadPayload {
   const visibility = defaultVisibility(body.context, body.visibility);
 
   return {
     ...body,
     assetId,
+    callbackNonce,
     issuedAt: new Date().toISOString(),
     visibility
   };
@@ -454,6 +473,7 @@ async function createPendingAsset(
   assetId: string,
   pathname: string,
   audit: AdminAssetAudit | null,
+  payload: UploadPayload,
 ) {
   const visibility = defaultVisibility(body.context, body.visibility);
   const result = await getDatabasePool().query<AssetRow>(
@@ -476,6 +496,9 @@ async function createPendingAsset(
         metadata
         ) values ($1, 'vercel_blob', $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
         returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status
+      ), callback_intent as (
+        insert into asset_upload_callbacks (nonce, asset_id, business_fingerprint)
+        select $18, inserted.id, $19 from inserted
       ), audited as (
         insert into admin_audit_events (
           actor_user_id,
@@ -528,7 +551,9 @@ async function createPendingAsset(
         context: body.context,
         fabricId: body.fabricId ?? null,
         listingId: body.listingId ?? null
-      })
+      }),
+      payload.callbackNonce,
+      callbackBusinessFingerprint(payload)
     ],
   );
 
@@ -638,7 +663,9 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
       }
 
       const assetId = randomUUID();
+      const callbackNonce = randomUUID();
       const pathname = buildAssetPathname(body.context, assetId, body.filename);
+      const payload = buildTokenPayload(body, assetId, callbackNonce);
       let audit: AdminAssetAudit | null = null;
       if ("adminActor" in authorization && authorization.adminActor) {
         const idempotencyKey = request.headers["idempotency-key"];
@@ -669,6 +696,7 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
           assetId,
           pathname,
           audit,
+          payload,
         );
       } catch (createError) {
         if (
@@ -685,8 +713,6 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
         }
         throw createError;
       }
-      const payload = buildTokenPayload(body, asset.id);
-
       return {
         access: payload.visibility === "public_catalog" ? "public" : "private",
         allowedContentTypes: config.assets.allowedImageContentTypes,
@@ -764,7 +790,8 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
   );
 
   fastify.post("/upload-completions", async (request, reply) => {
-    if (!assertConfiguredCallbackSecret(request, reply)) {
+    const callbackKeys = config.assets.uploadCallbackKeys;
+    if (!callbackKeys.current && !assertLegacyCallbackSecret(request, reply)) {
       return;
     }
 
@@ -788,6 +815,31 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
           ? parseError.message
           : "Upload completion payload is invalid.";
       return requestError(reply, 400, "VALIDATION_ERROR", message);
+    }
+
+    const envelope = readCallbackEnvelope(request);
+    if (callbackKeys.current) {
+      if (!envelope || !payload.callbackNonce || envelope.nonce !== payload.callbackNonce ||
+          !verifyCallbackEnvelope(envelope, request.body, callbackKeys)) {
+        return requestError(reply, 401, "UNAUTHORIZED", "Upload completion callback is not authorized.");
+      }
+
+      const prior = await getDatabasePool().query<{
+        business_fingerprint: string;
+        completion_fingerprint: string | null;
+        completed_result: unknown;
+      }>(
+        `select business_fingerprint, completion_fingerprint, completed_result from asset_upload_callbacks where nonce = $1 and asset_id = $2`,
+        [payload.callbackNonce, payload.assetId],
+      );
+      const priorState = prior.rows[0];
+      if (priorState?.completed_result) {
+        if (priorState.business_fingerprint !== callbackBusinessFingerprint(payload) ||
+            priorState.completion_fingerprint !== callbackBusinessFingerprint(request.body)) {
+          return requestError(reply, 409, "UPLOAD_CALLBACK_REPLAY", "Upload completion callback could not be matched.");
+        }
+        return priorState.completed_result;
+      }
     }
 
     const pendingAsset = await findPendingAsset(payload.assetId);
@@ -840,6 +892,61 @@ const assetsPlugin: FastifyPluginAsync = async (fastify) => {
         "VALIDATION_ERROR",
         "Completed upload pathname does not match the pending asset record.",
       );
+    }
+
+    if (config.app.nodeEnv === "production" && !isExpectedVercelBlob(
+      { contentType: blobContentType, pathname: storageKey, size: blobSize, url: body.blob.url },
+      { contentType: payload.contentType, pathname: pendingAsset.expected_pathname, size: payload.byteSize },
+    )) {
+      return requestError(reply, 400, "VALIDATION_ERROR", "Completed upload provider metadata is invalid.");
+    }
+
+    if (callbackKeys.current && envelope && payload.callbackNonce) {
+      const pool = getDatabasePool();
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const callback = await client.query<{ business_fingerprint: string; completion_fingerprint: string | null; completed_result: unknown }>(
+          `select business_fingerprint, completion_fingerprint, completed_result from asset_upload_callbacks where nonce = $1 and asset_id = $2 for update`,
+          [payload.callbackNonce, payload.assetId],
+        );
+        const state = callback.rows[0];
+        const fingerprint = callbackBusinessFingerprint(payload);
+        if (!state || state.business_fingerprint !== fingerprint) {
+          await client.query("rollback");
+          return requestError(reply, 409, "UPLOAD_CALLBACK_REPLAY", "Upload completion callback could not be matched.");
+        }
+        if (state.completed_result) {
+          if (state.completion_fingerprint !== callbackBusinessFingerprint(request.body)) {
+            await client.query("rollback");
+            return requestError(reply, 409, "UPLOAD_CALLBACK_REPLAY", "Upload completion callback could not be matched.");
+          }
+          await client.query("commit");
+          return state.completed_result;
+        }
+        if (!callbackTimestampIsFresh(envelope.timestamp)) {
+          await client.query("rollback");
+          return requestError(reply, 401, "UPLOAD_CALLBACK_EXPIRED", "Upload completion callback has expired.");
+        }
+        const completed = await client.query<AssetRow>(
+          `update assets set provider = 'vercel_blob', storage_key = $2, url = $3, content_type = $4, byte_size = $5, checksum = $6, visibility = $7, status = 'uploaded', metadata = metadata || $8::jsonb where id = $1 and status = 'pending' returning id, provider, storage_key, url, content_type, byte_size, checksum, visibility, context, status`,
+          [payload.assetId, storageKey, body.blob.url, blobContentType, blobSize, body.blob.etag ?? null, payload.visibility, JSON.stringify({ completedBy: "vercel_blob_callback", downloadUrl: body.blob.downloadUrl ?? null })],
+        );
+        const completedAsset = completed.rows[0];
+        if (!completedAsset) {
+          await client.query("rollback");
+          return requestError(reply, 404, "ASSET_NOT_FOUND", "Upload asset not found.");
+        }
+        const response = { asset: safeAsset(completedAsset), assetId: completedAsset.id };
+        await client.query(`update asset_upload_callbacks set completion_fingerprint = $2, completed_result = $3::jsonb, completed_at = now() where nonce = $1`, [payload.callbackNonce, callbackBusinessFingerprint(request.body), JSON.stringify(response)]);
+        await client.query("commit");
+        return response;
+      } catch (transactionError) {
+        await client.query("rollback").catch(() => undefined);
+        throw transactionError;
+      } finally {
+        client.release();
+      }
     }
 
     const result = await getDatabasePool().query<AssetRow>(

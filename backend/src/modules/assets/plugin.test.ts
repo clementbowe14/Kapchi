@@ -43,7 +43,8 @@ vi.mock("../../database/index.js", () => ({
   })
 }));
 
-vi.mock("node:crypto", () => ({
+vi.mock("node:crypto", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:crypto")>()),
   randomUUID: () => "0f82fc95-66a6-41b9-9ed5-05a5a20e6f61"
 }));
 

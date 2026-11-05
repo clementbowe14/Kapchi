@@ -15,6 +15,12 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev -- --hostname 127.0.0.1 --port 3100",
+    env: {
+      ...process.env,
+      // Browser E2E tests mock this same-origin surface; production uses the
+      // explicit Fastify origin configured by the deployment environment.
+      NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:3100/api",
+    },
     port: 3100,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

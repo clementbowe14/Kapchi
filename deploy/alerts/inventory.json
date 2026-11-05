@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "platform": "better-stack-and-digitalocean",
+  "alerts": [
+    {
+      "id": "backend-5xx",
+      "owner": "incident-owner",
+      "severity": "page",
+      "provider": "better-stack",
+      "signal": "backend HTTP completion logs",
+      "queryFile": "deploy/alerts/queries/backend-5xx.json",
+      "threshold": ">=5 responses OR >=2 percent",
+      "window": "5m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#backend-5xx",
+      "evidence": "EVIDENCE_URL_BACKEND_5XX"
+    },
+    {
+      "id": "public-readiness",
+      "owner": "incident-owner",
+      "severity": "page",
+      "provider": "better-stack",
+      "signal": "HTTPS /ready monitor",
+      "queryFile": "deploy/alerts/queries/public-readiness.json",
+      "threshold": "2 consecutive failures in both configured regions",
+      "window": "5m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#public-readiness",
+      "evidence": "EVIDENCE_URL_PUBLIC_READINESS"
+    },
+    {
+      "id": "postgresql",
+      "owner": "database-owner",
+      "severity": "page",
+      "provider": "digitalocean",
+      "signal": "managed database current connections / plan limit",
+      "queryFile": "deploy/alerts/queries/postgresql.json",
+      "threshold": ">=80 percent OR readiness failure",
+      "window": "5m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#postgresql",
+      "evidence": "EVIDENCE_URL_POSTGRESQL"
+    },
+    {
+      "id": "redis",
+      "owner": "incident-owner",
+      "severity": "page",
+      "provider": "better-stack",
+      "signal": "Redis readiness or structured connection errors",
+      "queryFile": "deploy/alerts/queries/redis.json",
+      "threshold": "continuous failure",
+      "window": "2m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#redis",
+      "evidence": "EVIDENCE_URL_REDIS"
+    },
+    {
+      "id": "stripe-webhook",
+      "owner": "payments-owner",
+      "severity": "page",
+      "provider": "better-stack",
+      "signal": "stripe.webhook.failed or exhausted inbox",
+      "queryFile": "deploy/alerts/queries/stripe-webhook.json",
+      "threshold": ">0",
+      "window": "5m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#stripe-webhook",
+      "evidence": "EVIDENCE_URL_STRIPE_WEBHOOK"
+    },
+    {
+      "id": "background-jobs",
+      "owner": "incident-owner",
+      "severity": "page",
+      "provider": "better-stack",
+      "signal": "operations.health.completed actionable=true or scheduled job failure",
+      "queryFile": "deploy/alerts/queries/background-jobs.json",
+      "threshold": ">0 exhausted or terminal-failed",
+      "window": "5m",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#background-jobs",
+      "evidence": "EVIDENCE_URL_BACKGROUND_JOBS"
+    },
+    {
+      "id": "deployment-migration",
+      "owner": "release-owner",
+      "severity": "block-release",
+      "provider": "digitalocean",
+      "signal": "deployment or migration job failure",
+      "queryFile": "deploy/alerts/queries/deployment-migration.json",
+      "threshold": "any failure",
+      "window": "immediate",
+      "destinationClass": "primary-and-secondary",
+      "runbookSection": "production-launch#deployment-and-migration",
+      "evidence": "EVIDENCE_URL_DEPLOYMENT_MIGRATION"
+    }
+  ]
+}

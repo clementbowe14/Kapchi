@@ -16,6 +16,32 @@ const requiredEnvironment: NodeJS.ProcessEnv = {
   STRIPE_WEBHOOK_SECRET: "whsec_test"
 };
 
+const productionEnvironment: NodeJS.ProcessEnv = {
+  ...requiredEnvironment,
+  ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT: "callback_current_2026",
+  ASSET_UPLOAD_CALLBACK_SECRET_CURRENT: "c".repeat(32),
+  BLOB_READ_WRITE_TOKEN: "vercel_blob_live_token",
+  CLERK_AUTHORIZED_PARTIES: "https://shop.kapchi.example",
+  CLERK_JWKS_URL: "https://clerk.kapchi.example/.well-known/jwks.json",
+  CLERK_JWT_AUDIENCE: "https://api.kapchi.example",
+  CLERK_JWT_ISSUER: "https://clerk.kapchi.example",
+  CLERK_PUBLISHABLE_KEY: "pk_live_kapchi",
+  CLERK_SECRET_KEY: "sk_live_kapchi",
+  CLERK_WEBHOOK_SECRET: "c".repeat(32),
+  CORS_ALLOWED_ORIGINS: "https://shop.kapchi.example",
+  DATABASE_DIRECT_URL: "postgres://user@db.example:5432/kapchi",
+  DATABASE_SSL_MODE: "require",
+  NODE_ENV: "production",
+  ORDER_LOOKUP_BASE_URL: "https://shop.kapchi.example",
+  REDIS_URL: "rediss://redis.example:6379",
+  RELEASE_IMAGE_DIGEST: "sha256:1234",
+  RELEASE_SHA: "abc1234",
+  STRIPE_CHECKOUT_CANCEL_URL: "https://shop.kapchi.example/cart",
+  STRIPE_CHECKOUT_SUCCESS_URL: "https://shop.kapchi.example/orders",
+  STRIPE_SECRET_KEY: "sk_live_123",
+  STRIPE_WEBHOOK_SECRET: "s".repeat(32)
+};
+
 for (const [key, value] of Object.entries({
   ...requiredEnvironment,
   NODE_ENV: "test"
@@ -97,19 +123,34 @@ describe("checkout redirect environment", () => {
 
   it("accepts explicit HTTPS checkout URLs in production", () => {
     const environment = validateEnvironment({
-      ...requiredEnvironment,
-      NODE_ENV: "production",
-      ORDER_LOOKUP_BASE_URL: "https://kapchi.test",
-      STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
-      STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
+      ...productionEnvironment
     });
 
     expect(environment.STRIPE_CHECKOUT_CANCEL_URL).toBe(
-      "https://kapchi.test/cart",
+      "https://shop.kapchi.example/cart",
     );
     expect(environment.STRIPE_CHECKOUT_SUCCESS_URL).toBe(
-      "https://kapchi.test/orders",
+      "https://shop.kapchi.example/orders",
     );
+  });
+
+  it("requires an exact secure production origin and independent Clerk trust claims", () => {
+    expect(validateEnvironment(productionEnvironment)).toMatchObject({
+      CLERK_AUTHORIZED_PARTIES: "https://shop.kapchi.example",
+      CLERK_JWT_AUDIENCE: "https://api.kapchi.example",
+      CORS_ALLOWED_ORIGINS: "https://shop.kapchi.example"
+    });
+
+    for (const invalidOrigin of ["*", "http://shop.kapchi.example", "https://shop.kapchi.example/path", "https://shop.kapchi.example,https://shop.kapchi.example"]) {
+      expect(() => validateEnvironment({ ...productionEnvironment, CORS_ALLOWED_ORIGINS: invalidOrigin })).toThrow(/CORS_ALLOWED_ORIGINS/);
+    }
+  });
+
+  it("rejects insecure production credentials and provider connections", () => {
+    expect(() => validateEnvironment({ ...productionEnvironment, STRIPE_SECRET_KEY: "sk_test_123" })).toThrow(/STRIPE_SECRET_KEY/);
+    expect(() => validateEnvironment({ ...productionEnvironment, REDIS_URL: "redis:\/\/redis.example:6379" })).toThrow(/REDIS_URL/);
+    expect(() => validateEnvironment({ ...productionEnvironment, DATABASE_SSL_MODE: "no-verify" })).toThrow(/DATABASE_SSL_MODE/);
+    expect(() => validateEnvironment({ ...productionEnvironment, ASSET_UPLOAD_CALLBACK_SECRET_CURRENT: "short" })).toThrow(/ASSET_UPLOAD_CALLBACK_SECRET_CURRENT/);
   });
 
   it("validates the transactional order lookup origin", () => {
@@ -134,19 +175,13 @@ describe("checkout redirect environment", () => {
 
   it("requires an HTTPS order lookup origin in production", () => {
     expect(() => validateEnvironment({
-      ...requiredEnvironment,
-      NODE_ENV: "production",
+      ...productionEnvironment,
       ORDER_LOOKUP_BASE_URL: "http://localhost:3000",
-      STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
-      STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
     })).toThrow(/ORDER_LOOKUP_BASE_URL/);
 
     expect(validateEnvironment({
-      ...requiredEnvironment,
-      NODE_ENV: "production",
+      ...productionEnvironment,
       ORDER_LOOKUP_BASE_URL: "https://shop.kapchi.test/base/path",
-      STRIPE_CHECKOUT_CANCEL_URL: "https://kapchi.test/cart",
-      STRIPE_CHECKOUT_SUCCESS_URL: "https://kapchi.test/orders"
     }).ORDER_LOOKUP_BASE_URL).toBe("https://shop.kapchi.test/base/path");
   });
 

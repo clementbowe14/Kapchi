@@ -1,0 +1,7 @@
+{
+  "provider": "better-stack",
+  "source": "fastify-json-logs-and-operations-health",
+  "query": "event:stripe.webhook.failed OR (event:operations.health.completed AND counts.stripeWebhooks:[1 TO *])",
+  "aggregation": ["count-greater-than-zero"],
+  "redaction": "never export payloads, signatures, customer data, or provider objects"
+}

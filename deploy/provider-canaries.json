@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "provider": "clerk",
+      "confirmation": "I_CONFIRM_KAPCHI_CLERK_CANARY",
+      "requiredEnvironment": ["PRODUCTION_API_URL", "CLERK_CANARY_TOKEN", "CLERK_JWT_ISSUER", "CLERK_JWT_AUDIENCE", "CLERK_AUTHORIZED_PARTIES"],
+      "allowedMutation": "none",
+      "evidenceFields": ["issuerFingerprint", "subjectFingerprint", "audienceResult", "authorizedPartyResult", "httpStatus", "wrongAudienceDenied", "requestId"],
+      "cleanup": "discard the short-lived token and retain no profile data",
+      "automation": "requires-runtime-identity-endpoint"
+    },
+    {
+      "provider": "stripe",
+      "confirmation": "I_CONFIRM_KAPCHI_STRIPE_CANARY",
+      "requiredEnvironment": ["PRODUCTION_API_URL", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_EXPECTED_ACCOUNT_FINGERPRINT"],
+      "allowedMutation": "one reserved synthetic inbox event only",
+      "evidenceFields": ["accountFingerprint", "liveMode", "workbenchEndpointEvidence", "syntheticEventId", "ingressSource", "processingStatus", "commerceMutationCount", "requestId"],
+      "cleanup": "retain only the terminal redacted idempotency record",
+      "automation": "requires-runtime-launch-canary-handler"
+    },
+    {
+      "provider": "blob",
+      "confirmation": "I_CONFIRM_KAPCHI_BLOB_CANARY",
+      "requiredEnvironment": ["PRODUCTION_API_URL", "BLOB_CANARY_ADMIN_TOKEN", "BLOB_CANARY_STORE_FINGERPRINT"],
+      "allowedMutation": "one launch-canary/<release-sha>/<random-id> object and canary metadata",
+      "evidenceFields": ["objectHash", "contentType", "anonymousDenied", "authorizedReadSucceeded", "deleted", "providerEvidence"],
+      "cleanup": "delete provider object and mark or remove canary metadata",
+      "automation": "requires-runtime-canary-upload-and-cleanup-endpoints"
+    },
+    {
+      "provider": "messaging",
+      "confirmation": "I_CONFIRM_KAPCHI_MESSAGING_CANARY",
+      "requiredEnvironment": ["PRODUCTION_API_URL", "MESSAGE_CANARY_DESTINATION", "MESSAGE_CANARY_ADMIN_TOKEN"],
+      "allowedMutation": "one delivery to the deployment allowlisted internal destination",
+      "evidenceFields": ["messageId", "providerId", "queued", "sent", "delivered", "webhookVerified", "requestId"],
+      "cleanup": "delete provider test message where supported and retain redacted audit state",
+      "automation": "requires-runtime-canary-queue-endpoint"
+    }
+  ]
+}

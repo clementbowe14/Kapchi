@@ -1,0 +1,7 @@
+{
+  "provider": "better-stack",
+  "source": "worker-json-logs-and-operations-health",
+  "query": "event:operations.health.completed AND actionable:true OR event:worker.operation.failed",
+  "aggregation": ["count-greater-than-zero"],
+  "redaction": "counts and stable operation/error codes only"
+}
