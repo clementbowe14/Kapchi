@@ -11,7 +11,7 @@ const required = {
   "production-launch.md": ["Build One Immutable Release", "Migrate And Deploy Backend Components", "Execute Provider Canaries", "Observe And Decide"],
   "production-backup-restore.md": ["Disposable Target Preparation", "restore-drill.mjs guard", "No plaintext dump is written", "Never automate database deletion"],
   "production-rollback.md": ["Compatibility Gate", "Application Rollback", "Roll Forward And Write Freeze"],
-  "production-alerts.md": ["Better Stack", "DigitalOcean", "Public Readiness", "Deployment And Migration"],
+  "production-alerts.md": ["Better Stack", "Vercel Functions And Cron", "Public Readiness", "Deployment And Migration"],
   "acceptance-evidence.md": ["Repository proof", "Production proof", "Issue 114 remains open"]
 };
 

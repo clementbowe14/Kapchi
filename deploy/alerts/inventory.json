@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "platform": "better-stack-and-digitalocean",
+  "platform": "vercel-better-stack-and-managed-providers",
   "alerts": [
     {
       "id": "backend-5xx",
@@ -32,7 +32,7 @@
       "id": "postgresql",
       "owner": "database-owner",
       "severity": "page",
-      "provider": "digitalocean",
+      "provider": "managed-postgresql",
       "signal": "managed database current connections / plan limit",
       "queryFile": "deploy/alerts/queries/postgresql.json",
       "threshold": ">=80 percent OR readiness failure",
@@ -84,7 +84,7 @@
       "id": "deployment-migration",
       "owner": "release-owner",
       "severity": "block-release",
-      "provider": "digitalocean",
+      "provider": "vercel",
       "signal": "deployment or migration job failure",
       "queryFile": "deploy/alerts/queries/deployment-migration.json",
       "threshold": "any failure",

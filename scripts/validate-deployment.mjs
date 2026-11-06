@@ -6,6 +6,14 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+const expectedCrons = new Map([
+  ["/internal/cron/messages", "* * * * *"],
+  ["/internal/cron/refunds", "* * * * *"],
+  ["/internal/cron/inventory", "*/5 * * * *"],
+  ["/internal/cron/maintenance", "*/15 * * * *"],
+  ["/internal/cron/health", "*/15 * * * *"]
+]);
+
 const forbiddenSecretValuePatterns = [
   /sk_(?:live|test)_[A-Za-z0-9]+/,
   /whsec_[A-Za-z0-9]+/,
@@ -14,68 +22,63 @@ const forbiddenSecretValuePatterns = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/
 ];
 
-export function validateDeploymentTemplate(text) {
+function assertNoSecretLikeValues(text, label) {
   for (const pattern of forbiddenSecretValuePatterns) {
-    assert.ok(!pattern.test(text), `deployment template contains a secret-like value: ${pattern}`);
+    assert.ok(!pattern.test(text), `${label} contains a secret-like value: ${pattern}`);
   }
-  for (const fragment of [
-    "name: kapchi-api",
-    "name: kapchi-worker",
-    "name: migrate",
-    "kind: PRE_DEPLOY",
-    "name: operations-health",
-    "kind: SCHEDULED",
-    'cron: "*/15 * * * *"',
-    "digest: RELEASE_IMAGE_DIGEST",
-    "enabled: false",
-    "http_path: /ready",
-    "http_path: /health",
-    "node dist/database/migrate.js apply && node dist/database/migrate.js check",
-    "node dist/worker.js",
-    "node dist/operations/health.js",
-    "grace_period_seconds:",
-    "rule: DEPLOYMENT_FAILED",
-    "rule: DOMAIN_FAILED",
-    "operator: GREATER_THAN",
-    "window: FIVE_MINUTES"
-  ]) {
-    assert.ok(text.includes(fragment), `deployment template is missing: ${fragment}`);
-  }
-  assert.ok(!/tag:\s*(?:latest|main)/.test(text), "deployment image must be digest-pinned");
-  assert.ok((text.match(/\*backend_image/g) ?? []).length >= 3, "worker and jobs must reuse the API image");
-  return { componentCount: 4, imageMode: "digest-pinned" };
 }
 
-export function validateBackendDockerfile(text) {
+export function validateFastifyEntrypoint(text) {
   for (const fragment of [
-    "FROM node:24.10.0-bookworm-slim AS build",
-    "npm ci",
-    "npm run build",
-    "npm prune --omit=dev",
-    "cp src/database/migrations/*.sql dist/database/migrations/",
-    "COPY --chown=node:node --from=build /app/dist ./dist",
-    "USER node",
-    "EXPOSE 4000",
-    'CMD ["node", "dist/server.js"]'
+    'import { buildServer } from "./app.js"',
+    "const server = await buildServer()",
+    "await server.listen({"
   ]) {
-    assert.ok(text.includes(fragment), `backend Dockerfile is missing: ${fragment}`);
+    assert.ok(text.includes(fragment), `Fastify entrypoint is missing: ${fragment}`);
   }
-  assert.ok(!/COPY\s+\.\s+\./.test(text), "backend Dockerfile must not copy the whole repository");
-  assert.ok(!/(?:ARG|ENV)\s+(?:.*SECRET|.*TOKEN|DATABASE_URL)/.test(text), "backend Dockerfile must not accept secret build arguments");
-  return { runtimeUser: "node", port: 4000 };
+  assert.ok(!text.includes("createServer("), "Fastify entrypoint must use zero-configuration framework detection");
+  return { entrypoint: "src/server.ts", platform: "vercel-zero-config" };
+}
+
+export function validateProCronTemplate(text) {
+  assertNoSecretLikeValues(text, "Vercel cron template");
+  const configuration = JSON.parse(text);
+  assert.equal(configuration.$schema, "https://openapi.vercel.sh/vercel.json");
+  assert.equal(configuration.crons?.length, expectedCrons.size, "unexpected planned cron route count");
+  for (const cron of configuration.crons) {
+    assert.equal(expectedCrons.get(cron.path), cron.schedule, `unexpected cron definition for ${cron.path}`);
+  }
+  return { plannedCronCount: configuration.crons.length, requiredPlan: "pro-or-external-scheduler" };
+}
+
+export function validateMigrationWorkflow(text) {
+  for (const fragment of [
+    "workflow_dispatch:",
+    "environment: production",
+    "group: production-database-migration",
+    "cancel-in-progress: false",
+    "VERCEL_BACKEND_PROJECT_ID",
+    "vercel@65.9.0 pull",
+    "vercel@65.9.0 env run -e production -- npm run db:migrate:apply",
+    "vercel@65.9.0 env run -e production -- npm run db:migrate:check"
+  ]) {
+    assert.ok(text.includes(fragment), `migration workflow is missing: ${fragment}`);
+  }
+  assert.ok(!text.includes("DATABASE_URL:"), "migration workflow must not copy database secrets into GitHub");
+  return { migrationEnvironment: "vercel-production", serialized: true };
 }
 
 async function main() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const filePath = process.argv[2] ?? path.join(root, "deploy/digitalocean.backend.template.yaml");
-  const result = validateDeploymentTemplate(await readFile(filePath, "utf8"));
-  const docker = validateBackendDockerfile(await readFile(path.join(root, "backend/Dockerfile"), "utf8"));
-  console.log(JSON.stringify({ event: "deployment.template.validated", ...result, docker }));
+  const configuration = validateFastifyEntrypoint(await readFile(path.join(root, "backend/src/server.ts"), "utf8"));
+  const cronTemplate = validateProCronTemplate(await readFile(path.join(root, "deploy/vercel.crons.pro.template.json"), "utf8"));
+  const workflow = validateMigrationWorkflow(await readFile(path.join(root, ".github/workflows/production-migrate.yml"), "utf8"));
+  console.log(JSON.stringify({ event: "deployment.configuration.validated", ...configuration, ...cronTemplate, ...workflow }));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
-    console.error(JSON.stringify({ event: "deployment.template.invalid", errorCode: "DEPLOYMENT_TEMPLATE_INVALID", reason: error.message }));
+    console.error(JSON.stringify({ event: "deployment.configuration.invalid", errorCode: "DEPLOYMENT_CONFIGURATION_INVALID", reason: error.message }));
     process.exitCode = 1;
   });
 }

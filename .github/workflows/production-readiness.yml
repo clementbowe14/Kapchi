@@ -23,7 +23,7 @@ jobs:
           node-version: 24
       - name: Run deployment and runbook tests
         run: node --test scripts/*.test.mjs
-      - name: Validate DigitalOcean template
+      - name: Validate Vercel backend configuration
         run: node scripts/validate-deployment.mjs
       - name: Validate alert definitions
         run: node scripts/validate-alerts.mjs

@@ -2,8 +2,8 @@
 
 Create an immutable copy of `launch-record.json` for each release. Replace every
 placeholder, keep secrets and customer data out of the record, and attach only
-HTTPS or provider-console evidence references. The API and worker image digests
-must be identical and every evidence item must use the release's full Git SHA.
+HTTPS or provider-console evidence references. Record the distinct client and
+backend Vercel deployment IDs, and use the release's full Git SHA everywhere.
 
 Validate the working record before any decision:
 

@@ -18,7 +18,12 @@ const environmentSchema = Joi.object({
     .default("info"),
   CORS_ALLOWED_ORIGINS: Joi.string().trim().default("http://localhost:3000,http://127.0.0.1:3000"),
   RELEASE_SHA: Joi.string().trim().optional(),
-  RELEASE_IMAGE_DIGEST: Joi.string().trim().optional(),
+  RELEASE_DEPLOYMENT_ID: Joi.string().trim().optional(),
+  VERCEL: Joi.string().valid("1").optional(),
+  VERCEL_ENV: Joi.string().valid("production", "preview", "development").optional(),
+  VERCEL_GIT_COMMIT_SHA: Joi.string().trim().optional(),
+  VERCEL_DEPLOYMENT_ID: Joi.string().trim().optional(),
+  CRON_SECRET: Joi.string().trim().optional(),
 
   CLERK_PUBLISHABLE_KEY: Joi.string().trim().required(),
   CLERK_SECRET_KEY: Joi.string().trim().required(),
@@ -144,6 +149,7 @@ type EnvironmentShape = {
   DATABASE_MAX_CONNECTIONS: number;
   DATABASE_RESERVED_CONNECTIONS: number;
   CORS_ALLOWED_ORIGINS: string;
+  CRON_SECRET?: string;
   DATABASE_MAX_APP_INSTANCES: number;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -157,7 +163,7 @@ type EnvironmentShape = {
   ORDER_LOOKUP_BASE_URL: string;
   PORT: number;
   REDIS_URL: string;
-  RELEASE_IMAGE_DIGEST?: string;
+  RELEASE_DEPLOYMENT_ID?: string;
   RELEASE_SHA?: string;
   STRIPE_API_VERSION: string;
   STRIPE_CHECKOUT_CANCEL_URL: string;
@@ -165,6 +171,10 @@ type EnvironmentShape = {
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   VERCEL_OIDC_TOKEN?: string;
+  VERCEL?: "1";
+  VERCEL_DEPLOYMENT_ID?: string;
+  VERCEL_ENV?: "development" | "preview" | "production";
+  VERCEL_GIT_COMMIT_SHA?: string;
 };
 
 type ValidatedEnvironmentShape = EnvironmentShape & {
@@ -244,8 +254,13 @@ function productionConfigurationErrors(environment: EnvironmentShape) {
   require("DATABASE_DIRECT_URL", Boolean(environment.DATABASE_DIRECT_URL));
   require("CLERK_JWT_AUDIENCE", Boolean(environment.CLERK_JWT_AUDIENCE));
   require("CLERK_AUTHORIZED_PARTIES", parties.length > 0);
-  require("RELEASE_SHA", Boolean(environment.RELEASE_SHA));
-  require("RELEASE_IMAGE_DIGEST", Boolean(environment.RELEASE_IMAGE_DIGEST));
+  if (!(environment.RELEASE_SHA || environment.VERCEL_GIT_COMMIT_SHA)) {
+    errors.push("- RELEASE_SHA: set RELEASE_SHA or expose VERCEL_GIT_COMMIT_SHA");
+  }
+  if (!(environment.RELEASE_DEPLOYMENT_ID || environment.VERCEL_DEPLOYMENT_ID)) {
+    errors.push("- RELEASE_DEPLOYMENT_ID: set RELEASE_DEPLOYMENT_ID or expose VERCEL_DEPLOYMENT_ID");
+  }
+  require("CRON_SECRET", Boolean(environment.CRON_SECRET));
   require("BLOB_READ_WRITE_TOKEN", Boolean(environment.BLOB_READ_WRITE_TOKEN));
   require("ASSET_UPLOAD_CALLBACK_SECRET_CURRENT", Boolean(environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT));
   require("ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT", Boolean(environment.ASSET_UPLOAD_CALLBACK_KEY_ID_CURRENT));
@@ -295,6 +310,7 @@ function productionConfigurationErrors(environment: EnvironmentShape) {
   secureSecret("ASSET_UPLOAD_CALLBACK_SECRET_CURRENT", environment.ASSET_UPLOAD_CALLBACK_SECRET_CURRENT);
   secureSecret("ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS", environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS);
   secureSecret("MESSAGE_WEBHOOK_SECRET", environment.MESSAGE_WEBHOOK_SECRET);
+  secureSecret("CRON_SECRET", environment.CRON_SECRET);
 
   const previousFields = [
     environment.ASSET_UPLOAD_CALLBACK_SECRET_PREVIOUS,
@@ -410,8 +426,8 @@ export const config = Object.freeze({
     logLevel: environment.LOG_LEVEL,
     nodeEnv: environment.NODE_ENV,
     port: environment.PORT,
-    releaseImageDigest: environment.RELEASE_IMAGE_DIGEST ?? "development",
-    releaseSha: environment.RELEASE_SHA ?? "development"
+    releaseDeploymentId: environment.RELEASE_DEPLOYMENT_ID ?? environment.VERCEL_DEPLOYMENT_ID ?? "development",
+    releaseSha: environment.RELEASE_SHA ?? environment.VERCEL_GIT_COMMIT_SHA ?? "development"
   },
   assets: {
     allowedImageContentTypes: environment.ASSET_UPLOAD_ALLOWED_IMAGE_TYPES.split(
@@ -481,6 +497,9 @@ export const config = Object.freeze({
       sms: environment.MESSAGE_FROM_SMS
     },
     webhookSecret: environment.MESSAGE_WEBHOOK_SECRET
+  },
+  operations: {
+    cronSecret: environment.CRON_SECRET
   },
   payments: {
     checkout: {

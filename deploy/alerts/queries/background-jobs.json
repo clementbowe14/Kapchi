@@ -1,7 +1,7 @@
 {
   "provider": "better-stack",
-  "source": "worker-json-logs-and-operations-health",
-  "query": "event:operations.health.completed AND actionable:true OR event:worker.operation.failed",
+  "source": "vercel-fastify-json-logs-and-operations-health",
+  "query": "event:cron.operation.succeeded AND operation:health AND actionable:true OR event:cron.operation.failed OR event:cron.lock.acquire_failed",
   "aggregation": ["count-greater-than-zero"],
   "redaction": "counts and stable operation/error codes only"
 }

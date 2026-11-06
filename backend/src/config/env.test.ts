@@ -34,8 +34,9 @@ const productionEnvironment: NodeJS.ProcessEnv = {
   NODE_ENV: "production",
   ORDER_LOOKUP_BASE_URL: "https://shop.kapchi.example",
   REDIS_URL: "rediss://redis.example:6379",
-  RELEASE_IMAGE_DIGEST: "sha256:1234",
+  RELEASE_DEPLOYMENT_ID: "dpl_test_fixture",
   RELEASE_SHA: "abc1234",
+  CRON_SECRET: "r".repeat(32),
   STRIPE_CHECKOUT_CANCEL_URL: "https://shop.kapchi.example/cart",
   STRIPE_CHECKOUT_SUCCESS_URL: "https://shop.kapchi.example/orders",
   STRIPE_SECRET_KEY: "sk_live_123",
@@ -134,6 +135,23 @@ describe("checkout redirect environment", () => {
     );
   });
 
+  it("accepts Vercel system release identity in production", () => {
+    const environment = { ...productionEnvironment };
+    delete environment.RELEASE_DEPLOYMENT_ID;
+    delete environment.RELEASE_SHA;
+
+    expect(validateEnvironment({
+      ...environment,
+      VERCEL: "1",
+      VERCEL_DEPLOYMENT_ID: "dpl_system_fixture",
+      VERCEL_ENV: "production",
+      VERCEL_GIT_COMMIT_SHA: "a".repeat(40)
+    })).toMatchObject({
+      VERCEL_DEPLOYMENT_ID: "dpl_system_fixture",
+      VERCEL_GIT_COMMIT_SHA: "a".repeat(40)
+    });
+  });
+
   it("requires an exact secure production origin and independent Clerk trust claims", () => {
     expect(validateEnvironment(productionEnvironment)).toMatchObject({
       CLERK_AUTHORIZED_PARTIES: "https://shop.kapchi.example",
@@ -151,6 +169,7 @@ describe("checkout redirect environment", () => {
     expect(() => validateEnvironment({ ...productionEnvironment, REDIS_URL: "redis:\/\/redis.example:6379" })).toThrow(/REDIS_URL/);
     expect(() => validateEnvironment({ ...productionEnvironment, DATABASE_SSL_MODE: "no-verify" })).toThrow(/DATABASE_SSL_MODE/);
     expect(() => validateEnvironment({ ...productionEnvironment, ASSET_UPLOAD_CALLBACK_SECRET_CURRENT: "short" })).toThrow(/ASSET_UPLOAD_CALLBACK_SECRET_CURRENT/);
+    expect(() => validateEnvironment({ ...productionEnvironment, CRON_SECRET: "short" })).toThrow(/CRON_SECRET/);
   });
 
   it("validates the transactional order lookup origin", () => {

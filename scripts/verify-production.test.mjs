@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { verifyProduction } from "./verify-production.mjs";
 
 const releaseSha = "a".repeat(40);
-const releaseImageDigest = `sha256:${"b".repeat(64)}`;
+const releaseDeploymentId = "dpl_1234567890abcdef";
 
 function response(body, { status = 200, headers = {} } = {}) {
   const payload = status === 204 ? null : (typeof body === "string" ? body : JSON.stringify(body));
@@ -14,13 +14,13 @@ function successfulFetch() {
   return async (url, options = {}) => {
     const origin = options.headers?.origin;
     if (url.endsWith("/health")) {
-      return response({ status: "ok", releaseSha, releaseImageDigest });
+      return response({ status: "ok", releaseSha, releaseDeploymentId });
     }
     if (url.endsWith("/ready")) {
       return response({
         status: "ready",
         releaseSha,
-        releaseImageDigest,
+        releaseDeploymentId,
         dependencies: {
           database: "ready",
           redis: "ready",
@@ -49,7 +49,7 @@ test("verifies release identity, readiness, CORS, protected route, and storefron
     apiUrl: "https://api.example.test",
     clientUrl: "https://shop.example.test",
     releaseSha,
-    releaseImageDigest,
+    releaseDeploymentId,
     fetchImpl: successfulFetch()
   });
   assert.deepEqual(result.checks, ["health", "readiness", "cors-allow", "cors-deny", "protected-route", "storefront"]);
@@ -62,7 +62,7 @@ test("rejects an unready dependency without leaking its body", async () => {
       apiUrl: "https://api.example.test",
       clientUrl: "https://shop.example.test",
       releaseSha,
-      releaseImageDigest,
+      releaseDeploymentId,
       fetchImpl: async (url, options) => url.endsWith("/ready")
         ? response({ status: "unready", internal: "sensitive" }, { status: 503 })
         : fetchImpl(url, options)
@@ -77,7 +77,7 @@ test("rejects non-HTTPS production origins", async () => {
       apiUrl: "http://api.example.test",
       clientUrl: "https://shop.example.test",
       releaseSha,
-      releaseImageDigest,
+      releaseDeploymentId,
       fetchImpl: successfulFetch()
     }),
     /must use HTTPS/,
@@ -90,7 +90,7 @@ test("bounds a hung external check", async () => {
       apiUrl: "https://api.example.test",
       clientUrl: "https://shop.example.test",
       releaseSha,
-      releaseImageDigest,
+      releaseDeploymentId,
       timeoutMs: 100,
       fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
@@ -107,7 +107,7 @@ test("rejects a streamed response larger than the evidence bound", async () => {
       apiUrl: "https://api.example.test",
       clientUrl: "https://shop.example.test",
       releaseSha,
-      releaseImageDigest,
+      releaseDeploymentId,
       fetchImpl: async (url, options) => url.endsWith("/health")
         ? response("x".repeat(64 * 1024 + 1))
         : fetchImpl(url, options)
