@@ -47,7 +47,12 @@ function createOrder(overrides: Partial<CustomerOrder> = {}): CustomerOrder {
           embroidery: "Gold thread",
           liningColor: "Ivory",
         },
-        fabricSnapshot: { color: "Ivory satin", internalMetadata: "hidden" },
+        fabricSnapshot: {
+          id: "fabric-ivory-satin",
+          internalMetadata: "hidden",
+          name: "Ivory satin",
+          sku: "IVORY-SATIN-INTERNAL",
+        },
         id: "item-1",
         listingSnapshot: { title: "Graduation stole" },
         quantity: 2,
@@ -136,7 +141,10 @@ describe("OrderLookupClient", () => {
     });
     expect(await screen.findByText("Graduation stole")).toBeInTheDocument();
     expect(screen.getByText("Gold thread")).toBeInTheDocument();
+    expect(screen.getByText("Ivory satin")).toBeInTheDocument();
     expect(screen.queryByText("do not show this")).not.toBeInTheDocument();
+    expect(screen.queryByText("fabric-ivory-satin")).not.toBeInTheDocument();
+    expect(screen.queryByText("IVORY-SATIN-INTERNAL")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "UPS 1Z999" })).toHaveAttribute(
       "href",
       "https://example.com/track",
