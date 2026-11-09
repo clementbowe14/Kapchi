@@ -21,7 +21,7 @@ DATABASE_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/
 DATABASE_DIRECT_URL=postgresql://kapchi_local:replace_me_local_password@localhost:5432/kapchi_local
 ```
 
-Start the backend from the backend workspace:
+Start Stripe forwarding and the backend together from the backend workspace:
 
 ```bash
 cd backend
@@ -31,7 +31,7 @@ npm run db:fixtures:init -- --confirm-database kapchi_local
 npm run db:seed:local
 npm run db:seed:verify
 npm run stripe:catalog:sync:local
-npm run dev
+npm run dev:stripe
 ```
 
 The catalog sync must complete before using local seed listings with hosted
@@ -48,15 +48,12 @@ reference them without catalog-unavailable evidence. Resolve or retire those
 orders, then rerun the sync; the protected cleanup is retried without rewriting
 historical order items.
 
-In another terminal, start Stripe CLI forwarding to the local webhook route:
-
-```bash
-stripe listen --forward-to localhost:4000/payments/webhooks/stripe
-```
-
-Copy the webhook signing secret printed by `stripe listen` into
-`STRIPE_WEBHOOK_SECRET` in `backend/.env`, then restart the backend so the new
-secret is loaded.
+`dev:stripe` authenticates Stripe CLI with the test-mode `STRIPE_SECRET_KEY`
+already loaded from `backend/.env`, starts webhook forwarding, and waits for the
+current listener signing secret before launching Fastify. The secret is kept in
+the child-process environment and redacted from terminal output, so a stale
+`STRIPE_WEBHOOK_SECRET` value cannot break local payment confirmation. Use
+`npm run dev` when Stripe webhook forwarding is not needed.
 
 ## Security Checks
 

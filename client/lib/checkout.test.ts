@@ -54,6 +54,17 @@ describe("checkout helpers", () => {
     ).toEqual({ phone: "Enter your phone number." });
   });
 
+  it("accepts reserved test domains used by local Stripe checkout", () => {
+    expect(
+      validateCheckoutContact({
+        customerEmail: "sandbox-order@kapchi.test",
+        customerPhone: "+1 (555) 010-1010",
+        isSignedIn: false,
+        preferredContactMethod: "email",
+      }),
+    ).toEqual({});
+  });
+
   it("accepts only HTTPS Stripe-hosted checkout URLs", () => {
     expect(
       getSafeHostedCheckoutUrl(
