@@ -253,7 +253,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
       payload: {
         cartId: "53fcaccc-1baa-4072-abbb-c51d20f3588b",
         cartRevision: 7,
-        customerEmail: " Customer@Example.com ",
+        customerEmail: " Sandbox-Order@Kapchi.Test ",
         preferredContactMethod: "email",
         policyAssertion
       },
@@ -279,7 +279,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
         expectedRevision: 7
       },
       {
-        customerEmail: "customer@example.com",
+        customerEmail: "sandbox-order@kapchi.test",
         customerPhone: null,
         preferredContactMethod: "email"
       },

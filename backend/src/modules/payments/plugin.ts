@@ -91,7 +91,11 @@ function normalizedPhone(value: string) {
 const checkoutSchema = Joi.object<CheckoutRequest>({
   cartId: Joi.string().guid().optional(),
   cartRevision: Joi.number().integer().min(0).optional(),
-  customerEmail: Joi.string().trim().lowercase().email().required(),
+  customerEmail: Joi.string()
+    .trim()
+    .lowercase()
+    .email({ tlds: { allow: false } })
+    .required(),
   customerPhone: Joi.string()
     .trim()
     .max(64)

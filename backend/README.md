@@ -103,6 +103,19 @@ The command accepts only a local development/test database and a Stripe
 test-mode credential. See [Local seed data](docs/local-seed-data.md) for its
 safety, retry, and failed-checkout recovery behavior.
 
+For an end-to-end local checkout, start Stripe CLI forwarding and Fastify with
+one command:
+
+```bash
+npm run dev:stripe
+```
+
+This command derives a fresh webhook signing secret from `stripe listen`, keeps
+it out of `.env` and terminal output, and injects it only into the Fastify child
+process. It requires Stripe CLI and a test-mode `STRIPE_SECRET_KEY`; it refuses
+live API keys. See [Stripe payment verification](docs/payment-verification.md)
+for the complete sandbox checklist.
+
 ## Local PostgreSQL Setup
 
 The backend expects a PostgreSQL database available through `DATABASE_URL`. The

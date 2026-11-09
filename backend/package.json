@@ -19,6 +19,7 @@
     "db:seed:local": "tsx src/database/seed.ts",
     "db:seed:verify": "tsx src/scripts/verify-fixture-database.ts",
     "dev": "tsx watch src/server.ts",
+    "dev:stripe": "tsx src/scripts/dev-with-stripe.ts",
     "stripe:catalog:sync:local": "tsx src/scripts/sync-stripe-test-catalog.ts",
     "refunds:reconcile": "tsx src/scripts/reconcile-refunds.ts",
     "shipping:exports:purge": "tsx src/scripts/purge-shipping-exports.ts",
