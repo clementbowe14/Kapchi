@@ -46,6 +46,7 @@ type RequestState = "idle" | "loading" | "success" | "error";
 
 const SENSITIVE_KEY_PATTERN =
   /(admin|internal|metadata|secret|token|stripe|paymentintent|payment_intent|clerk|userid|user_id|customerid|customer_id|note|notes)/i;
+const FABRIC_CATALOG_KEY_PATTERN = /^(id|sku)$/i;
 
 function humanizeKey(key: string) {
   return key
@@ -118,7 +119,11 @@ export function getOrderItemTitle(item: CustomerOrderItem) {
   );
 }
 
-export function getOrderSummaryRows(value: unknown, limit = 8) {
+export function getOrderSummaryRows(
+  value: unknown,
+  limit = 8,
+  hiddenKeyPattern?: RegExp,
+) {
   if (typeof value === "string") {
     const trimmed = value.trim();
     return trimmed ? [{ label: "Details", value: trimmed }] : [];
@@ -133,7 +138,7 @@ export function getOrderSummaryRows(value: unknown, limit = 8) {
       .slice(0, limit)
       .map((entry, index) => ({
         label: `Option ${index + 1}`,
-        value: stringifySummaryValue(entry),
+        value: stringifySummaryValue(entry, hiddenKeyPattern),
       }))
       .filter((row) => row.value);
   }
@@ -143,16 +148,22 @@ export function getOrderSummaryRows(value: unknown, limit = 8) {
   }
 
   return Object.entries(value)
-    .filter(([key]) => !SENSITIVE_KEY_PATTERN.test(key))
+    .filter(
+      ([key]) =>
+        !SENSITIVE_KEY_PATTERN.test(key) && !hiddenKeyPattern?.test(key),
+    )
     .map(([key, entry]) => ({
       label: humanizeKey(key),
-      value: stringifySummaryValue(entry),
+      value: stringifySummaryValue(entry, hiddenKeyPattern),
     }))
     .filter((row) => row.value)
     .slice(0, limit);
 }
 
-function stringifySummaryValue(value: unknown): string {
+function stringifySummaryValue(
+  value: unknown,
+  hiddenKeyPattern?: RegExp,
+): string {
   if (value === null || typeof value === "undefined") {
     return "";
   }
@@ -166,14 +177,20 @@ function stringifySummaryValue(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
-    return value.map(stringifySummaryValue).filter(Boolean).join(", ");
+    return value
+      .map((entry) => stringifySummaryValue(entry, hiddenKeyPattern))
+      .filter(Boolean)
+      .join(", ");
   }
 
   if (isRecord(value)) {
     return Object.entries(value)
-      .filter(([key]) => !SENSITIVE_KEY_PATTERN.test(key))
+      .filter(
+        ([key]) =>
+          !SENSITIVE_KEY_PATTERN.test(key) && !hiddenKeyPattern?.test(key),
+      )
       .map(([key, entry]) => {
-        const summary = stringifySummaryValue(entry);
+        const summary = stringifySummaryValue(entry, hiddenKeyPattern);
         return summary ? `${humanizeKey(key)}: ${summary}` : "";
       })
       .filter(Boolean)
@@ -328,7 +345,11 @@ function InfoCell({
 
 function OrderItemRow({ item }: { item: CustomerOrderItem }) {
   const customizationRows = getOrderSummaryRows(item.customizationSummary);
-  const fabricRows = getOrderSummaryRows(item.fabricSnapshot, 3);
+  const fabricRows = getOrderSummaryRows(
+    item.fabricSnapshot,
+    3,
+    FABRIC_CATALOG_KEY_PATTERN,
+  );
 
   return (
     <div className="space-y-4 px-4 py-5">
