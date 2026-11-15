@@ -1,0 +1,47 @@
+{
+  "recordVersion": 1,
+  "recordType": "prepared",
+  "attemptId": "stg_REPLACE_WITH_UNIQUE_ATTEMPT_ID",
+  "registryVersion": 1,
+  "environment": "staging",
+  "candidateSha": "0000000000000000000000000000000000000000",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "expiresAt": "2026-01-02T00:00:00.000Z",
+  "workflow": {
+    "repository": "clementbowe14/Kapchi",
+    "workflowName": "staging-release-gate",
+    "runId": 1,
+    "runAttempt": 1,
+    "actor": "github-actions",
+    "environment": "staging"
+  },
+  "deployments": {
+    "storefront": {
+      "teamId": "REPLACE_WITH_VERCEL_TEAM_ID",
+      "projectId": "REPLACE_WITH_STOREFRONT_PROJECT_ID",
+      "deploymentId": "dpl_REPLACE_WITH_STOREFRONT_DEPLOYMENT_ID",
+      "immutableUrl": "https://storefront-deployment.vercel.app/release",
+      "aliasUrl": "https://staging.example.invalid/release",
+      "candidateSha": "0000000000000000000000000000000000000000"
+    },
+    "api": {
+      "teamId": "REPLACE_WITH_VERCEL_TEAM_ID",
+      "projectId": "REPLACE_WITH_API_PROJECT_ID",
+      "deploymentId": "dpl_REPLACE_WITH_API_DEPLOYMENT_ID",
+      "immutableUrl": "https://api-deployment.vercel.app/health",
+      "aliasUrl": "https://api-staging.example.invalid/health",
+      "candidateSha": "0000000000000000000000000000000000000000"
+    }
+  },
+  "providerIdentityHashes": {
+    "database": "0000000000000000000000000000000000000000000000000000000000000000",
+    "stripe": "0000000000000000000000000000000000000000000000000000000000000000",
+    "clerk": "0000000000000000000000000000000000000000000000000000000000000000",
+    "blob": "0000000000000000000000000000000000000000000000000000000000000000",
+    "redis": "0000000000000000000000000000000000000000000000000000000000000000",
+    "messaging": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "providerObjectBindings": [],
+  "automatedEvidenceArtifacts": [],
+  "scenarioResults": []
+}
