@@ -1,230 +1,386 @@
-# Exhibit A: Kapchi Software Features and Delivery Schedule
+# Exhibit A: Kapchi Website Features
 
-**Contract attachment type:** Software feature schedule / statement-of-work exhibit  
-**Application:** Kapchi Store  
-**Repository:** `clementbowe14/Kapchi`  
-**Delivered baseline:** `main` at commit `97412a3`  
-**Status date:** November 15, 2026  
-**Client:** `[CLIENT LEGAL NAME]`  
-**Developer:** `[DEVELOPER LEGAL NAME]`  
+**Application:** Kapchi Store
+
+**Document purpose:** Plain-language list of completed and planned work
+
+**Completed-work reference:** `main` at commit `97412a3`
+
+**Status date:** November 15, 2026
+
+**Client:** `[CLIENT LEGAL NAME]`
+
+**Developer:** `[DEVELOPER LEGAL NAME]`
+
 **Effective date:** `[EFFECTIVE DATE]`
 
-> This exhibit describes product scope and acceptance boundaries. It is not a
-> substitute for legal advice or for the agreement's payment, ownership,
-> warranty, indemnity, privacy, support, termination, or governing-law terms.
-> Counsel should review the completed agreement before signature.
+This document may be attached to a software development agreement or statement
+of work. It explains what has already been built, what still needs preparation
+before launch, and what is only planned for the future.
 
-## 1. Purpose and Interpretation
+The parties should complete the names, dates, payment terms, ownership terms,
+support terms, and other legal terms in the main agreement. A lawyer should
+review the final agreement before it is signed.
 
-This exhibit may be attached to a master services agreement, independent
-contractor agreement, software development agreement, or statement of work. It
-identifies:
+## Quick Summary
 
-1. features implemented in the delivered baseline;
-2. implemented features that remain subject to a release or owner-approval
-   condition;
-3. work currently in review; and
-4. planned features that are not delivered and are excluded from the current
-   scope unless expressly added by written change order.
+Kapchi currently allows customers to browse and customize graduation stoles,
+upload artwork, use a shopping cart, pay through Stripe, receive an order number,
+and track an order. Authorized store staff can review orders, move them through
+production, access purchased artwork, issue refunds, prepare Pirate Ship export
+files, and confirm tracking. The remaining major work is staff-facing product,
+inventory, messaging, promotion, and complete reporting screens, plus final
+production setup and full pre-launch testing.
 
-Repository code, migrations, automated tests, and referenced pull requests are
-the technical evidence for this schedule. Marketing descriptions, prototypes,
-issue titles, screenshots, and planned-feature descriptions do not expand the
-delivered scope unless incorporated into a signed change order.
+## 1. How to Read This Document
 
-## 2. Status Definitions
-
-| Status | Contract meaning |
+| Status | Meaning |
 | --- | --- |
-| **Delivered** | Implemented in the identified `main` baseline and available for acceptance testing, subject to configured third-party services. |
-| **Implemented; release-gated** | Code exists in `main`, but production use is conditioned on owner approval, provider configuration, migration, operational evidence, or another stated release prerequisite. |
-| **In review** | Implemented on a branch or pull request but not part of the delivered baseline. It becomes Delivered only after approval and merge. |
-| **Partially implemented** | A bounded portion exists, but the complete feature described by the related issue or roadmap item is not delivered. |
-| **Planned** | Proposed or tracked work that is not part of the delivered baseline and requires separate authorization, schedule, and acceptance. |
+| **Completed** | The feature has been built and is included in the current version of the application. |
+| **Built, but not ready for launch** | Most or all of the feature has been built, but approval, setup, or final testing is still required. |
+| **In review** | The work has been written but has not yet been approved and added to the main application. |
+| **Partially completed** | Part of the feature works, but more work is required to provide the full feature. |
+| **Planned** | The feature has not been completed. It is not included in the current delivery unless the parties approve it in writing. |
 
-## 3. Delivered Customer-Facing Features
+## 2. Features Available to Customers
 
-| ID | Feature | Delivered behavior | Acceptance standard |
-| --- | --- | --- | --- |
-| C-01 | Responsive storefront shell | Responsive navigation, mobile menu, authentication controls, cart access, footer links, loading states, and customer-safe error states. | Public pages render on supported desktop/mobile layouts and primary navigation remains keyboard operable. |
-| C-02 | Homepage and hero carousel | Kapchi homepage with branded hero carousel, Indigenous/Andean stole messaging, responsive imagery, calls to action, and catalog content below the hero. | Slides render without layout overlap and navigation controls change the active slide. |
-| C-03 | About Kapchi page | About page presenting Kapchi's purpose and cultural/product story with responsive navigation and Peru imagery. | Page is reachable from the storefront and renders supplied content responsively. |
-| C-04 | Graduation-stole catalog | Public listing retrieval, listing cards, fabric-aware imagery, low-stock presentation, and listing detail routes. | Active listings load from the API; unavailable catalog states produce a bounded retry/error experience. |
-| C-05 | Fabric selection | Customers can view fabric options and fabric images; selecting a fabric updates the product image and preserves the chosen fabric in cart/order snapshots. | Selected fabric and its customer-safe name/image remain consistent through cart and order creation; internal color SKU/IDs are not shown in customer order lookup. |
-| C-06 | Customization tiers | Supports no customization, short text, long text, long text plus image, and long text plus image plus trim. | The UI exposes only fields included in the paid tier and rejects unsupported image/trim data. |
-| C-07 | Text, font, image, and trim configuration | Text entry, font selection, private image upload, trim option/size selection, customization notice, validation, and production estimate presentation. | Valid selections persist into cart/order snapshots; out-of-tier or invalid values fail with actionable validation. |
-| C-08 | Private customer artwork upload | Provider-neutral asset intent/completion flow using Vercel Blob transport, image type/size restrictions, signed callbacks, ownership checks, and private metadata storage. | Authorized uploads complete and attach to the intended cart item; altered, replayed, unauthorized, or invalid uploads are rejected. |
-| C-09 | Guest and authenticated carts | Guest and Clerk-authenticated carts, add-to-cart, quantity update, item removal, validation status, revision handling, and idempotent mutations. | Cart totals and item counts reflect durable cart state after add, update, remove, refresh, and duplicate request handling. |
-| C-10 | Guest-to-user cart claim | On authentication, eligible guest cart items merge into the user's cart without dropping customization, fabric, image, trim, quantity, pricing, or production metadata. | A successful claim preserves item data and does not create unauthorized cross-user ownership. |
-| C-11 | Stripe Checkout | Backend-created Stripe Checkout Sessions, catalog price validation, trusted totals, success/cancel URLs, policy snapshot handling, retry/reconciliation behavior, and signed Stripe webhook processing. | A valid cart creates one reusable test/live-mode-appropriate session; duplicate requests/webhooks do not create duplicate paid effects. |
-| C-12 | Checkout confirmation | Customer confirmation page polls the backend for durable checkout status and displays a customer-safe public order number and result state. | Paid, pending, failed, expired, and unavailable outcomes display bounded states without exposing provider secrets. |
-| C-13 | Customer order lookup | Lookup by public order number and matching customer contact information, with item/customization summaries, policy links, payment/fulfillment state, and tracking when available. | Valid matching information returns the customer-safe order view; mismatched information does not disclose the order. |
-| C-14 | Authentication and account surfaces | Clerk sign-in, sign-up, profile, authenticated navigation, JWT verification, issuer/audience/authorized-party validation, and account-aware cart behavior. | Valid configured Clerk sessions authenticate; invalid issuer, audience, signature, or authorized-party claims are denied. |
-| C-15 | Production and delivery estimates | Listing/cart data includes production estimates and rush/priority metadata where configured, distinct from carrier transit information. | Estimates derive from configured rules and are snapshotted for purchased items rather than silently changing with later catalog edits. |
+The following customer features are **Completed**:
 
-## 4. Delivered Administrative and Operations Features
+### Website and Product Browsing
 
-| ID | Feature | Delivered behavior | Acceptance standard |
-| --- | --- | --- | --- |
-| A-01 | Server-side admin authorization | Clerk-derived admin roles/capabilities, active-admin verification, route-level permissions, audit attribution, and denial of client-supplied role claims. | Unauthorized and inactive users cannot access protected APIs or perform mutations. |
-| A-02 | Admin orders dashboard | Protected order list with search, pagination, status/payment/fulfillment filters, refunded-only filter, production-priority data, loading states, and empty/error states. | Results reconcile with backend filters and remain bounded by pagination. |
-| A-03 | Admin order detail | Protected order detail including customer/shipping snapshots, items, customization/production data, payment state, fulfillment, shipment, policy evidence, and chronological history. | An authorized admin can load one order without exposing unrelated customer orders. |
-| A-04 | Guarded order mutations | Intent-specific, revision-aware, idempotent actions for starting production and marking an order ready to ship. | Valid state transitions succeed once; stale revisions, duplicate intents, and forbidden transitions fail safely. |
-| A-05 | Shipment confirmation and tracking | Authorized shipment confirmation with carrier/tracking information and customer-safe tracking exposure. | Confirmed tracking appears in customer lookup; order history records the mutation without exposing private provider data. |
-| A-06 | Shipping-address correction | Guarded correction of eligible order shipping addresses before irreversible shipping work. | The correction requires admin capability and valid order state, and creates auditable history. |
-| A-07 | Private artwork administration | Authorized metadata and streamed-content access to paid, attached, private customization artwork with binding, quarantine, deletion, and reference-integrity checks. | Anonymous/non-admin access is denied; admins cannot retrieve unpaid, mismatched, deleted, quarantined, or unselected artwork. |
-| A-08 | Stripe refund operations | Full/partial refund requests, minor-unit validation, idempotency keys, durable refund ledger, provider dispatch, webhook/reconciliation handling, leases, retry bounds, and summary/status APIs. | Duplicate or uncertain requests reconcile to one durable operation; failed/pending/succeeded states remain explicit. |
-| A-09 | Pirate Ship export workflow | Admin shipping candidate selection, address readiness checks, CSV export batches, secure download, cancellation/expiry/purge actions, active-membership protection, and shipping-address correction integration. | Exported batches contain eligible selected orders only; irreversible label purchase remains outside Kapchi and under human control. |
-| A-10 | Shipping export user interface | Protected admin page for selecting candidates, creating/downloading batches, reviewing failures, cancelling batches, and correcting blocked addresses. | UI reflects backend batch state and does not mark orders shipped merely because a file was exported. |
-| A-11 | Customer messaging backend | Order-linked conversations, replies, internal notes, conversation state, transactional notification intents, signed provider webhook intake, delivery jobs, retries, and idempotent processing. | Messages/notes remain associated with the order; invalid signatures and duplicate callbacks are safely handled. |
-| A-12 | Transactional order notifications | Durable order-confirmation and fulfillment/refund notification scheduling with contact/consent checks and retryable delivery processing. | Eligible lifecycle events create one durable notification intent; missing contact or consent is reported without fabricating delivery. |
-| A-13 | Fabric inventory backend | Shared fabric records, stock adjustments, reservation/cart holds, order conversion, availability calculation, reconciliation, and admin inventory APIs. | Concurrent reservations cannot oversell durable inventory and adjustments are auditable. |
-| A-14 | Sales analytics backend baseline | Bounded currency/date/timezone reporting for implemented gross-sales, paid-order, unit, average-order, bucket, best-seller, payment, and fulfillment metrics, with unsupported metrics represented explicitly. | Queries use minor units, do not sum currencies, and return explicit capability limitations rather than fabricated totals. |
+- A responsive homepage that works on desktop and mobile devices.
+- A Kapchi hero image carousel with cultural and product messaging.
+- An About Kapchi page that explains the business and its purpose.
+- Product listings shown on the homepage and on product pages.
+- Product images, prices, available fabrics, and low-stock notices.
+- Product images that change when a customer selects a different fabric.
+- Navigation for the shop, cart, account, order tracking, policies, and About
+  page.
 
-## 5. Delivered Platform, Security, and Quality Features
+### Graduation Stole Customization
 
-| ID | Feature | Delivered behavior | Acceptance standard |
-| --- | --- | --- | --- |
-| P-01 | Next.js and Fastify architecture | Separate Next.js storefront and Fastify API projects designed for separate Vercel deployments and same-site custom domains. | Each project builds independently and the storefront uses the configured API origin. |
-| P-02 | PostgreSQL persistence | Migrations and durable models for users/customers, listings/customizations, fabrics, carts, orders/items, events, messages, assets, inventory, fulfillment, shipments, refunds, policy assertions, and notification intents. | Migration apply/check commands complete without drift and preserve historical order snapshots. |
-| P-03 | Migration safety | Serialized migrations, checksums, history/status commands, direct migration URL support, protected production workflow, and blocked unsafe reset behavior. | Production checks reject pending, mismatched, or unchecksummed migration state. |
-| P-04 | Database connection controls | Pool sizing, timeouts, TLS mode, deployment connection budgeting, and startup validation. | Invalid or over-budget pool settings fail before traffic is accepted. |
-| P-05 | Redis integration | TLS-capable Redis connection for guest sessions, cart/session state, rate/operation state, distributed cron locks, TTL conventions, and explicit failure behavior. | Backend startup/readiness reports Redis failure and durable commerce records remain in PostgreSQL. |
-| P-06 | Vercel Blob integration | Private customer artwork storage transport, callback signing/key rotation, bounded private reads, and production token restrictions. | Production rejects legacy callback authentication and unauthorized/private reads. |
-| P-07 | Structured observability | Request IDs, lifecycle events, duration/status/error codes, domain events, safe error details, and logging redaction for secrets and sensitive payloads. | Logs correlate operations without recording tokens, raw webhook payloads, addresses, or customization text. |
-| P-08 | Health and readiness | Public health plus dependency-aware readiness for database, Redis, migrations, and private assets. | Unready dependencies produce a bounded non-ready response suitable for traffic gating. |
-| P-09 | Scheduled operations | Authenticated, Redis-locked scheduled routes for messages, refunds, inventory, maintenance, and health. | Duplicate scheduler delivery does not run the same bounded operation concurrently. |
-| P-10 | Safe local fixtures | Deterministic local/test fixtures, explicit database marker/token, ownership records, advisory locking, collision/drift checks, fake customer data, and verification. | Fixture commands refuse production, remote, unmarked, or unsafe databases. |
-| P-11 | Test coverage | Vitest unit/integration suites, React component tests, Playwright public/admin/real configurations, database integration tests, and script-level contract tests. | Applicable suites pass for the delivered baseline; provider-hosted checks remain separately evidenced. |
-| P-12 | CI and secret scanning | Production-readiness workflow, Gitleaks/GitGuardian integration, example-environment validation, policy artifact checks, and Vercel preview checks. | Tracked examples contain no real credentials and secret-sensitive changes are scanned. |
-| P-13 | Production operations controls | Environment ownership inventory, migration workflow, provider canary contracts, alert definitions, backup/restore drill tooling, rollback runbook, and launch-record validation. | Repository controls validate; external production evidence remains subject to Section 6. |
-| P-14 | Policy versioning mechanism | Versioned policy archive, generated policy artifacts, checkout/order policy assertions, publication validator, and customer policy routes/links. | Draft policy bundles cannot be published without an explicit owner approval record. |
+Customers can choose from these options:
 
-## 6. Implemented but Release-Gated or Partially Implemented Features
+1. No customization.
+2. Short text.
+3. Long text.
+4. Long text and an image.
+5. Long text, an image, and trim.
 
-| ID | Status | Feature | Remaining condition / limitation |
-| --- | --- | --- | --- |
-| G-01 | Implemented; release-gated | Shipping, returns, privacy, and terms pages (#117) | Store owner or qualified counsel must approve the policy bundle; the publication guard must pass and legacy sessions lacking policy evidence must be resolved before production publication. |
-| G-02 | Implemented; release-gated | Production deployment/rollback controls (#114) | Repository runbooks and validators exist, but operators must configure production providers, backups, alerts, domains, secrets, and immutable launch evidence and complete the go/no-go process. |
-| G-03 | Partially implemented | Staging release gate (#115) | The approved specification, scenario registry, validator, release identity endpoint, and staging Playwright foundation are in PR #136, not `main`; provider-specific deployment, disposable database provisioning, complete staging scenarios, evidence capture, cleanup, and final launch-record integration remain. |
-| G-04 | Partially implemented | Persistence/admin fixtures (#85) | Safe local fixtures cover implemented admin workflows; disposable hosted staging fixtures and future promotion/catalog-management fixture coverage remain. |
-| G-05 | Partially implemented | Dashboard analytics (#104) | Baseline aggregates exist. Complete net-sales/refund/cohort comparison semantics and any remaining design drill-down alignment remain governed by #104. |
-| G-06 | Partially implemented | Full admin dashboard program (#99) | Orders, fulfillment, assets, refunds, messaging backend, shipping exports, inventory backend, and analytics foundations exist; remaining UI/catalog/promotion work is listed in Section 7. |
+The website also provides:
 
-## 7. Planned Features Excluded from Current Delivered Scope
+- text-entry fields;
+- font choices;
+- fabric choices and fabric images;
+- image upload when the customer purchased an image option;
+- trim choices and trim sizing when the customer purchased a trim option;
+- estimated production timing; and
+- a notice explaining that unpaid customization requests may be rejected.
 
-Unless a signed change order identifies an item below as included, each item is
-**Planned** and is not a present delivery obligation.
+Customers are only shown the customization tools included in the option they
+selected. For example, a customer who paid for text only cannot add an image.
 
-| ID | Planned feature | Proposed scope | Primary dependency / issue |
-| --- | --- | --- | --- |
-| F-01 | Product archive backend | Authorized soft archive/removal API; hide archived products from new shopping while preserving historical orders. | #10 |
-| F-02 | Product archive admin UI | Confirmation, success/error feedback, archive status, and removal from public listings. | #18; depends on F-01 |
-| F-03 | Admin product customization controls | Create/edit controls for enabling no customization, short/long text, image, trim, fonts, and related public configuration. | #17 |
-| F-04 | Automatic Stripe catalog creation | Create/reconcile Stripe Product and immutable Price objects when admins create or reprice products; idempotent retries and metadata mapping. | #31 |
-| F-05 | Admin fabric inventory UI | Searchable stock table, adjustment controls, shared-fabric usage, reservation/sold counts, and status management. | #33; backend inventory already delivered |
-| F-06 | Admin customer messaging UI | Compose replies from order detail, show preferred contact method and history, display delivery errors, and prevent sends without usable contact data. | #20; messaging backend already delivered |
-| F-07 | Promotions | Durable percentage/fixed promotions, schedules, eligibility, usage limits, atomic redemption holds, checkout enforcement, admin APIs/UI, and analytics integration. | #102 |
-| F-08 | Completed analytics program | Net sales/refund reporting, previous-period comparisons, customer cohorts, complete drill-down reconciliation, and documented cache/index behavior. | #104; depends on refund/customer identity contracts |
-| F-09 | Pirate Ship AI assistant | Human-supervised browser assistance for spreadsheet upload, field mapping, address/rate review, label preparation, and tracking return. No automated credential bypass or unapproved purchase. | #30; export workflow already delivered |
-| F-10 | Hosted staging fixtures | Disposable, run-owned, non-production database/provider fixtures with identity attestation and bounded cleanup. | #85 and #115 |
-| F-11 | Full staging purchase-to-fulfillment gate | Automated guest/authenticated checkout, all customization tiers, Blob, Stripe, fulfillment, tracking, refund, logs, manual provider evidence, cleanup, and immutable GO/NO-GO artifact. | #115; PR #136 is foundational only |
-| F-12 | Production launch execution | Provider configuration, production migrations, domain/CORS/auth verification, backup/restore drill, alerts, rollback rehearsal, observation window, and signed launch record. | #114 |
-| F-13 | Policy publication | Owner/counsel approval record, release of approved policy bundle, legacy checkout remediation, and production verification. | #117 |
-| F-14 | Remaining dashboard alignment | Complete real-data Overview, Inventory, Promotions, and Messages experiences and remove remaining prototype/simulated dependencies. | #99; coordinated by F-05 through F-08 |
+### Customer Images and Privacy
 
-## 8. Third-Party Services and Client Responsibilities
+- Customers can upload an image for an eligible customized stole.
+- Uploaded images are stored privately through Vercel Blob.
+- The application checks file type, file size, ownership, and upload validity.
+- One customer cannot attach an image to another customer's cart.
+- Private images are not shown through public product or order pages.
 
-The application integrates with services that are not delivered or controlled by
-the Developer. Unless the main agreement states otherwise, the Client is
-responsible for obtaining, paying for, maintaining, and lawfully configuring:
+### Shopping Cart
 
-- Vercel projects, domains, deployment plan, Blob storage, and runtime variables;
-- a managed PostgreSQL database and backup/restore capability;
-- a managed TLS Redis instance;
-- Clerk production and test applications, roles, domains, and webhook endpoint;
-- Stripe production/test accounts, products/prices, webhook endpoint, and payout
-  or tax configuration;
-- the selected email/SMS delivery provider and approved sender identities;
-- Pirate Ship account access and final human approval of label purchases; and
-- approved policy text, cultural/brand copy, product images, prices, fabric data,
-  inventory, fulfillment rules, and customer-support procedures.
+- Customers can shop as a guest or while signed in.
+- Customers can add products to the cart.
+- Customers can change quantities.
+- Customers can remove products.
+- Cart prices and item counts update after changes.
+- Customized text, images, trim, fabric, quantity, price, and production details
+  stay attached to the correct cart item.
+- A guest cart can be moved into the customer's account after sign-in without
+  losing customization information.
 
-Third-party downtime, pricing, API changes, account suspension, rate limits,
-verification delays, payment declines, carrier performance, and provider data
-retention are not defects in the delivered software unless caused by the
-Developer's failure to implement the agreed integration contract.
+### Accounts
 
-## 9. Acceptance Procedure
+- Customers can create an account, sign in, sign out, and view their profile.
+- Clerk provides the account and sign-in service.
+- The application checks that sign-in information came from the correct Clerk
+  account before allowing access.
 
-1. Developer identifies the release commit and supplies deployment or local test
-   instructions for the applicable Delivered items.
-2. Client has `[10]` business days after delivery to test the applicable
-   acceptance standards and provide written, reproducible rejection details.
-3. Rejection must identify the feature ID, expected behavior, actual behavior,
-   environment, and reasonable reproduction steps. Preferences or new
-   requirements are change requests rather than defects.
-4. Developer will correct reproducible material nonconformities within the
-   warranty/correction period stated in the main agreement and resubmit them.
-5. A feature is accepted upon written acceptance, production use, or expiration
-   of the review period without a valid rejection, subject to the main agreement.
-6. Release-gated items are not accepted for production merely because repository
-   tests pass; their stated owner/provider/operational conditions must also pass.
+### Checkout and Payment
 
-## 10. General Nonfunctional Acceptance Standards
+- Customers can begin checkout from the cart.
+- Stripe provides the secure payment page.
+- Kapchi verifies the product, price, fabric, customization, and cart before
+  starting payment.
+- Customers are returned to Kapchi after payment or cancellation.
+- The application avoids creating duplicate paid orders when requests or Stripe
+  updates are repeated.
+- A confirmation page shows whether payment is complete, pending, failed, or
+  unavailable.
+- Successful customers receive a public Kapchi order number.
 
-Delivered features are subject to the following standards where applicable:
+### Order Tracking
 
-- server-side authorization for protected data and mutations;
-- validation of untrusted request data and provider callbacks;
-- no committed production credentials or disclosure of server secrets to the
-  browser;
-- integer minor-unit monetary calculations and currency isolation;
-- idempotency or durable reconciliation for retryable commerce mutations;
-- customer-safe errors that do not expose internal provider/catalog identifiers;
-- responsive and keyboard-operable primary customer/admin workflows;
-- structured correlation/error logging with sensitive-field redaction;
-- database migrations and rollback/roll-forward procedures appropriate to the
-  released schema; and
-- automated tests proportionate to the changed feature's risk.
+- Customers can look up an order using the public order number and matching
+  contact information.
+- The order page shows purchased items, customization summaries, payment status,
+  production status, and shipping progress.
+- Carrier and tracking information appear after store staff confirm shipment.
+- Internal product codes, payment-provider details, and private staff information
+  are not shown to customers.
 
-No software is guaranteed to be uninterrupted or defect-free. Performance,
-availability, recovery-time, support-response, and security-assurance service
-levels apply only if separately stated in the main agreement.
+## 3. Features Available to Store Staff
 
-## 11. Exclusions
+The following staff features are **Completed**:
 
-Unless added by written change order, the current scope excludes:
+### Staff Security
 
-- native iOS or Android applications;
-- a general-purpose content-management system;
-- automatic creation of legal advice or final policy language;
-- automated tax registration, tax advice, customs compliance, or accounting;
-- automatic Pirate Ship label purchase or bypass of login, CAPTCHA, MFA, or
-  payment confirmation;
-- promotion features described in F-07;
-- live production data migration from an unidentified legacy system;
-- guarantees concerning third-party approval, uptime, deliverability, payment
-  authorization, or carrier delivery;
-- 24/7 operations, incident response, or ongoing maintenance unless separately
-  purchased; and
-- any open GitHub issue or prototype not expressly listed as Delivered in this
-  exhibit.
+- Staff pages and actions require an authorized administrator account.
+- The server checks staff permissions instead of trusting information sent by
+  the browser.
+- Important staff actions are recorded for review.
 
-## 12. Change Control
+### Order Management
 
-Any material addition or change to features, acceptance standards, third-party
-providers, data migration, production topology, compliance requirements, or
-delivery dates requires a written change order signed by both parties. A change
-order should identify affected feature IDs, price, schedule, assumptions,
-acceptance criteria, and any change to support or operating responsibility.
+- Staff can view a list of customer orders.
+- Staff can search and filter orders.
+- Staff can open an order to view customer, shipping, item, payment,
+  customization, production, and history information.
+- Staff can start production.
+- Staff can mark an order ready to ship.
+- Staff can correct an eligible shipping address.
+- Staff can confirm shipment and enter carrier and tracking information.
+- The application prevents invalid or out-of-date order changes.
 
-## 13. Sign-Off
+### Customer Artwork
 
-By signing below, the parties acknowledge that Sections 3 through 5 describe the
-delivered technical baseline, Section 6 describes conditional or incomplete
-capabilities, and Section 7 describes planned work excluded from the current
-delivery unless separately authorized.
+- Authorized staff can view artwork attached to a paid order.
+- Staff cannot access artwork that is unpaid, deleted, quarantined, attached to
+  the wrong order, or otherwise invalid.
+- Access to private artwork is recorded.
+
+### Refunds
+
+- Authorized staff can request full or partial Stripe refunds.
+- The application records the refund amount and progress.
+- Repeated requests are handled so the same refund is not intentionally sent
+  twice.
+- The application can reconcile its records with Stripe when the result of a
+  refund request is uncertain.
+
+### Shipping Export
+
+- Staff can select eligible orders for shipping.
+- Staff can create and download a Pirate Ship-compatible spreadsheet.
+- The application identifies orders with missing or invalid shipping details.
+- Staff can cancel or expire an export batch.
+- Exporting an order does not automatically mark it shipped.
+- A human must still review and purchase labels through Pirate Ship.
+
+### Customer Messages
+
+The messaging system on the server is **Completed**. It can:
+
+- keep messages connected to the correct order;
+- store customer replies and private staff notes;
+- prepare order confirmation, fulfillment, and refund messages;
+- retry failed delivery when appropriate; and
+- process secure updates from the message provider.
+
+The staff-facing messaging screen is still Planned and is listed in Section 6.
+
+### Fabric Inventory
+
+The inventory system on the server is **Completed**. It can:
+
+- keep shared fabric quantities;
+- reserve fabric for carts and orders;
+- release expired reservations;
+- record adjustments and sold quantities; and
+- prevent available inventory from being oversold during simultaneous orders.
+
+The staff-facing inventory screen is still Planned and is listed in Section 6.
+
+### Sales Reports
+
+A basic sales-reporting service is **Partially completed**. It currently supports
+selected sales totals, paid-order counts, average order value, units sold, time
+periods, best sellers, payment status, and fulfillment status.
+
+The completed analytics feature described in Section 6 will add the remaining
+refund, net-sales, comparison, and customer reporting requirements.
+
+## 4. Behind-the-Scenes Features
+
+The following operational features are **Completed**:
+
+- PostgreSQL database storage for products, customers, carts, orders, messages,
+  inventory, shipping, refunds, and related records.
+- A controlled database update process that keeps track of database changes.
+- Redis support for guest sessions, carts, temporary information, and preventing
+  the same scheduled job from running twice at the same time.
+- Stripe payment and refund connections.
+- Clerk customer and staff authentication.
+- Vercel Blob private image storage.
+- Health checks that report whether the application, database, Redis, and file
+  storage are ready.
+- Scheduled work for messages, refunds, inventory, maintenance, and health
+  checks.
+- Activity logs with request numbers, timing, results, and safe error codes.
+- Removal of passwords, tokens, addresses, uploaded text, and private provider
+  information from normal logs.
+- Test data that is clearly marked and blocked from running against a production
+  database.
+- Automated tests for customer pages, staff pages, server behavior, database
+  behavior, payments, uploads, refunds, and release checks.
+- Automated secret scanning and checks that prevent real credentials from being
+  stored in example files.
+
+## 5. Built but Not Ready for Production Launch
+
+The following work exists but still has a stated launch condition:
+
+### Store Policies
+
+**Status: Built, but not ready for launch**
+
+Pages and version tracking exist for shipping, returns, privacy, and terms of
+sale. Before publication:
+
+- the store owner or a qualified lawyer must approve the wording;
+- an approval record must be added;
+- older checkout sessions that did not record the approved policy version must
+  be handled; and
+- the production policy check must pass.
+
+### Production Launch Process
+
+**Status: Built, but not ready for launch**
+
+The repository includes launch, database update, monitoring, backup, restore,
+and rollback instructions. The store must still configure and verify the real
+production accounts, domains, backups, alerts, secrets, and final launch record.
+
+### Final Staging Test Process
+
+**Status: In review and partially completed**
+
+Pull request #136 adds the plan and basic tools for a complete pre-launch test.
+The following work is still required:
+
+- connect the test process to the selected hosted database provider;
+- create temporary test data and accounts safely;
+- run the complete purchase, payment, fulfillment, tracking, and refund journey;
+- collect proof from Stripe, Clerk, Vercel, and the message provider;
+- remove temporary test data; and
+- produce the final launch approval or rejection record.
+
+### Test Data
+
+**Status: Partially completed**
+
+Safe local test data exists for the implemented shopping and staff workflows.
+Temporary hosted test data for the final staging test is not complete.
+
+## 6. Planned Features Not Included in the Current Delivery
+
+The following features are **Planned**. They are not included in the current
+completed work unless the Client and Developer approve them in a written change
+order.
+
+| Planned feature | Plain-language description |
+| --- | --- |
+| Product removal and archiving | Let staff hide a product from future customers without deleting it from old orders. |
+| Product management screen | Let staff create and edit products from the staff area. |
+| Product customization controls | Let staff choose which text, image, trim, and font options are offered for each product. |
+| Automatic Stripe product setup | Automatically create or update the matching Stripe product and price when staff create or reprice a Kapchi product. |
+| Fabric inventory screen | Give staff a visual screen for stock, reserved amounts, sold amounts, adjustments, and products using each fabric. |
+| Customer messaging screen | Let staff write and review customer messages directly from an order page. |
+| Promotions and discount codes | Create discount codes, schedules, limits, product rules, checkout validation, and reporting. |
+| Completed sales dashboard | Add complete net sales, refunds, comparisons, returning/new customer reporting, and matching order details. |
+| Pirate Ship assistant | Help staff upload the shipping spreadsheet and review mappings, address warnings, rates, and results while requiring human approval before label purchase. |
+| Hosted staging test data | Create temporary, clearly marked online test data that cannot affect production customers or payments. |
+| Complete pre-launch test | Automatically verify the full customer purchase through staff fulfillment and refund process before launch. |
+| Production launch execution | Configure the real services, run database updates, verify domains and security, test backups and rollback, monitor the release, and approve launch. |
+| Policy publication | Obtain approval for the final policy wording and publish the approved versions. |
+| Remaining staff dashboard screens | Finish the real-data Overview, Inventory, Promotions, and Messages screens. |
+
+## 7. Client Responsibilities
+
+Unless the main agreement says otherwise, the Client is responsible for:
+
+- paying for and maintaining Vercel, PostgreSQL, Redis, Clerk, Stripe, messaging,
+  domain, and Pirate Ship accounts;
+- providing accurate products, prices, fabric information, inventory, images,
+  cultural and brand content, and customer-service procedures;
+- approving production access, staff accounts, and provider settings;
+- providing or approving shipping, return, privacy, and sales terms;
+- obtaining legal, tax, privacy, and accounting advice when needed;
+- reviewing Stripe payments, refunds, payouts, disputes, and tax settings;
+- approving Pirate Ship label purchases; and
+- completing the final launch approval after reviewing the required evidence.
+
+The Developer is not responsible for third-party downtime, account suspension,
+provider price changes, payment declines, carrier delays, email/SMS delivery
+decisions, or provider approval delays unless the problem was directly caused by
+the Developer's failure to build the agreed connection correctly.
+
+## 8. Acceptance Process
+
+1. The Developer will identify the version being delivered and provide reasonable
+   instructions for testing it.
+2. The Client will have `[10]` business days to review the delivered features.
+3. If the Client believes a completed feature does not meet this document, the
+   Client will provide the feature name, expected result, actual result, and
+   reasonable steps for repeating the problem.
+4. A reproducible failure to meet a stated completed feature is a defect. A new
+   preference, changed design, or feature not listed as completed is a change
+   request.
+5. The Developer will correct covered defects during the correction period in
+   the main agreement and resubmit the feature for review.
+6. A feature is accepted when the Client approves it in writing, uses it in
+   production, or does not provide a valid rejection during the review period,
+   subject to the terms of the main agreement.
+7. Features marked “not ready for launch” are not accepted for production use
+   until their listed launch conditions are completed.
+
+## 9. Items Not Included Unless Added in Writing
+
+The current delivery does not include:
+
+- a native iPhone, iPad, or Android application;
+- a general-purpose content management system;
+- legal advice or final legal policy wording;
+- tax registration, tax advice, accounting, or customs advice;
+- automatic Pirate Ship label purchase;
+- bypassing passwords, multi-factor authentication, CAPTCHA, payment approval,
+  or other account protections;
+- migration from an unidentified older store or database;
+- a guarantee that Stripe will approve a payment;
+- a guarantee that carriers will deliver by a particular date;
+- a guarantee that email or text messages will be delivered by a provider;
+- round-the-clock support or incident response; or
+- any planned feature in Section 6 unless approved by written change order.
+
+## 10. Changes to the Work
+
+New features or material changes to the items in this document require a written
+change order approved by both parties. The change order should identify:
+
+- the feature being added or changed;
+- the price;
+- the expected delivery date;
+- what the Client must provide; and
+- how the parties will decide that the work is complete.
+
+## 11. Signatures
+
+By signing below, the parties agree that:
+
+- Sections 2 through 4 describe the current completed work;
+- Section 5 describes work that still has launch conditions; and
+- Section 6 describes future work that is not currently included.
 
 | Client | Developer |
 | --- | --- |
@@ -233,15 +389,9 @@ delivery unless separately authorized.
 | Signature: ____________________ | Signature: ____________________ |
 | Date: _________________________ | Date: _________________________ |
 
-## Appendix A: Traceability References
+## Appendix: Project References
 
-- Delivered baseline: `main` commit `97412a3`
-- Staging release-gate foundation: PR #136, branch
-  `codex/issue-115-staging-release-gate`
-- Customer commerce: issues #6, #7, #13, #14, #15, #16, #23, #24, #25, #61,
-  #91, #93, #94, and #98
-- Admin/order operations: issues #11, #12, #19, #21, #22, #29, #32, #100,
-  #101, #103, #116, and #122
-- Persistence/infrastructure: issues #26, #27, #34 through #55 and #85
-- Planned/open roadmap: issues #10, #17, #18, #20, #30, #31, #33, #99, #102,
-  #104, #114, #115, and #117
+- Completed application baseline: `main` commit `97412a3`
+- Pre-launch test foundation currently in review: pull request #136
+- Planned work is tracked in GitHub issues #10, #17, #18, #20, #30, #31, #33,
+  #85, #99, #102, #104, #114, #115, and #117.
