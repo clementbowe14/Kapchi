@@ -2,11 +2,11 @@
 
 **Application:** Kapchi Store
 
-**Document purpose:** Plain-language list of completed and planned work
+**Document purpose:** Plain-language list of implemented and planned work
 
-**Completed-work reference:** `main` at commit `97412a3`
+**Implemented-work reference:** `main` at commit `97412a3`
 
-**Status date:** November 15, 2026
+**Status date:** November 23, 2026
 
 **Client:** `[CLIENT LEGAL NAME]`
 
@@ -15,8 +15,10 @@
 **Effective date:** `[EFFECTIVE DATE]`
 
 This document may be attached to a software development agreement or statement
-of work. It explains what has already been built, what still needs preparation
-before launch, and what is only planned for the future.
+of work. It explains what exists in the referenced source code, what still needs
+preparation before launch, and what is only planned for the future. It is not a
+standalone legal agreement and does not become binding unless the parties attach
+it to, and sign, an agreement that identifies it.
 
 The parties should complete the names, dates, payment terms, ownership terms,
 support terms, and other legal terms in the main agreement. A lawyer should
@@ -24,27 +26,31 @@ review the final agreement before it is signed.
 
 ## Quick Summary
 
-Kapchi currently allows customers to browse and customize graduation stoles,
-upload artwork, use a shopping cart, pay through Stripe, receive an order number,
-and track an order. Authorized store staff can review orders, move them through
-production, access purchased artwork, issue refunds, prepare Pirate Ship export
-files, and confirm tracking. The remaining major work is staff-facing product,
-inventory, messaging, promotion, and complete reporting screens, plus final
-production setup and full pre-launch testing.
+Kapchi's current source code allows customers to browse and customize graduation
+stoles, upload artwork, use a shopping cart, pay through Stripe, receive an order
+number, and track an order. Authorized store staff can review and filter orders,
+move them through production, prepare Pirate Ship export files, and confirm
+tracking. Secure server support exists for artwork access, refunds, messaging,
+and inventory, but some of those staff screens and outside-service connections
+are not finished. Final production setup and full pre-launch testing also remain.
 
 ## 1. How to Read This Document
 
 | Status | Meaning |
 | --- | --- |
-| **Completed** | The feature has been built and is included in the current version of the application. |
-| **Built, but not ready for launch** | Most or all of the feature has been built, but approval, setup, or final testing is still required. |
+| **Implemented in source code** | The feature exists in the identified source-code version. This does not mean it has been configured, deployed, accepted, or approved for production use. |
+| **Implemented, launch setup required** | Most or all of the code exists, but approval, provider setup, scheduling, or final testing is still required. |
 | **In review** | The work has been written but has not yet been approved and added to the main application. |
 | **Partially completed** | Part of the feature works, but more work is required to provide the full feature. |
 | **Planned** | The feature has not been completed. It is not included in the current delivery unless the parties approve it in writing. |
 
+Throughout this document, "implemented" describes the source code only. It is
+not a promise that the feature is live, fully configured, legally approved, or
+accepted by the Client.
+
 ## 2. Features Available to Customers
 
-The following customer features are **Completed**:
+The following customer features are **Implemented in source code**:
 
 ### Website and Product Browsing
 
@@ -132,7 +138,8 @@ selected. For example, a customer who paid for text only cannot add an image.
 
 ## 3. Features Available to Store Staff
 
-The following staff features are **Completed**:
+The following staff features are **Implemented in source code**, except where a
+different status is stated:
 
 ### Staff Security
 
@@ -144,7 +151,7 @@ The following staff features are **Completed**:
 ### Order Management
 
 - Staff can view a list of customer orders.
-- Staff can search and filter orders.
+- Staff can filter orders by status and sort them by date.
 - Staff can open an order to view customer, shipping, item, payment,
   customization, production, and history information.
 - Staff can start production.
@@ -153,34 +160,43 @@ The following staff features are **Completed**:
 - Staff can confirm shipment and enter carrier and tracking information.
 - The application prevents invalid or out-of-date order changes.
 
-### Customer Artwork
+### Customer Artwork Server Controls
 
-- Authorized staff can view artwork attached to a paid order.
-- Staff cannot access artwork that is unpaid, deleted, quarantined, attached to
+**Status: Partially completed**
+
+- The server can securely check whether authorized staff may access artwork
+  attached to a paid order.
+- The server rejects artwork that is unpaid, deleted, quarantined, attached to
   the wrong order, or otherwise invalid.
-- Access to private artwork is recorded.
+- Server-side access to private artwork is recorded.
+- The staff order page does not yet provide the final artwork preview or download
+  experience.
 
-### Refunds
+### Refund Server Controls
 
-- Authorized staff can request full or partial Stripe refunds.
-- The application records the refund amount and progress.
+**Status: Partially completed**
+
+- The server supports authorized full and partial Stripe refund requests.
+- The server records the refund amount and progress.
 - Repeated requests are handled so the same refund is not intentionally sent
   twice.
-- The application can reconcile its records with Stripe when the result of a
-  refund request is uncertain.
+- The server can reconcile its records with Stripe when the result of a refund
+  request is uncertain.
+- The staff order page does not yet provide the final refund controls.
 
 ### Shipping Export
 
 - Staff can select eligible orders for shipping.
 - Staff can create and download a Pirate Ship-compatible spreadsheet.
 - The application identifies orders with missing or invalid shipping details.
-- Staff can cancel or expire an export batch.
+- Staff can cancel a prepared export or release an export after it expires.
 - Exporting an order does not automatically mark it shipped.
 - A human must still review and purchase labels through Pirate Ship.
 
 ### Customer Messages
 
-The messaging system on the server is **Completed**. It can:
+The messaging system on the server is **Partially completed**. Its source code
+can:
 
 - keep messages connected to the correct order;
 - store customer replies and private staff notes;
@@ -188,11 +204,12 @@ The messaging system on the server is **Completed**. It can:
 - retry failed delivery when appropriate; and
 - process secure updates from the message provider.
 
-The staff-facing messaging screen is still Planned and is listed in Section 6.
+The staff-facing messaging screen, provider setup, and production delivery
+verification are still required and are listed in Sections 5 and 6.
 
 ### Fabric Inventory
 
-The inventory system on the server is **Completed**. It can:
+The inventory system on the server is **Implemented in source code**. It can:
 
 - keep shared fabric quantities;
 - reserve fabric for carts and orders;
@@ -213,7 +230,7 @@ refund, net-sales, comparison, and customer reporting requirements.
 
 ## 4. Behind-the-Scenes Features
 
-The following operational features are **Completed**:
+The following operational features are **Implemented in source code**:
 
 - PostgreSQL database storage for products, customers, carts, orders, messages,
   inventory, shipping, refunds, and related records.
@@ -223,19 +240,19 @@ The following operational features are **Completed**:
 - Stripe payment and refund connections.
 - Clerk customer and staff authentication.
 - Vercel Blob private image storage.
-- Health checks that report whether the application, database, Redis, and file
-  storage are ready.
-- Scheduled work for messages, refunds, inventory, maintenance, and health
-  checks.
+- Health checks for the application, database, and Redis, plus a check that the
+  private file-storage credential is configured. The file-storage check does not
+  prove that Vercel Blob can currently read or write files.
 - Activity logs with request numbers, timing, results, and safe error codes.
-- Removal of passwords, tokens, addresses, uploaded text, and private provider
-  information from normal logs.
+- Redaction of named credential and authentication fields from normal logs.
+  Production launch still requires a final review of every logged field and
+  endpoint for personal or customer-provided information.
 - Test data that is clearly marked and blocked from running against a production
   database.
 - Automated tests for customer pages, staff pages, server behavior, database
   behavior, payments, uploads, refunds, and release checks.
-- Automated secret scanning and checks that prevent real credentials from being
-  stored in example files.
+- Automated secret scanning that detects recognized credential patterns in
+  tracked files and example configuration files.
 
 ## 5. Built but Not Ready for Production Launch
 
@@ -243,7 +260,7 @@ The following work exists but still has a stated launch condition:
 
 ### Store Policies
 
-**Status: Built, but not ready for launch**
+**Status: Implemented, launch setup required**
 
 Pages and version tracking exist for shipping, returns, privacy, and terms of
 sale. Before publication:
@@ -256,7 +273,7 @@ sale. Before publication:
 
 ### Production Launch Process
 
-**Status: Built, but not ready for launch**
+**Status: Implemented, launch setup required**
 
 The repository includes launch, database update, monitoring, backup, restore,
 and rollback instructions. The store must still configure and verify the real
@@ -283,10 +300,35 @@ The following work is still required:
 Safe local test data exists for the implemented shopping and staff workflows.
 Temporary hosted test data for the final staging test is not complete.
 
+### Background Jobs and Message Delivery
+
+**Status: Implemented, launch setup required**
+
+The source code includes protected workers for messages, refunds, inventory,
+maintenance, and health checks. Before launch, the store must still:
+
+- choose and configure the production message provider;
+- verify real delivery, provider updates, and retry behavior;
+- install the production schedule that starts each background worker;
+- confirm that failed jobs create useful alerts; and
+- record proof that the workers ran successfully in the staging environment.
+
+No active production schedule is committed in the referenced source-code
+version.
+
+### Privacy and Logging Review
+
+**Status: Implemented, launch setup required**
+
+Credential redaction and structured logging exist, but the production launch
+review must confirm that addresses, customization text, uploaded content, and
+other personal information are not written to normal logs by any endpoint or
+service.
+
 ## 6. Planned Features Not Included in the Current Delivery
 
 The following features are **Planned**. They are not included in the current
-completed work unless the Client and Developer approve them in a written change
+implemented work unless the Client and Developer approve them in a written change
 order.
 
 | Planned feature | Plain-language description |
@@ -297,6 +339,9 @@ order.
 | Automatic Stripe product setup | Automatically create or update the matching Stripe product and price when staff create or reprice a Kapchi product. |
 | Fabric inventory screen | Give staff a visual screen for stock, reserved amounts, sold amounts, adjustments, and products using each fabric. |
 | Customer messaging screen | Let staff write and review customer messages directly from an order page. |
+| Order search | Add a staff-facing search box for order numbers, customer details, and other supported fields. |
+| Customer artwork screen | Let authorized staff preview or download eligible paid-order artwork from the order page. |
+| Refund controls | Let authorized staff request and review eligible refunds from the order page. |
 | Promotions and discount codes | Create discount codes, schedules, limits, product rules, checkout validation, and reporting. |
 | Completed sales dashboard | Add complete net sales, refunds, comparisons, returning/new customer reporting, and matching order details. |
 | Pirate Ship assistant | Help staff upload the shipping spreadsheet and review mappings, address warnings, rates, and results while requiring human approval before label purchase. |
@@ -328,21 +373,29 @@ the Developer's failure to build the agreed connection correctly.
 
 ## 8. Acceptance Process
 
-1. The Developer will identify the version being delivered and provide reasonable
-   instructions for testing it.
-2. The Client will have `[10]` business days to review the delivered features.
-3. If the Client believes a completed feature does not meet this document, the
-   Client will provide the feature name, expected result, actual result, and
-   reasonable steps for repeating the problem.
-4. A reproducible failure to meet a stated completed feature is a defect. A new
-   preference, changed design, or feature not listed as completed is a change
-   request.
-5. The Developer will correct covered defects during the correction period in
-   the main agreement and resubmit the feature for review.
-6. A feature is accepted when the Client approves it in writing, uses it in
-   production, or does not provide a valid rejection during the review period,
-   subject to the terms of the main agreement.
-7. Features marked “not ready for launch” are not accepted for production use
+1. The Developer will identify the exact source-code version and test environment
+   being delivered and provide reasonable instructions for testing it.
+2. The review period begins only after the Developer gives written notice that
+   the identified version is ready for review. The Client will then have `[10]`
+   business days to review it.
+3. Before review begins, the parties will agree in writing on the important test
+   examples, supported browsers and screen sizes, and any outside services needed
+   for the review.
+4. If the Client believes an implemented feature does not meet this document,
+   the Client will provide the feature name, expected result, actual result,
+   test environment, and reasonable steps for repeating the problem.
+5. A reproducible failure to meet an agreed requirement is a defect. A new
+   preference, changed design, or feature not identified as implemented is a
+   change request.
+6. The Developer will correct covered defects during the correction period in
+   the main agreement and resubmit the affected feature for review. Features not
+   affected by the defect may be accepted separately.
+7. A feature is accepted only when the Client approves it in writing. Use of a
+   test or production environment, or silence during the review period, does not
+   by itself create acceptance unless the main agreement expressly says so.
+8. A third-party outage, rejection, or delivery failure is not a software defect
+   unless the agreed Kapchi connection caused or mishandled it.
+9. Features marked “launch setup required” are not accepted for production use
    until their listed launch conditions are completed.
 
 ## 9. Items Not Included Unless Added in Writing
@@ -378,7 +431,7 @@ change order approved by both parties. The change order should identify:
 
 By signing below, the parties agree that:
 
-- Sections 2 through 4 describe the current completed work;
+- Sections 2 through 4 describe what exists in the referenced source code;
 - Section 5 describes work that still has launch conditions; and
 - Section 6 describes future work that is not currently included.
 
@@ -391,7 +444,8 @@ By signing below, the parties agree that:
 
 ## Appendix: Project References
 
-- Completed application baseline: `main` commit `97412a3`
-- Pre-launch test foundation currently in review: pull request #136
+- Implemented application baseline: `main` commit `97412a3`
+- Pre-launch test foundation currently in review: pull request #136 at commit
+  `8dbd7264b9288611a7c05da3c5d5ad8abdbadbcf`
 - Planned work is tracked in GitHub issues #10, #17, #18, #20, #30, #31, #33,
   #85, #99, #102, #104, #114, #115, and #117.
