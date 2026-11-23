@@ -16,6 +16,9 @@ import {
   seedListings,
   type SeedListing
 } from "../../database/seed.js";
+import { FIXTURE_MARKER_ID } from "../../database/fixtures/admin-workflows.js";
+import { fingerprint } from "../../database/fixtures/safety.js";
+import { assertCatalogAttestations } from "../../database/fixtures/verifier.js";
 import {
   buildStripePriceLookupKey,
   findProtectedReplacedPriceIds,
@@ -37,6 +40,76 @@ type CatalogRow = {
   listing_price_variant_id: string;
   unit_amount_cents: number;
 };
+
+async function attestCatalog(
+  client: PoolClient,
+  listing: SeedListing,
+  accountId: string,
+) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const productId = `prod_test_seed_${suffix}`;
+  const defaultPriceId = `price_test_seed_${suffix}`;
+  await client.query(
+    `update listings
+        set base_price_cents=$2, currency='usd', stripe_product_id=$3,
+            default_stripe_price_id=$4
+      where slug=$1`,
+    [listing.slug, listing.basePriceCents, productId, defaultPriceId],
+  );
+  for (const [index, variant] of listing.priceVariants.entries()) {
+    const priceId = index === 0
+      ? defaultPriceId
+      : `price_test_seed_${variant.variantKey.replaceAll("-", "_")}_${suffix}`;
+    await client.query(
+      `update listing_price_variants variants
+          set unit_amount_cents=$3, currency='usd', stripe_product_id=$4,
+              stripe_price_id=$5
+         from listings
+        where variants.listing_id=listings.id and listings.slug=$1
+          and variants.variant_key=$2 and variants.active`,
+      [listing.slug, variant.variantKey, variant.unitAmountCents, productId, priceId],
+    );
+    await client.query(
+      `insert into kapchi_fixture.catalog_attestations
+         (fixture_key, marker_id, stripe_account_id, stripe_product_id,
+          stripe_price_id, listing_slug, variant_key, customization_kind,
+          unit_amount_cents, currency, pricing_fingerprint, livemode)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'usd',$10,false)
+       on conflict (fixture_key) do update set
+         marker_id=excluded.marker_id,
+         stripe_account_id=excluded.stripe_account_id,
+         stripe_product_id=excluded.stripe_product_id,
+         stripe_price_id=excluded.stripe_price_id,
+         listing_slug=excluded.listing_slug,
+         variant_key=excluded.variant_key,
+         customization_kind=excluded.customization_kind,
+         unit_amount_cents=excluded.unit_amount_cents,
+         currency=excluded.currency,
+         pricing_fingerprint=excluded.pricing_fingerprint,
+         livemode=false`,
+      [
+        `catalog.variant.${listing.slug}.${variant.variantKey}`,
+        FIXTURE_MARKER_ID,
+        accountId,
+        productId,
+        priceId,
+        listing.slug,
+        variant.variantKey,
+        variant.customizationKind,
+        variant.unitAmountCents,
+        fingerprint({
+          active: true,
+          currency: "usd",
+          customizationKind: variant.customizationKind,
+          listingSlug: listing.slug,
+          unitAmountCents: variant.unitAmountCents,
+          variantKey: variant.variantKey
+        })
+      ],
+    );
+  }
+  return { defaultPriceId, productId };
+}
 
 integrationDescribe("Stripe local catalog recovery", () => {
   let client: PoolClient;
@@ -325,59 +398,21 @@ integrationDescribe("Stripe local catalog recovery", () => {
     expect(afterItems.rows).toEqual(beforeItems.rows);
   });
 
-  it("preserves synchronized mappings only while the desired pricing identity matches", async () => {
+  it("preserves only account-bound synchronized mappings with matching pricing", async () => {
     const listing = seedListings[0];
     const defaultVariant = listing.priceVariants[0];
-    const suffix = randomUUID().replaceAll("-", "");
-    const synchronizedProductId = `prod_test_seed_${suffix}`;
-    const synchronizedPriceId = `price_test_seed_${suffix}`;
+    const synchronized = await attestCatalog(client, listing, "acct_test_candidate");
 
-    await client.query(
-      `
-        update listings
-        set base_price_cents = $2,
-            currency = 'usd',
-            stripe_product_id = $3,
-            default_stripe_price_id = $4
-        where slug = $1
-      `,
-      [
-        listing.slug,
-        listing.basePriceCents,
-        synchronizedProductId,
-        synchronizedPriceId
-      ],
-    );
-    await client.query(
-      `
-        update listing_price_variants lpv
-        set unit_amount_cents = $3,
-            currency = 'usd',
-            stripe_product_id = $4,
-            stripe_price_id = $5
-        from listings l
-        where lpv.listing_id = l.id
-          and l.slug = $1
-          and lpv.variant_key = $2
-          and lpv.active = true
-      `,
-      [
-        listing.slug,
-        defaultVariant.variantKey,
-        defaultVariant.unitAmountCents,
-        synchronizedProductId,
-        synchronizedPriceId
-      ],
-    );
-
-    await seedListing(client, listing);
+    await seedListing(client, listing, {
+      expectedStripeAccountId: "acct_test_candidate"
+    });
     const preserved = await readDefaultBinding(client, listing);
     expect(preserved).toMatchObject({
       base_price_cents: listing.basePriceCents,
       currency: "usd",
-      default_stripe_price_id: synchronizedPriceId,
-      stripe_price_id: synchronizedPriceId,
-      stripe_product_id: synchronizedProductId,
+      default_stripe_price_id: synchronized.defaultPriceId,
+      stripe_price_id: synchronized.defaultPriceId,
+      stripe_product_id: synchronized.productId,
       unit_amount_cents: defaultVariant.unitAmountCents
     });
 
@@ -390,7 +425,9 @@ integrationDescribe("Stripe local catalog recovery", () => {
         unitAmountCents: index === 0 ? changedAmount : variant.unitAmountCents
       }))
     };
-    await seedListing(client, changedListing);
+    await seedListing(client, changedListing, {
+      expectedStripeAccountId: "acct_test_candidate"
+    });
     const amountDrift = await readDefaultBinding(client, changedListing);
     expect(amountDrift).toMatchObject({
       base_price_cents: changedAmount,
@@ -401,16 +438,18 @@ integrationDescribe("Stripe local catalog recovery", () => {
       unit_amount_cents: changedAmount
     });
 
-    const secondSuffix = randomUUID().replaceAll("-", "");
-    const secondProductId = `prod_test_seed_${secondSuffix}`;
-    const secondPriceId = `price_test_seed_${secondSuffix}`;
+    const second = await attestCatalog(
+      client,
+      changedListing,
+      "acct_test_candidate",
+    );
     await client.query(
       `
         update listings
         set currency = 'cad', stripe_product_id = $2, default_stripe_price_id = $3
         where slug = $1
       `,
-      [listing.slug, secondProductId, secondPriceId],
+      [listing.slug, second.productId, second.defaultPriceId],
     );
     await client.query(
       `
@@ -422,10 +461,17 @@ integrationDescribe("Stripe local catalog recovery", () => {
           and lpv.variant_key = $2
           and lpv.active = true
       `,
-      [listing.slug, defaultVariant.variantKey, secondProductId, secondPriceId],
+      [
+        listing.slug,
+        defaultVariant.variantKey,
+        second.productId,
+        second.defaultPriceId
+      ],
     );
 
-    await seedListing(client, changedListing);
+    await seedListing(client, changedListing, {
+      expectedStripeAccountId: "acct_test_candidate"
+    });
     const currencyDrift = await readDefaultBinding(client, changedListing);
     expect(currencyDrift).toMatchObject({
       currency: "usd",
@@ -434,6 +480,47 @@ integrationDescribe("Stripe local catalog recovery", () => {
       stripe_product_id: listing.stripeProductId,
       unit_amount_cents: changedAmount
     });
+
+    await attestCatalog(client, changedListing, "acct_test_other");
+    await seedListing(client, changedListing, {
+      expectedStripeAccountId: "acct_test_candidate"
+    });
+    const accountDrift = await readDefaultBinding(client, changedListing);
+    expect(accountDrift).toMatchObject({
+      default_stripe_price_id: defaultVariant.stripePriceId,
+      stripe_price_id: defaultVariant.stripePriceId,
+      stripe_product_id: listing.stripeProductId
+    });
+  });
+
+  it("rejects null listing-level mappings during attestation verification", async () => {
+    const listing = seedListings[0];
+    const synchronized = await attestCatalog(
+      client,
+      listing,
+      "acct_test_candidate",
+    );
+    await expect(
+      assertCatalogAttestations(client, "acct_test_candidate"),
+    ).resolves.toBeUndefined();
+
+    await client.query(
+      "update listings set stripe_product_id=null where slug=$1",
+      [listing.slug],
+    );
+    await expect(
+      assertCatalogAttestations(client, "acct_test_candidate"),
+    ).rejects.toMatchObject({ code: "FIXTURE_VERIFICATION_FAILED" });
+
+    await client.query(
+      `update listings
+          set stripe_product_id=$2, default_stripe_price_id=null
+        where slug=$1`,
+      [listing.slug, synchronized.productId],
+    );
+    await expect(
+      assertCatalogAttestations(client, "acct_test_candidate"),
+    ).rejects.toMatchObject({ code: "FIXTURE_VERIFICATION_FAILED" });
   });
 
   it("protects generic pending failures until their order becomes terminal", async () => {

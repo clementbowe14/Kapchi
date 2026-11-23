@@ -37,9 +37,14 @@ npm run test:e2e:staging
 ```
 
 It requires exact HTTPS `E2E_STAGING_STOREFRONT_ORIGIN` and
-`E2E_STAGING_API_ORIGIN` values plus distinct runtime-generated storage-state
-paths in `E2E_STAGING_CUSTOMER_STORAGE_STATE`,
-`E2E_STAGING_NON_ADMIN_STORAGE_STATE`, and
-`E2E_STAGING_ADMIN_STORAGE_STATE`. These files are ephemeral workflow secrets;
-do not commit or upload them as artifacts. The issue #115 workflow and evidence
-contract are documented in `docs/runbooks/staging-release-gate.md`.
+`E2E_STAGING_API_ORIGIN` values, their shared `E2E_STAGING_SITE_DOMAIN`, a
+run-owned `E2E_STAGING_ATTEMPT_ID`, and an
+`E2E_STAGING_FIXTURE_MANIFEST`. The trusted workflow also supplies the
+staging-only `VERCEL_AUTOMATION_BYPASS_SECRET` and
+`CLERK_SECRET_KEY`, plus the run-owned `E2E_STAGING_IDENTITY_MANIFEST` produced
+by the fixture provisioning step.
+
+The harness creates attempt-scoped Clerk storage state in a private temporary
+directory and removes it during teardown. Never commit or upload that state,
+the fixture manifest, or browser artifacts. The issue #115 workflow and
+evidence contract are documented in `docs/runbooks/staging-release-gate.md`.

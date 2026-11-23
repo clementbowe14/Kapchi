@@ -111,7 +111,10 @@ credential. Stripe resources must report `livemode=false`. Successful mappings
 are attested locally with the verified account, exact IDs, fixture ownership, and
 pricing fingerprint. The seed preserves only matching attestations; unattested,
 altered, live-mode, or price-drifted mappings return to placeholders without
-provider I/O. The read-only verifier reports mismatches but never repairs them.
+provider I/O. Set `KAPCHI_STRIPE_TEST_ACCOUNT_ID` to the `accountId` returned by
+the sync command before reseeding; a missing or different account ID resets the
+catalog to inert placeholders. The read-only verifier reports mismatches but
+never repairs them.
 
 ## Tests
 

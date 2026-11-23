@@ -1,6 +1,11 @@
 import { Pool, type PoolClient } from "pg";
 import { loadBackendEnvironment } from "../config/load-environment.js";
-import { seedCoreFixtures, type CoreSeedFabric, type CoreSeedListing } from "./fixtures/core.js";
+import {
+  seedCatalogFixtures,
+  seedCoreFixtures,
+  type CoreSeedFabric,
+  type CoreSeedListing
+} from "./fixtures/core.js";
 import {
   acquireFixtureTransactionLock,
   assertInitializedFixtureDatabase,
@@ -83,8 +88,26 @@ export function assertSafeLocalSeedTarget(
 }
 
 // A focused test seam. Normal callers should use seedLocalDatabase.
-export async function seedListing(db: Pick<PoolClient, "query">, listing: SeedListing) {
-  await seedCoreFixtures(db, { fabrics: seedFabrics, includeOperational: false, listings: [listing] });
+export async function seedListing(
+  db: Pick<PoolClient, "query">,
+  listing: SeedListing,
+  options: { expectedStripeAccountId?: string } = {},
+) {
+  if (!seedListings.some((candidate) => candidate.slug === listing.slug)) {
+    throw new Error(`Unknown fixture listing: ${listing.slug}`);
+  }
+  const listings = seedListings.map((candidate) =>
+    candidate.slug === listing.slug ? listing : candidate,
+  );
+  await seedCatalogFixtures(db, {
+    expectedStripeAccountId: options.expectedStripeAccountId,
+    fabrics: seedFabrics,
+    listings
+  });
+}
+
+export async function seedIntegrationCatalog(db: Pick<PoolClient, "query">) {
+  return seedCatalogFixtures(db, { fabrics: seedFabrics, listings: seedListings });
 }
 
 export async function seedLocalDatabase(
@@ -102,6 +125,7 @@ export async function seedLocalDatabase(
     });
     await acquireFixtureTransactionLock(client);
     const result = await seedCoreFixtures(client, {
+      expectedStripeAccountId: process.env.KAPCHI_STRIPE_TEST_ACCOUNT_ID,
       fabrics: seedFabrics,
       includeOperational: options.includeOperational,
       listings: seedListings

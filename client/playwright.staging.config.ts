@@ -10,6 +10,8 @@ export default defineConfig({
   },
   forbidOnly: true,
   fullyParallel: false,
+  globalSetup: "./e2e/staging/staging-global-setup.ts",
+  globalTeardown: "./e2e/staging/staging-global-teardown.ts",
   globalTimeout: 15 * 60_000,
   metadata: {
     apiOrigin: settings.apiOrigin,
@@ -43,7 +45,10 @@ export default defineConfig({
       },
     },
   ],
-  reporter: process.env.CI ? "line" : "list",
+  reporter: [
+    [process.env.CI ? "line" : "list"],
+    ["./e2e/staging/scenario-reporter.ts"],
+  ],
   retries: 0,
   testDir: "./e2e",
   testMatch: /.*\.staging\.spec\.ts/,
@@ -53,6 +58,7 @@ export default defineConfig({
     baseURL: settings.storefrontOrigin,
     navigationTimeout: 20_000,
     screenshot: "off",
+    serviceWorkers: "block",
     trace: "off",
     video: "off",
   },

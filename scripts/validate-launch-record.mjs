@@ -4,6 +4,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import {
+  digestCanonicalJson,
+  loadStagingGateBundle,
+  validateScenarioRegistry,
+  validateStagingGateRecord
+} from "./validate-staging-gate.mjs";
 
 export const evidenceKeys = [
   "topology",
@@ -41,9 +47,16 @@ function registrableSuffix(hostname) {
   return hostname.split(".").slice(-2).join(".");
 }
 
-export function validateLaunchRecord(record, { now = new Date(), template = false } = {}) {
+export function validateLaunchRecord(
+  record,
+  { now = new Date(), template = false, stagingGateRecord, stagingGateRegistry, stagingGateSources, stagingGateValidator = validateStagingGateRecord } = {},
+) {
   assert.equal(record.recordVersion, 1, "recordVersion must be 1");
   assert.match(record.release?.sha ?? "", /^[0-9a-f]{40}$/i, "release.sha must be a full Git SHA");
+  if (!template) {
+    assert.match(record.release?.lockfileDigest ?? "", /^[0-9a-f]{64}$/, "release.lockfileDigest must be SHA-256");
+    assert.ok(Number.isSafeInteger(record.release?.registryVersion) && record.release.registryVersion > 0, "release.registryVersion must be positive");
+  }
   if (template) {
     assert.ok(String(record.release?.clientVercelDeploymentId ?? "").trim(), "client Vercel deployment ID is required");
     assert.ok(String(record.release?.backendVercelDeploymentId ?? "").trim(), "backend Vercel deployment ID is required");
@@ -52,6 +65,70 @@ export function validateLaunchRecord(record, { now = new Date(), template = fals
     assert.match(record.release?.backendVercelDeploymentId ?? "", /^dpl_[A-Za-z0-9]+$/, "backend Vercel deployment ID is invalid");
   }
   assert.notEqual(record.release.clientVercelDeploymentId, record.release.backendVercelDeploymentId, "client and backend must use distinct Vercel deployments");
+
+  if (!template) {
+    assert.equal(record.stagingGate?.issue, 115, "stagingGate.issue must be 115");
+    assert.equal(record.stagingGate?.recordVersion, 2, "stagingGate.recordVersion must be 2");
+    assert.equal(record.stagingGate?.trustMode, "single-owner-procedural", "stagingGate.trustMode is invalid");
+    assert.match(record.stagingGate?.attemptId ?? "", /^stg_[A-Za-z0-9][A-Za-z0-9_-]{7,95}$/, "stagingGate.attemptId is invalid");
+    assert.match(record.stagingGate?.recordDigest ?? "", /^[0-9a-f]{64}$/, "stagingGate.recordDigest must be SHA-256");
+    assert.match(record.stagingGate?.candidateSha ?? "", /^[0-9a-f]{40}$/, "stagingGate.candidateSha is invalid");
+    assert.match(record.stagingGate?.lockfileDigest ?? "", /^[0-9a-f]{64}$/, "stagingGate.lockfileDigest is invalid");
+    assert.ok(Number.isSafeInteger(record.stagingGate?.registryVersion) && record.stagingGate.registryVersion > 0, "stagingGate.registryVersion must be positive");
+    assert.equal(record.stagingGate.candidateSha, record.release.sha, "staging gate candidate differs from the release");
+    assert.equal(record.stagingGate.lockfileDigest, record.release.lockfileDigest, "staging gate lockfile differs from the release");
+    assert.equal(record.stagingGate.registryVersion, record.release.registryVersion, "staging gate registry differs from the release");
+    assert.match(record.stagingGate.stagingClientVercelDeploymentId ?? "", /^dpl_[A-Za-z0-9]+$/, "staging client deployment ID is invalid");
+    assert.match(record.stagingGate.stagingBackendVercelDeploymentId ?? "", /^dpl_[A-Za-z0-9]+$/, "staging backend deployment ID is invalid");
+    assert.notEqual(record.stagingGate.stagingClientVercelDeploymentId, record.release.clientVercelDeploymentId, "production client deployment must differ from staging");
+    assert.notEqual(record.stagingGate.stagingBackendVercelDeploymentId, record.release.backendVercelDeploymentId, "production backend deployment must differ from staging");
+    assert.equal(record.stagingGate.decision, "GO", "staging gate decision must be GO");
+    validDate(record.stagingGate.finalizedAt, "stagingGate.finalizedAt");
+    const stagingExpiresAt = validDate(record.stagingGate.expiresAt, "stagingGate.expiresAt");
+    assert.ok(stagingGateRecord, "the final issue #115 staging gate record is required");
+    assert.ok(stagingGateRegistry, "the reviewed issue #115 scenario registry is required");
+    assert.ok(stagingGateSources, "the complete issue #115 staging evidence bundle is required");
+    validateScenarioRegistry(stagingGateRegistry);
+    const stagingValidation = stagingGateValidator(stagingGateRecord, stagingGateRegistry, { now, sources: stagingGateSources });
+    assert.equal(stagingValidation.decision, "GO", "the complete issue #115 evidence bundle did not produce GO");
+    assert.equal(stagingGateRegistry.registryVersion, record.release.registryVersion, "issue #115 registry version differs from the release");
+    assert.equal(stagingGateRecord.recordVersion, 2, "issue #115 recordVersion must be 2");
+    assert.equal(stagingGateRecord.recordType, "final", "issue #115 record must be final");
+    assert.equal(stagingGateRecord.trustMode, "single-owner-procedural", "issue #115 trust mode is invalid");
+    assert.equal(stagingGateRecord.issue, 115, "issue #115 record has the wrong issue");
+    assert.equal(stagingGateRecord.attemptId, record.stagingGate.attemptId, "issue #115 attempt differs");
+    assert.equal(stagingGateRecord.candidate?.sha, record.release.sha, "issue #115 candidate differs");
+    assert.equal(stagingGateRecord.candidate?.lockfileDigest, record.release.lockfileDigest, "issue #115 lockfile differs");
+    assert.equal(stagingGateRecord.candidate?.registryVersion, record.release.registryVersion, "issue #115 registry differs");
+    assert.equal(stagingGateRecord.decision?.value, "GO", "issue #115 final decision must be GO");
+    assert.equal(stagingGateRecord.decision?.derivedBy, "scripts/validate-staging-gate.mjs", "issue #115 decision was not validator-derived");
+    assert.deepEqual(stagingGateRecord.decision?.reasonCodes, [], "issue #115 GO must not contain reason codes");
+    assert.ok(Array.isArray(stagingGateRecord.scenarioResults), "issue #115 scenario results are required");
+    const expectedScenarioResults = stagingGateRegistry.scenarios.map((scenario) => ({
+      id: scenario.id,
+      candidate: scenario.proofModes.includes("candidate") ? "pass" : null,
+      staging: scenario.proofModes.includes("staging") ? "pass" : null,
+      provider: scenario.proofModes.includes("provider") ? "pass" : null
+    }));
+    assert.deepEqual(
+      stagingGateRecord.scenarioResults,
+      expectedScenarioResults,
+      "issue #115 scenarios or required proof modes differ from the reviewed registry",
+    );
+    for (const name of ["candidate", "staging", "provider", "logScan", "cleanup"]) {
+      assert.match(stagingGateRecord.reportDigests?.[name] ?? "", /^[0-9a-f]{64}$/, `issue #115 ${name} report digest is invalid`);
+    }
+    assert.equal(stagingGateRecord.resourceControl?.status, "pass", "issue #115 cleanup must be verified");
+    assert.equal(stagingGateRecord.resourceControl?.reportDigest, stagingGateRecord.reportDigests.cleanup, "issue #115 cleanup digest differs");
+    assert.ok(Number.isSafeInteger(stagingGateRecord.resourceControl?.resourceCount) && stagingGateRecord.resourceControl.resourceCount >= 0, "issue #115 resource count is invalid");
+    assert.equal(stagingGateRecord.blockers?.length, 0, "issue #115 record has blockers");
+    assert.equal(stagingGateRecord.deployments?.staging?.storefront?.deploymentId, record.stagingGate.stagingClientVercelDeploymentId, "issue #115 storefront deployment differs");
+    assert.equal(stagingGateRecord.deployments?.staging?.api?.deploymentId, record.stagingGate.stagingBackendVercelDeploymentId, "issue #115 API deployment differs");
+    assert.equal(stagingGateRecord.expiresAt, record.stagingGate.expiresAt, "issue #115 expiry differs");
+    assert.equal(stagingGateRecord.decision?.finalizedAt, record.stagingGate.finalizedAt, "issue #115 finalization time differs");
+    assert.equal(digestCanonicalJson(stagingGateRecord), record.stagingGate.recordDigest, "issue #115 record digest differs");
+    assert.ok(now.getTime() <= stagingExpiresAt, "issue #115 staging gate record is stale");
+  }
 
   for (const key of ownerKeys) {
     assert.ok(String(record.owners?.[key] ?? "").trim(), `owners.${key} is required`);
@@ -119,13 +196,29 @@ export function validateLaunchRecord(record, { now = new Date(), template = fals
 function parseArgs(argv) {
   const recordIndex = argv.indexOf("--record");
   if (recordIndex < 0 || !argv[recordIndex + 1]) throw new Error("Use --record <path>");
-  return { recordPath: argv[recordIndex + 1], template: argv.includes("--template") };
+  const stagingGateIndex = argv.indexOf("--staging-gate-bundle");
+  const stagingGateRegistryIndex = argv.indexOf("--staging-gate-registry");
+  return {
+    recordPath: argv[recordIndex + 1],
+    template: argv.includes("--template"),
+    stagingGateBundlePath: stagingGateIndex >= 0 ? argv[stagingGateIndex + 1] : undefined,
+    stagingGateRegistryPath: stagingGateRegistryIndex >= 0 ? argv[stagingGateRegistryIndex + 1] : undefined
+  };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const record = JSON.parse(await readFile(args.recordPath, "utf8"));
-  const result = validateLaunchRecord(record, { template: args.template });
+  const stagingBundle = args.stagingGateBundlePath ? await loadStagingGateBundle(args.stagingGateBundlePath) : undefined;
+  const stagingGateRegistry = args.stagingGateRegistryPath
+    ? JSON.parse(await readFile(args.stagingGateRegistryPath, "utf8"))
+    : undefined;
+  const result = validateLaunchRecord(record, {
+    template: args.template,
+    stagingGateRecord: stagingBundle?.record,
+    stagingGateRegistry,
+    stagingGateSources: stagingBundle?.sources
+  });
   console.log(JSON.stringify({ event: "launch.record.validated", ...result }));
 }
 

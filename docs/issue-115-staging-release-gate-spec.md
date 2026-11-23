@@ -297,9 +297,10 @@ The adapter must:
 - expire within 24 hours; and
 - support idempotent normal and TTL cleanup.
 
-A dedicated `staging_gate_control` schema stores the durable resource ledger.
-It uses a database role available only to trusted GitHub workflows, not the
-deployed Kapchi application. Before any provider call, orchestration writes a
+A physically separate staging-gate control database stores the durable resource
+ledger and is initialized with `deploy/staging-gate-control.sql`. Its database
+identity is available only to trusted GitHub workflows, never to the deployed
+Kapchi application. Before any provider call, orchestration writes a
 `creation-pending` intent containing the attempt ID, provider, deterministic
 namespace, idempotency key, expected account/project, and expiration time. After
 the provider returns, the workflow binds the returned handle to that intent
@@ -352,7 +353,8 @@ Eventual-consistency reads use bounded polling with jitter. Mutations are never
 blindly retried. Playwright tracing, video, and automatic screenshots are
 disabled for credentialed staging runs because they can contain cookies,
 headers, URLs, and request bodies. Failure diagnostics are converted to compact
-structured events, scanned for forbidden keys and seeded sentinel values, and
+structured events, scanned for forbidden keys and deterministic non-sensitive
+canaries derived from the attempt ID and candidate SHA, and
 uploaded only after the scanner passes.
 
 ### 6. Provider observation
@@ -379,7 +381,8 @@ and cleanup events.
 
 The gate captures logs immediately because Hobby log retention is limited. A
 sanitized scanner requires correlation identifiers and safe error codes while
-failing on forbidden keys or seeded sentinel values.
+failing on forbidden keys or those strict-format canary values. Arbitrary
+operator-provided values are never placed in the evidence bundle.
 
 ### 8. Cleanup and finalization
 
@@ -399,6 +402,13 @@ The finalizer computes the decision from validated records. Operators cannot set
 `GO` directly. A `GO` record requires every critical scenario to pass, provider
 evidence to be current, and cleanup to be verified.
 
+The cleanup export must include a non-empty expected resource inventory bound
+to the attempt ID and candidate SHA. Its provider, attempt-owned namespace,
+idempotency-key hash, and staging account/project hashes must exactly match the
+exported control-ledger rows. Missing, unexpected, or duplicate rows invalidate
+the bundle; cleanup passes only when every expected resource has terminal
+absence or approved terminal-isolation evidence.
+
 ## Evidence Integrity on the Current Plan
 
 Every record uses canonical JSON and SHA-256 digests. The final record binds:
@@ -410,10 +420,12 @@ Every record uses canonical JSON and SHA-256 digests. The final record binds:
 - candidate, staging, provider, log-scan, and cleanup report digests; and
 - creation and expiration timestamps no more than 24 hours apart.
 
-The validator retrieves referenced GitHub artifacts by run and artifact ID and
-recomputes every digest. It does not accept attestation-shaped JSON as proof.
-Records use `trustMode: "single-owner-procedural"` and clearly state that GitHub
-Free artifacts are not cryptographically attested.
+Trusted workflow code downloads referenced GitHub artifacts by run and artifact
+ID. The validator consumes that complete local bundle, verifies the recorded
+artifact metadata, and recomputes every report and digest. It does not accept
+attestation-shaped JSON as proof. Records use
+`trustMode: "single-owner-procedural"` and clearly state that GitHub Free
+artifacts are not cryptographically attested.
 
 When verified private-repository attestations become available, a new record
 version may require `gh attestation verify` against the repository and trusted
@@ -495,7 +507,8 @@ owner to configure:
 - stable staging storefront and API aliases used for CORS, Clerk, Stripe return
   URLs, customer links, and browser/API traffic;
 - the configured registrable site domain shared by both HTTPS staging aliases;
-- a dedicated staging PostgreSQL database and environment marker;
+- a dedicated staging application PostgreSQL database and environment marker;
+- a physically separate workflow-only staging-gate control database;
 - a dedicated staging Redis instance;
 - Stripe test credentials and webhook endpoint;
 - Clerk test-instance credentials;

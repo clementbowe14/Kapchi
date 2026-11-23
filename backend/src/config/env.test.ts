@@ -43,6 +43,22 @@ const productionEnvironment: NodeJS.ProcessEnv = {
   STRIPE_WEBHOOK_SECRET: "s".repeat(32)
 };
 
+const stagingEnvironment: NodeJS.ProcessEnv = {
+  ...productionEnvironment,
+  BLOB_READ_WRITE_TOKEN: "vercel_blob_staging_token",
+  CLERK_JWKS_URL: "https://clerk.staging.example/.well-known/jwks.json",
+  CLERK_JWT_ISSUER: "https://clerk.staging.example",
+  CLERK_PUBLISHABLE_KEY: "pk_test_kapchi_staging",
+  CLERK_SECRET_KEY: "sk_test_kapchi_staging",
+  DATABASE_DIRECT_URL: "postgres://user@db.example:5432/kapchi_staging",
+  DATABASE_URL: "postgres://user@db.example:5432/kapchi_staging",
+  KAPCHI_ENVIRONMENT: "staging",
+  MESSAGE_CANARY_DESTINATION: "kapchi-staging@example.invalid",
+  STRIPE_SECRET_KEY: "sk_test_kapchi_staging",
+  VERCEL: "1",
+  VERCEL_ENV: "preview"
+};
+
 for (const [key, value] of Object.entries({
   ...requiredEnvironment,
   NODE_ENV: "test"
@@ -145,7 +161,8 @@ describe("checkout redirect environment", () => {
       VERCEL: "1",
       VERCEL_DEPLOYMENT_ID: "dpl_system_fixture",
       VERCEL_ENV: "production",
-      VERCEL_GIT_COMMIT_SHA: "a".repeat(40)
+      VERCEL_GIT_COMMIT_SHA: "a".repeat(40),
+      KAPCHI_ENVIRONMENT: "production"
     })).toMatchObject({
       VERCEL_DEPLOYMENT_ID: "dpl_system_fixture",
       VERCEL_GIT_COMMIT_SHA: "a".repeat(40)
@@ -170,6 +187,57 @@ describe("checkout redirect environment", () => {
     expect(() => validateEnvironment({ ...productionEnvironment, DATABASE_SSL_MODE: "no-verify" })).toThrow(/DATABASE_SSL_MODE/);
     expect(() => validateEnvironment({ ...productionEnvironment, ASSET_UPLOAD_CALLBACK_SECRET_CURRENT: "short" })).toThrow(/ASSET_UPLOAD_CALLBACK_SECRET_CURRENT/);
     expect(() => validateEnvironment({ ...productionEnvironment, CRON_SECRET: "short" })).toThrow(/CRON_SECRET/);
+  });
+
+  it("resolves local and test defaults without changing developer startup", () => {
+    expect(validateEnvironment({ ...requiredEnvironment, NODE_ENV: "development" }).KAPCHI_ENVIRONMENT).toBe("local");
+    expect(validateEnvironment({ ...requiredEnvironment, NODE_ENV: "test" }).KAPCHI_ENVIRONMENT).toBe("test");
+  });
+
+  it("requires an explicit Kapchi environment on Vercel", () => {
+    expect(() => validateEnvironment({
+      ...productionEnvironment,
+      VERCEL: "1",
+      VERCEL_ENV: "production"
+    })).toThrow(/KAPCHI_ENVIRONMENT: is required for deployed environments/);
+  });
+
+  it("enforces the Kapchi and Node environment matrix", () => {
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      KAPCHI_ENVIRONMENT: "staging",
+      NODE_ENV: "test"
+    })).toThrow(/staging cannot run with NODE_ENV=test/);
+    expect(() => validateEnvironment({
+      ...productionEnvironment,
+      KAPCHI_ENVIRONMENT: "test"
+    })).toThrow(/test cannot run with NODE_ENV=production/);
+  });
+
+  it("accepts production-strength staging with isolated test providers", () => {
+    expect(validateEnvironment(stagingEnvironment)).toMatchObject({
+      KAPCHI_ENVIRONMENT: "staging",
+      NODE_ENV: "production",
+      STRIPE_SECRET_KEY: "sk_test_kapchi_staging",
+      CLERK_SECRET_KEY: "sk_test_kapchi_staging"
+    });
+  });
+
+  it("rejects live providers, production-looking databases, and unrestricted messaging in staging", () => {
+    expect(() => validateEnvironment({ ...stagingEnvironment, STRIPE_SECRET_KEY: "sk_live_wrong" })).toThrow(/Stripe test-mode/);
+    expect(() => validateEnvironment({ ...stagingEnvironment, CLERK_SECRET_KEY: "sk_live_wrong" })).toThrow(/Clerk test-instance/);
+    expect(() => validateEnvironment({
+      ...stagingEnvironment,
+      DATABASE_URL: "postgres://user@db.example:5432/kapchi_production"
+    })).toThrow(/staging database name/);
+    expect(() => validateEnvironment({
+      ...stagingEnvironment,
+      MESSAGE_DELIVERY_URL: "https://messages.example/send",
+      MESSAGE_DELIVERY_TOKEN: "token",
+      MESSAGE_WEBHOOK_SECRET: "m".repeat(32),
+      MESSAGE_FROM_EMAIL: "staging@example.com",
+      MESSAGE_CANARY_DESTINATION: undefined
+    })).toThrow(/MESSAGE_CANARY_DESTINATION/);
   });
 
   it("validates the transactional order lookup origin", () => {
