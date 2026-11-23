@@ -1,198 +1,442 @@
 # Issue 115 Staging Purchase-to-Fulfillment Release Gate Specification
 
-Status: Approved by three independent reviewers on 2026-11-14
+Status: Approved by three independent reviewers on 2026-11-23
 
 ## Purpose
 
-Issue #115 is the final blocking proof that one reviewed Kapchi release can
-complete the customer-to-fulfillment lifecycle in a production-like staging
-environment. It coordinates canonical feature tests and records cross-service
-evidence; it does not duplicate domain logic or turn production into a test
-environment.
+Issue #115 is the final proof that one reviewed Kapchi release can complete the
+customer-to-fulfillment lifecycle in a production-like test environment before
+production launch. It coordinates existing feature tests, deployed browser
+tests, provider observations, cleanup, and a final `GO` or `NO-GO` record.
 
-A release passes only when secretless candidate tests, trusted staging checks,
-and current provider observations all bind to the same full Git SHA and exact
-storefront/API deployments. Missing, stale, mixed-release, failed, or
-unreconciled evidence produces `NO-GO`.
+The gate does not make production changes. A passing gate is necessary for a
+release recommendation, but it is not a substitute for the production launch
+runbook in issue #114.
 
-## Trust and Safety Model
+## Current Platform Constraints
 
-### Candidate trust
+This specification is deliberately limited to the repository and hosting plans
+currently in use:
 
-- The candidate SHA must be reachable from the protected release branch.
-- Candidate-controlled CI scripts and build jobs run only in secretless jobs
-  against ephemeral local PostgreSQL and Redis services. Vercel builds must not
-  receive runtime secrets.
-- Jobs with staging credentials check out trusted orchestration from the
-  protected default branch and never execute scripts from an arbitrary candidate
-  checkout.
-- A reviewed candidate reachable from the protected release branch may run as a
-  deployed application with least-privilege staging runtime credentials.
-  Production and provider control-plane credentials remain unavailable to it.
-- Every job uses minimal GitHub permissions and receives only the provider
-  credentials required for that job.
+- The private repository does not currently provide enforceable protected
+  branches or reviewer-protected GitHub environments.
+- GitHub artifact attestations are not available for this private repository on
+  its current plan.
+- Vercel Hobby does not provide a named custom staging environment. Vercel does
+  support a persistent Preview branch with branch-specific variables on Hobby.
+- Vercel Preview variables can be read during the build and during function
+  execution. They must therefore contain test-only, least-privilege values and
+  never production credentials.
+- The two Vercel projects may build sequentially because Hobby provides limited
+  build concurrency.
+- No production cron schedule is installed. Gate workflows invoke reviewed
+  internal jobs directly and do not wait for cron.
+- Vercel Hobby is intended for personal, non-commercial use. It may be used to
+  implement and rehearse this gate, but production `GO` requires confirmation
+  that Kapchi is on a Vercel plan permitting its commercial use.
 
-### Staging identity
+Relevant platform references:
 
-Add `KAPCHI_ENVIRONMENT=staging` independently of `NODE_ENV=production`.
-Staging retains production TLS, CORS, cookie, auth, secret-length, and database
-pool rules while requiring test-mode providers. Before any staging mutation,
-trusted orchestration attests all of the following against protected expected
-values:
+- [Vercel deployment environments](https://vercel.com/docs/deployments/environments)
+- [Vercel branch-specific Preview variables](https://vercel.com/docs/environment-variables)
+- [Vercel automation protection bypass](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)
+- [GitHub protected branch availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+- [GitHub artifact attestation availability](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
 
-- Vercel team, project, deployment ID, immutable deployment URL, alias target,
-  and candidate SHA for both storefront and API;
-- database provider project/branch identity, database OID, and staging marker;
-- Stripe account ID with `livemode=false`;
-- Clerk test instance/issuer;
-- Vercel Blob store ID and a run-scoped object prefix;
-- Redis staging instance identity; and
-- messaging provider account plus an exact destination allowlist.
+### Trust level
 
-The API exposes its existing customer-safe release identity. The storefront
-adds a customer-safe release endpoint containing only SHA, deployment ID, and
-environment. Both aliases must resolve to the attested immutable deployments.
+The current implementation uses a **single-owner procedural trust model**. It
+provides reproducible tests, hashes, immutable deployment references, actor and
+workflow metadata, and strict validators. It does not claim cryptographic
+provenance or make manual production deployment technically impossible.
 
-### Data and provider isolation
+The owner must:
 
-- Live Clerk, Stripe, Blob, Redis, messaging, and database identities are denied
-  unconditionally in staging orchestration.
-- Synthetic contacts use `example.test`, reserved phone numbers, `DO NOT SHIP -
-  TEST` addresses, and non-sensitive artwork bytes.
-- Evidence contains result codes, counts, hashes, timestamps, and approved-host
-  references only. It never contains tokens, cookies, addresses, customization
-  text, filenames, provider payloads, database URLs, or private Blob URLs.
-- Provider references must use HTTPS, have an approved host, and contain no
-  credentials, query, or fragment. Sanitized captured evidence is a separate
-  immutable artifact whose canonical manifest receives a SHA-256 attestation.
+1. configure both Vercel projects to use a separate `production` branch so
+   updates to `main` cannot deploy customer traffic;
+2. review and merge the candidate to `main`;
+3. dispatch the gate workflow from `main` with that exact merged SHA;
+4. allow the workflow to verify preconditions and fast-forward the dedicated
+   `staging` branch to the candidate without adding code;
+5. after a passing gate, advance `production` to the same source SHA only
+   through the issue #114 launch process; and
+6. avoid every other production deployment path.
 
-## Proof Layers
+If the repository later receives GitHub Pro or Enterprise capabilities, the
+gate should add protected branches, protected environments, and verified
+artifact attestations. Those future controls must strengthen this baseline
+without changing the scenario contract.
 
-### Deterministic candidate suite
+## Environment Model
 
-The secretless candidate job provisions ephemeral PostgreSQL and Redis,
-applies migrations, initializes the existing local fixture guard, and transports
-its one-time token only through masked job environment. It runs:
+Add and validate `KAPCHI_ENVIRONMENT` independently of `NODE_ENV`.
+
+| `KAPCHI_ENVIRONMENT` | `NODE_ENV` | Provider requirement | Intended use |
+| --- | --- | --- | --- |
+| `local` | `development` or `test` | Local/test providers | Developer machine |
+| `test` | `test` | Fake or test providers | Automated hermetic tests |
+| `staging` | `production` | Test-mode, staging-only providers | Vercel Preview branch |
+| `production` | `production` | Live production providers | Customer traffic |
+
+Application startup validates only values available without external provider
+calls. Startup must fail when:
+
+- staging uses a live Stripe key, live Clerk issuer, production database,
+  a statically denied provider identity, or unrestricted message destination;
+- production uses any test provider identity;
+- `KAPCHI_ENVIRONMENT` is missing in a deployed environment; or
+- the database does not contain the expected environment marker.
+
+Staging keeps production-strength TLS, cookie, CORS, auth, secret-length, and
+database-pool rules while requiring test-mode provider identities.
+
+Provider API account identity, Blob store identity, Redis identity, Vercel
+project identity, Clerk instance identity, messaging destination, and complete
+production-denylist comparisons belong to gate preflight. They are not executed
+during a Vercel function cold start.
+
+## Vercel Staging Topology
+
+Both Vercel projects use `production` as the Production Branch. The persistent
+`staging` branch therefore deploys only to the built-in Preview environment.
+Gate preflight queries both Vercel projects and stops unless the Production
+Branch is exactly `production` and neither `main` nor `staging` can deploy
+customer traffic. Every staging variable is scoped specifically to the
+`staging` branch. General Preview variables must not silently supply
+production-like values.
+
+The storefront and API deployments must expose customer-safe release identity
+containing only:
+
+- full Git commit SHA;
+- Vercel deployment ID;
+- `KAPCHI_ENVIRONMENT`; and
+- scenario registry version.
+
+Runtime communication uses two stable staging aliases configured before build:
+one for the storefront and one for the API. The API uses the stable storefront
+origin for CORS, Clerk authorized parties, Stripe return URLs, and customer
+links. The storefront uses the stable API origin. This avoids an impossible
+cycle in which each immutable deployment URL would need the other before build.
+
+Both aliases must use HTTPS, be distinct hosts, and share one configured
+registrable site domain, for example `staging.kapchi.com` and
+`api-staging.kapchi.com`. Gate preflight validates the configured site domain
+and both hostnames before deployment or fixture creation so the guest-cart
+`SameSite=Lax` cookie remains same-site. Credentialed CORS still allows only
+the exact storefront origin, not every subdomain of the shared site.
+
+Immutable deployment URLs and deployment IDs remain the identity evidence. Once
+both deployments for the candidate SHA are verified, trusted orchestration
+assigns or confirms each stable alias against its recorded immutable deployment.
+It then verifies:
+
+- both release identities use the same source SHA and registry version;
+- browser requests use only the configured stable API alias;
+- CORS, Clerk authorized parties, Stripe return URLs, and customer links use
+  only the configured stable storefront alias; and
+- the Vercel API reports that both aliases target the recorded deployment IDs.
+
+Alias targets are reverified before fixture mutation, after provider evidence,
+and immediately before finalization. Any target change is `NO-GO`. Runtime
+aliases may carry traffic, but they are never accepted as deployment identity
+proof.
+
+The storefront Preview remains protected. Playwright sends
+`x-vercel-protection-bypass` and requests the bypass cookie. The staging-only
+bypass secret is available to reviewed staging deployment code and the trusted
+workflow, but never to production. It is never written to reports, URLs, or
+logs.
+
+The API Preview is intentionally public at the Vercel layer so Stripe, Clerk,
+and other providers can deliver webhooks without placing a bypass secret in a
+URL. Every non-public application route still requires Clerk authorization,
+an internal workflow credential, or a verified provider signature. The API uses
+exact CORS origins, rate limits public endpoints, and exposes only customer-safe
+health and release identity without authentication.
+
+## Candidate and Build Safety
+
+### Secretless candidate suite
+
+Pull requests and candidate commits run without staging or production secrets.
+The job provisions ephemeral PostgreSQL and Redis services and runs each suite
+once:
 
 ```text
-backend: npm ci; npm run typecheck; npm test
-backend database: RUN_DATABASE_INTEGRATION_TESTS=true npm test
-backend fixtures: db:migrate:apply, db:fixtures:init, db:seed:local, db:seed:verify
-client: npm ci; npm run lint; npm test; npm run build; npm run test:e2e
-repository controls: node --test scripts/*.test.mjs
+backend: npm ci, typecheck, unit tests, database integration tests, fixtures
+client: npm ci, lint, unit tests, production build, deterministic Playwright
+repository: node --test scripts/*.test.mjs
 ```
 
-JUnit or equivalent machine-readable reports are aggregated by scenario ID so
-capabilities remain separately visible without rerunning whole suites. New
-Playwright tests cover only browser/cross-service seams; canonical domain
-invariants remain in Vitest and database-integration tests.
+Every required test writes a compact machine-readable result associated with a
+stable scenario ID. A skipped required test is `pending`, not `pass`, and blocks
+the gate. Reports are retained for seven days and contain no credentials,
+addresses, customization text, filenames, provider payloads, or private URLs.
 
-### Deployed staging suite
+### Reviewed deployment code
 
-Create `client/playwright.staging.config.ts`. It starts no local server and
-performs no direct database reset. It accepts exact protected HTTPS origins,
-uses guest, customer, non-admin, and admin projects, creates authentication state
-at runtime, and removes that state during teardown. Eventual-consistency reads
-use bounded polling; mutations are never blindly retried.
+Only a SHA already reachable from `main` may be tested by the credentialed
+staging workflow. Vercel builds that SHA through the dedicated `staging` branch.
+Because Vercel Preview variables are available to build code, every branch
+variable is test-only and least privilege. Vercel account-management tokens and
+production credentials are never stored in project environment variables.
 
-The suite uses a trusted, API-based run fixture contract described below. It
-proves successful guest and authenticated checkout, each customization tier,
-cart merge, confirmation/lookup, admin queue and artwork access, fulfillment,
-and customer-visible tracking against the exact deployed candidate.
+Before moving `staging`, trusted orchestration verifies through GitHub that the
+candidate commit author and verified email resolve to the Vercel Hobby project
+owner. The committer is recorded as evidence but is not independently
+disqualifying because GitHub may create the merge commit. An unrecognized author
+is `NO-GO`, and successful creation of both Vercel deployments remains the
+authoritative eligibility check.
 
-### Provider observation
+The gate records:
 
-Manual evidence is limited to external state that hermetic automation cannot
-authoritatively observe: Stripe-hosted success/cancel/decline screens and object
-visibility, Stripe refund visibility, Vercel Blob object visibility, delivery to
-allowlisted inboxes/numbers, and provider/Vercel log correlation. Kapchi-side
-authorization, idempotency, retry, reconciliation, and redaction assertions
-remain automated.
+- candidate SHA and lockfile digest;
+- storefront and API project/deployment IDs;
+- immutable deployment URLs;
+- Vercel-reported source SHA;
+- release-identity responses; and
+- hashes of the normalized build and test manifests.
 
-Transient timeouts, retry exhaustion, duplicate webhook delivery, and unknown
-provider outcomes are induced through deterministic adapters and signed webhook
-replays, not unreliable attempts to break hosted Stripe Checkout.
+The current plan cannot prove that a later production rebuild is byte-identical
+to staging. Records therefore contain separate staging storefront/API deployment
+IDs and production storefront/API deployment IDs. Preview deployments containing
+staging credentials are never promoted to production. The two deployment sets
+must differ while sharing the reviewed source SHA, lockfile digest, and registry
+version. The production launch record explicitly states this procedural
+limitation.
 
 ## Stable Scenario Registry
 
-The versioned machine-readable registry is the source of valid IDs. Each entry
-names its proof mode, canonical test owner, fixtures, and required assertions.
+`deploy/staging-release-scenarios.json` remains the source of the 25 required
+scenario IDs:
 
-| ID | Required proof | Canonical owner and assertions |
-| --- | --- | --- |
-| `CART-GUEST-CRUD` | CI + staging | Cart service/Playwright: guest add, quantity update, remove, duplicate submit |
-| `CART-AUTH-CRUD` | CI + staging | Cart service/Playwright: authenticated add, update, remove |
-| `CART-CLAIM-MERGE` | CI + staging | Claim integration: preserve quantity, fabric, text, image asset ID, trim, price and production metadata |
-| `CUSTOM-NONE` | CI + staging | Checkout/order snapshot contains no paid customization fields |
-| `CUSTOM-SHORT-TEXT` | CI + staging | Short-text limits, price, snapshot, and prohibited image/trim fields |
-| `CUSTOM-LONG-TEXT` | CI + staging | Long-text limits, price, snapshot, and prohibited image/trim fields |
-| `CUSTOM-TEXT-IMAGE` | CI + staging | Text/image entitlement, asset binding, price and order snapshot; trim denied |
-| `CUSTOM-TEXT-IMAGE-TRIM` | CI + staging | Text/image/trim entitlement, trim size, price and order snapshot |
-| `CATALOG-FABRIC` | CI + staging | Selected fabric/image and immutable fabric snapshot; customer output hides SKU/IDs |
-| `CATALOG-PRICE-PRIORITY` | CI | Immutable minor-unit/currency price and production-priority snapshots |
-| `INVENTORY-RESERVATION` | CI | Reserve, convert, release, expiry, concurrent contention and out-of-stock denial |
-| `ASSET-UPLOAD-OWNERSHIP` | CI + staging + provider | Authorized intent/token, Blob completion, correct cart-item attachment, checkout preservation, and admin retrieval succeed; wrong customer cannot create an intent/token for another cart; callback signature, timestamp, nonce, path and fingerprints are exact; altered/replayed completion fails |
-| `ASSET-ADMIN-ACCESS` | CI + staging | Anonymous/non-admin denied; admin allowed only for paid, attached, private, bound, non-quarantined artwork; deleted/mismatched/unselected denied |
-| `CHECKOUT-GUEST-SUCCESS` | CI + staging + provider | Guest order, Stripe test session, confirmation and public order number |
-| `CHECKOUT-AUTH-SUCCESS` | CI + staging + provider | Authenticated ownership, order, Stripe test session and confirmation |
-| `CHECKOUT-CANCEL-DECLINE` | CI + staging + provider | Cancellation preserves recoverable cart; declined payment creates no paid order |
-| `CHECKOUT-RETRY-DUPLICATE` | CI | Reconcile unknown state; reuse `cart-checkout:<orderId>`; duplicate signed webhook is harmless |
-| `ORDER-CUSTOMER-LOOKUP` | CI + staging | Public-number/contact lookup is customer-safe and exposes no catalog/provider IDs |
-| `ADMIN-QUEUE-TRANSITIONS` | CI + staging | Queue visibility; allowed and forbidden transitions; idempotency key + expected revision |
-| `FULFILLMENT-TRACKING` | CI + staging | Carrier/tracking mutation becomes customer-visible with no private operational fields |
-| `REFUND-FULL-PARTIAL` | CI + staging + provider | Full/partial minor-unit refunds, persisted provider key, Stripe reconciliation before retry |
-| `REFUND-DUPLICATE-RETRY` | CI | Duplicate effect/replay is idempotent; unknown outcome blocks until reconciled |
-| `MESSAGE-DELIVERY` | CI + provider | Persisted delivery key, retry/duplicate behavior, allowlisted external receipt |
-| `OBS-CORRELATION-REDACTION` | CI + staging + provider | Correlation and safe error codes across HTTP/webhook/worker/delivery; forbidden sensitive fields absent |
-| `FIXTURE-ISOLATION-CLEANUP` | CI + staging | Identity attestation, run ownership, provider cleanup, TTL cleanup, no unowned mutation |
+- cart: guest CRUD, authenticated CRUD, and guest-to-user merge;
+- customization: none, short text, long text, text/image, and
+  text/image/trim;
+- catalog and inventory: fabric, price/priority snapshot, reservation, and
+  out-of-stock behavior;
+- assets: upload ownership and paid-order admin access;
+- checkout: guest success, authenticated success, cancellation/decline, retry,
+  and duplicate webhook handling;
+- orders: customer-safe lookup, admin queue/transitions, and tracking;
+- refunds: full/partial and duplicate/unknown-outcome handling;
+- messaging: durable delivery and retry behavior;
+- observability: correlation and sensitive-data redaction; and
+- fixtures: isolation, ownership, and cleanup.
 
-Every GitHub issue #115 criterion maps to at least one ID above. Removing or
-renaming an ID requires a registry-version change and validator/test update.
+Each registry entry must contain exact test owners, not prose-only labels. A test
+owner is a repository-relative file plus a stable test or report ID. Validation
+fails when a required owner is missing, skipped, duplicated, or reports a
+different scenario version.
 
-## Remote Staging Fixture Contract
+Removing or renaming an ID requires a registry-version change, validator tests,
+and an explicit review of the issue #115 acceptance-criteria mapping.
 
-The local `parseSafeFixtureTarget` behavior remains unchanged. Shared staging
-databases are never initialized with `kapchi_fixture`.
+## Gate Lifecycle
 
-Each gate attempt instead uses a disposable database branch/database created by
-trusted orchestration. The required order is: create and attest the database;
-deploy the reviewed API with its restricted URL and staging runtime credentials;
-deploy the storefront against that immutable API; assign temporary run aliases;
-attest both aliases, deployments, and release identities; run the gate; capture
-provider evidence; restore/remove aliases; verify final database invariants;
-delete the remaining deletable provider resources; delete the disposable
-database; verify resource absence and retained-provider terminal isolation; then
-finalize. This ordering prevents traffic from reaching an API after its database
-has been deleted. Trusted orchestration invokes Vercel's deployment control plane
-without running candidate scripts in the credentialed job.
-Before use, a separate staging runner requires:
+The lifecycle is:
 
-1. exact provider project and branch IDs from protected configuration;
-2. a restricted role that can access only the disposable database;
-3. provider-confirmed creation time and an out-of-band marker bound to the
-   database OID, attempt ID, candidate SHA, and random token hash;
-4. an unconditional mismatch check against every production/staging-shared
-   account, project, branch, database OID, and provider identity;
-5. `(run_id, fixture_key)` ownership, a run advisory lock, and refusal to adopt
-   any unowned row; and
-6. automatic expiry no later than 24 hours.
+```text
+candidate-tested -> staging-prepared -> scenarios-executed
+-> provider-evidence-recorded -> cleanup-verified -> finalized
+```
 
-The runner accepts only GitHub OIDC workload identity with exact audience,
-repository, protected environment, workflow identity, attempt ID, candidate SHA,
-deployment IDs, short expiry, and one-time replay protection. Candidate and
-browser code never receive runner credentials. Every call is audited,
-rate-limited, schema-restricted, bound to one attempt, and may provision only
-reviewed scenario fixtures; arbitrary SQL and caller-provided table names are
-forbidden.
+Any failure, cancellation, timeout, stale record, identity mismatch, missing
+scenario, or cleanup error produces `NO-GO`.
 
-Cleanup is idempotent. Deletable resources (temporary aliases, disposable
-database, run-prefixed Blob objects, ephemeral Clerk users/sessions) must be
-absent afterward. Provider-retained resources (completed Stripe sessions,
-PaymentIntents, refunds, messages, and provider logs) must carry the attempt ID,
-be test-mode, terminal/non-reusable, and excluded from workers. Cleanup verifies
-deletion only where supported and terminal isolation everywhere else. Any
-cleanup or verification failure blocks release and triggers the 24-hour TTL
-fallback plus alerting.
+### 1. Candidate testing
+
+A secretless workflow runs the deterministic suites and emits one normalized
+scenario report. It must be generated from test output; operators cannot type
+scenario statuses manually.
+
+### 2. Staging preparation
+
+The owner dispatches the workflow with an exact SHA already reachable from
+`main`. A repository-wide `staging-release-gate` concurrency group uses
+`cancel-in-progress: false`, so two runs cannot move the branch, aliases,
+fixtures, or provider configuration at the same time.
+
+The workflow verifies candidate identity, both Vercel Production Branch
+settings, stable alias configuration, and absence of another active attempt.
+It then fast-forwards `staging` to the candidate. A non-fast-forward update is
+rejected rather than forced. Trusted orchestration waits for both sequential
+Hobby deployments and verifies each project ID, deployment ID, source SHA,
+immutable URL, release identity, and branch-scoped environment. It assigns the
+stable aliases only after both immutable deployments pass verification.
+
+Before mutation, the workflow also verifies dedicated staging identities for:
+
+- PostgreSQL database and environment marker;
+- Redis instance;
+- Stripe test account with `livemode=false`;
+- Clerk test instance;
+- Vercel Blob store;
+- messaging provider and destination allowlist; and
+- storefront and API Vercel projects.
+
+Every identity is compared with a configured production denylist. A match
+stops the run before fixtures are created.
+
+### 3. Run-owned fixture preparation
+
+The implementation uses a provider-neutral fixture adapter. The first supported
+adapter may target a dedicated staging database; disposable provider branches
+are optional until a database provider with a branch API is selected.
+
+The adapter must:
+
+- require the staging environment marker and reject production-like database
+  names, hosts, IDs, and markers;
+- create an attempt ID and random ownership token;
+- create only reviewed scenario fixtures;
+- tag or externally ledger every created resource;
+- refuse to adopt pre-existing or unowned rows;
+- acquire an attempt-scoped advisory lock;
+- expire within 24 hours; and
+- support idempotent normal and TTL cleanup.
+
+A dedicated `staging_gate_control` schema stores the durable resource ledger.
+It uses a database role available only to trusted GitHub workflows, not the
+deployed Kapchi application. Before any provider call, orchestration writes a
+`creation-pending` intent containing the attempt ID, provider, deterministic
+namespace, idempotency key, expected account/project, and expiration time. After
+the provider returns, the workflow binds the returned handle to that intent
+before the resource may be used.
+
+If a call or workflow ends before the handle is bound, reconciliation searches
+the exact staging account and deterministic namespace for the unfinished
+resource. Cleanup may delete only a bound resource or one discovered from a
+matching pending intent after account, project, creation-time, namespace, and
+attempt verification. Immutable production IDs are denied even if they appear
+in a malformed ledger.
+
+Normal cleanup runs in an unconditional workflow step. A scheduled GitHub
+cleanup workflow processes expired completed and pending intents, and every new
+gate run performs the same recovery scan before creating resources. Cleaned
+ledger entries become immutable tombstones retained for 30 days. Tombstones are
+purged only after resource-absence verification and after all provider and final
+records have expired.
+
+### 4. Authentication setup
+
+Trusted setup creates ephemeral Clerk customer, non-admin, and admin identities
+inside the verified test instance. Browser storage state is written to an
+artifact-excluded temporary directory with distinct files per role.
+
+Unconditional teardown revokes every created session, deletes the ephemeral
+users, removes local storage-state files, and verifies that no identity belongs
+to another Clerk instance or attempt.
+
+### 5. Deployed staging suite
+
+`client/playwright.staging.config.ts` starts no local server and performs no
+direct database reset. It runs actual `*.staging.spec.ts` files against the two
+immutable deployments.
+
+The deployed suite covers:
+
+- cart CRUD and guest-to-user merge;
+- all five customization tiers;
+- fabric selection and customer-safe product display;
+- image upload and admin artwork authorization;
+- guest and authenticated Stripe test checkout;
+- confirmation and customer-safe order lookup;
+- admin queue, allowed/forbidden transitions, and tracking;
+- full and partial refunds through trusted staging API probes; and
+- direct invocation of reviewed message, refund, inventory, and maintenance
+  jobs where required.
+
+Eventual-consistency reads use bounded polling with jitter. Mutations are never
+blindly retried. Playwright tracing, video, and automatic screenshots are
+disabled for credentialed staging runs because they can contain cookies,
+headers, URLs, and request bodies. Failure diagnostics are converted to compact
+structured events, scanned for forbidden keys and seeded sentinel values, and
+uploaded only after the scanner passes.
+
+### 6. Provider observation
+
+Provider APIs are authoritative wherever read-only observation is available.
+Separate read-only credentials are used where providers support them. Otherwise,
+a dedicated test-account token is restricted to trusted workflow steps and is
+never provided to the application runtime or browser; the unavoidable scope is
+documented in the final record. Manual evidence is limited to hosted behavior
+that cannot be verified through an API, such as the visible Stripe Checkout
+success, cancellation, or decline page.
+
+Provider evidence contains only safe object IDs or hashes, result codes,
+timestamps, approved hosts, and attempt metadata. It never contains tokens,
+cookies, contact details, addresses, customization text, filenames, database
+URLs, private Blob URLs, query strings, or raw provider payloads.
+
+### 7. Observability and privacy scan
+
+The logger redaction list must cover credentials, cookies, authorization,
+addresses, address lines, customization text, uploaded content metadata, bodies,
+and provider payloads. Tests exercise HTTP, webhook, worker, message, refund,
+and cleanup events.
+
+The gate captures logs immediately because Hobby log retention is limited. A
+sanitized scanner requires correlation identifiers and safe error codes while
+failing on forbidden keys or seeded sentinel values.
+
+### 8. Cleanup and finalization
+
+Cleanup order prevents traffic from reaching deleted dependencies:
+
+1. stop new gate traffic and verify both stable aliases remain fixed;
+2. revoke Clerk sessions and users;
+3. remove run-prefixed Blob objects;
+4. remove run-owned database and Redis data;
+5. verify Stripe and message objects are test-mode, terminal, and excluded from
+   workers where providers retain them;
+6. verify every ledgered deletable resource is absent; and
+7. mark control-ledger entries cleaned and retain their tombstones; and
+8. remove local temporary authentication and evidence files.
+
+The finalizer computes the decision from validated records. Operators cannot set
+`GO` directly. A `GO` record requires every critical scenario to pass, provider
+evidence to be current, and cleanup to be verified.
+
+## Evidence Integrity on the Current Plan
+
+Every record uses canonical JSON and SHA-256 digests. The final record binds:
+
+- repository, workflow file, workflow commit, run ID, attempt, and actor;
+- candidate SHA, lockfile digest, and registry version;
+- both Vercel project and deployment IDs;
+- normalized provider identity hashes;
+- candidate, staging, provider, log-scan, and cleanup report digests; and
+- creation and expiration timestamps no more than 24 hours apart.
+
+The validator retrieves referenced GitHub artifacts by run and artifact ID and
+recomputes every digest. It does not accept attestation-shaped JSON as proof.
+Records use `trustMode: "single-owner-procedural"` and clearly state that GitHub
+Free artifacts are not cryptographically attested.
+
+When verified private-repository attestations become available, a new record
+version may require `gh attestation verify` against the repository and trusted
+workflow identity.
+
+## Production Launch Integration
+
+`validate-launch-record.mjs` must require a final issue #115 record with the
+same candidate SHA, lockfile digest, and registry version. The issue #115 record
+contains staging deployment IDs. The issue #114 launch record separately
+contains production deployment IDs and verifies that they differ from staging
+while reporting the same source SHA. The validator rejects `GO` when the gate is
+missing, stale, failed, mismatched, manually authored, or has unverified cleanup.
+
+On the current GitHub and Vercel plans this is an enforced repository check but
+not an unbypassable platform control. A repository owner can still deploy
+manually. The issue #114 runbook must prohibit that path and record the owner who
+approved the procedural exception. The contract must not claim that production
+promotion is cryptographically impossible without the gate.
+
+Production `GO` also requires recorded confirmation that the active Vercel plan
+permits Kapchi's commercial use. Hobby may be used for implementation rehearsal,
+but it is not accepted as the commercial production plan.
 
 ## Mutation Retry Contract
 
@@ -200,107 +444,114 @@ fallback plus alerting.
   `cart-checkout:<orderId>`.
 - Refunds reconcile Stripe first and reuse the persisted provider idempotency
   key.
-- Blob completion reuses the nonce and exact business/completion fingerprints;
-  file uploads are not repeated automatically.
-- Admin/fulfillment mutations reuse their idempotency key and expected revision.
+- Blob completion reuses the nonce and exact fingerprints; file bytes are not
+  uploaded again automatically.
+- Admin and fulfillment mutations reuse their idempotency key and expected
+  revision.
 - Messaging reuses its persisted delivery idempotency key.
-- Unknown outcomes always block until durable state is reconciled.
+- Unknown outcomes block until durable state is reconciled.
 - Transient reads use exponential backoff with jitter, at most three attempts,
-  and a 30-second total deadline. Authorization, validation, policy, and
-  invariant failures are never retried. Mutation retry limits are the existing
-  domain-specific persisted limits and may not exceed three provider dispatches
-  per gate attempt. Exhaustion is terminal `NO-GO`; an unknown mutation outcome
-  receives no new write until reconciliation proves whether it occurred.
+  and a 30-second total deadline.
+- Authorization, validation, policy, and invariant failures are never retried.
 
-## Evidence Lifecycle
+## Implementation Workstreams
 
-The attempt state machine is `prepared -> awaiting-provider-evidence ->
-evidence-recorded -> cleanup-verified -> finalized`. Cancellation, failure, and
-expiry invoke idempotent cleanup; TTL cleanup is a fallback, not the normal path.
+After three reviewers approve this specification, two agents work in parallel.
 
-### Prepare
+### Agent 1: CI, evidence, and release controls
 
-A protected manual workflow accepts a candidate SHA only after proving it is
-reachable from the protected release branch. Secretless jobs test candidate
-code. Trusted default-branch orchestration then attests/deploys/probes staging
-and emits an immutable, GitHub-attested draft artifact containing:
+- implement the environment matrix and safety tests;
+- update the scenario registry with exact test owners;
+- generate and validate machine-readable scenario reports;
+- add the secretless candidate workflow;
+- implement evidence, resource-ledger, cleanup, and final-record validation;
+- connect the final #115 record to `validate-launch-record.mjs`; and
+- update the operator runbook and example records.
 
-- attempt ID, workflow run ID, registry version, candidate SHA;
-- storefront/API Vercel team, project, deployment, alias, and immutable URLs;
-- environment/provider identity hashes;
-- generated automated scenario results; and
-- safe provider object IDs or hashes plus attempt metadata needed to bind later
-  observations to objects created by this exact run.
+### Agent 2: Staging execution and fixtures
 
-After canonical serialization, the workflow hashes the completed manifest and
-places its SHA-256 digest in a separate GitHub attestation and workflow output;
-the manifest never contains its own digest. The artifact is retained for 30
-days. Reruns create a new attempt ID and never replace prior attempts.
+- add Vercel bypass support and immutable deployment verification;
+- add runtime Clerk setup and unconditional teardown;
+- implement the provider-neutral run-owned fixture adapter;
+- add actual staging Playwright and trusted API scenarios;
+- add bounded polling and direct job invocation;
+- add provider observation and privacy-safe log scanning; and
+- produce sanitized results compatible with Agent 1's schema.
 
-### Record provider evidence
+The agents must use disjoint file ownership where possible and coordinate shared
+schemas before editing.
 
-An environment-protected workflow restricted to authorized staging reviewers
-accepts an attempt ID plus sanitized provider references. It retrieves the
-attested prepare artifact, verifies its digest/provenance, enforces a 24-hour
-freshness limit, and verifies each provider object reference against the safe
-object ID/hash or attempt metadata emitted during prepare. Provider references
-identify external objects but are not treated as immutable artifacts. Sanitized
-captured evidence is stored as a GitHub artifact; its canonical manifest receives
-a separate SHA-256 attestation. GitHub supplies the authenticated actor and
-environment approval audit trail; typed owner names are not trusted. Provider
-evidence is captured before cleanup.
+## Operator Inputs Required for a Real Gate Run
 
-### Finalize
+Code can prepare and test the workflow, but a real staging run requires the
+owner to configure:
 
-Trusted default-branch code retrieves both immutable artifacts by workflow run
-and artifact ID, verifies attestations, digests, SHA/deployments, registry
-version, actors, freshness, and complete scenario coverage, and generates the
-final decision only after cleanup is verified. Operators cannot set `GO`
-directly. Any failed, pending, stale, missing, mixed, or cleanup-failed critical
-result yields `NO-GO`.
+- the dedicated `staging` branch in both Vercel projects;
+- a separate `production` Production Branch in both projects, so `main` and
+  `staging` cannot deploy customer traffic;
+- a workflow-only Vercel management token and both project IDs;
+- branch-specific Preview variables, a protected storefront bypass secret, and
+  an API Preview that is public at the Vercel layer;
+- stable staging storefront and API aliases used for CORS, Clerk, Stripe return
+  URLs, customer links, and browser/API traffic;
+- the configured registrable site domain shared by both HTTPS staging aliases;
+- a dedicated staging PostgreSQL database and environment marker;
+- a dedicated staging Redis instance;
+- Stripe test credentials and webhook endpoint;
+- Clerk test-instance credentials;
+- a dedicated Vercel Blob store;
+- a selected messaging provider and allowlisted test destination;
+- production provider identity hashes used only as denylist comparisons; and
+- a Vercel plan eligible for commercial use before production `GO`.
 
-The final manifest is retained as a GitHub artifact and receives provenance
-attestation. It is the issue #115 staging-gate artifact referenced by the
-existing issue #114 launch record `smoke` evidence. `validate-launch-record`
-must verify that reference/digest and require a matching, passing issue #115
-manifest before production `GO`; this specification does not create a competing
-launch record.
-
-## Deliverables
-
-1. Approved specification and versioned scenario registry.
-2. Strict prepare/manual/final manifest validators and edge-case tests.
-3. Protected prepare, evidence-recording, and finalize workflows.
-4. Storefront release identity endpoint and staging Playwright configuration.
-5. Separate disposable remote-fixture runner with identity and cleanup tests.
-6. Missing canonical integration/Playwright coverage identified by the registry.
-7. Operator runbook and sanitized example artifacts that do not claim a real
-   staging run.
-8. Launch-record integration requiring a matching passing gate for `smoke`.
+Missing operator inputs produce `NO-GO`; they are never silently skipped.
 
 ## Acceptance Criteria
 
-- All registered scenarios report independently and map every issue criterion.
-- Guest and authenticated successful checkout plus every customization tier are
-  proven against the deployed candidate.
-- Candidate-controlled CI/build jobs never receive protected credentials; only
-  reviewed deployed code receives least-privilege staging runtime values, while
-  trusted orchestration alone receives provider management credentials.
-- Both deployments and all provider identities are attested before mutation.
-- Local fixture protections remain unchanged; remote fixtures are disposable,
-  run-owned, bounded, and verified clean.
-- Provider observation covers external state only; authorization, retry,
-  idempotency, reconciliation, and redaction remain automated.
-- Final decisions are workflow-generated, immutable, current, complete, and
-  bound to SHA, deployments, environment identities, actors, and artifact
-  digests.
-- Production `GO` is impossible without a matching passing #115 artifact.
+- All 25 registered scenarios map to exact automated or provider evidence owners.
+- Required tests cannot pass through handwritten scenario status fields.
+- Guest and authenticated checkout plus all customization tiers run against the
+  exact deployed SHA.
+- Both projects use `production` as the Production Branch before `staging`
+  moves, and the candidate author maps to the Hobby project owner.
+- The workflow alone fast-forwards `staging`, and concurrent gate runs are
+  serialized without cancelling an active cleanup.
+- Both applications use stable staging runtime aliases whose Vercel targets are
+  repeatedly verified against the recorded immutable deployment IDs.
+- The two staging aliases are distinct HTTPS hosts under the same configured
+  registrable site domain, while credentialed CORS allows only the exact
+  storefront origin.
+- Application startup rejects invalid environment/key modes and static denylist
+  matches; gate preflight rejects matching production provider identities.
+- Cart merge preserves quantity, fabric, text, image, trim, price, and production
+  metadata.
+- Upload, admin artwork, fulfillment, tracking, refund, retry, duplicate, and
+  unknown-outcome paths are exercised.
+- Authentication state and every deletable run-owned resource are removed.
+- Pending resource intents survive cancellation and are reconciled by both the
+  scheduled cleanup workflow and the next gate run.
+- Provider-retained resources are test-mode, terminal, and isolated.
+- Logs contain correlation and safe error codes but no forbidden fields or
+  seeded sensitive values.
+- The final decision is derived, current, complete, and bound to the reviewed
+  SHA, deployments, provider identities, report digests, and cleanup result.
+- The production launch validator rejects a missing or mismatched #115 record.
+- Staging and production deployment IDs differ while their source SHA, lockfile
+  digest, and registry version match.
+- Production `GO` requires a hosting plan eligible for commercial use.
+- Documentation accurately identifies the current single-owner procedural trust
+  limitation.
 
 ## Non-Goals
 
 - Testing production customers, payments, credentials, or databases.
-- Automating Stripe or Vercel Dashboard UI interactions.
-- Weakening local fixture guards or initializing a shared staging database.
-- Replacing dependency-owned feature tests.
-- Making post-MVP promotion, AI shipping, or catalog-management work a release
+- Treating screenshots or provider URLs as cryptographic evidence.
+- Claiming GitHub Enterprise attestations or protected environments on the
+  current plan.
+- Claiming Vercel Hobby provides a custom staging environment.
+- Automating arbitrary SQL or deleting provider resources not recorded in the
+  attempt ledger.
+- Weakening local fixture guards.
+- Replacing feature-owned unit and database integration tests.
+- Making post-MVP promotions, AI shipping, or catalog-management work a release
   dependency.
