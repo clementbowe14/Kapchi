@@ -1,0 +1,173 @@
+{
+  "recordVersion": 2,
+  "recordType": "final",
+  "trustMode": "single-owner-procedural",
+  "issue": 115,
+  "attemptId": "stg_REPLACE_WITH_ATTEMPT_ID",
+  "environment": "staging",
+  "candidate": {
+    "sha": "0000000000000000000000000000000000000000",
+    "lockfileDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "registryVersion": 3
+  },
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "expiresAt": "2026-01-02T00:00:00.000Z",
+  "workflow": {
+    "repository": "clementbowe14/Kapchi",
+    "workflowFile": ".github/workflows/staging-release-gate.yml",
+    "workflowSha": "0000000000000000000000000000000000000000",
+    "runId": 1,
+    "runAttempt": 1,
+    "actor": "github-actions"
+  },
+  "deploymentCredentials": {
+    "stagingIdentityHash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "productionIdentityHash": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "deployments": {
+    "staging": {
+      "storefront": {
+        "projectId": "REPLACE_WITH_STOREFRONT_PROJECT_ID",
+        "deploymentId": "dpl_REPLACESTOREFRONT",
+        "sourceSha": "0000000000000000000000000000000000000000",
+        "immutableUrl": "https://storefront-deployment.vercel.app/release"
+      },
+      "api": {
+        "projectId": "REPLACE_WITH_API_PROJECT_ID",
+        "deploymentId": "dpl_REPLACEAPI",
+        "sourceSha": "0000000000000000000000000000000000000000",
+        "immutableUrl": "https://api-deployment.vercel.app/health"
+      }
+    },
+    "productionPreflight": {
+      "productionBranch": "production",
+      "storefrontProjectId": "REPLACE_WITH_STOREFRONT_PROJECT_ID",
+      "apiProjectId": "REPLACE_WITH_API_PROJECT_ID",
+      "checkedAt": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "aliases": {
+    "siteDomain": "example.invalid",
+    "storefront": "https://staging.example.invalid",
+    "api": "https://api-staging.example.invalid",
+    "storefrontDeploymentId": "dpl_REPLACESTOREFRONT",
+    "apiDeploymentId": "dpl_REPLACEAPI",
+    "verifiedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "providerIdentityHashes": {
+    "database": "0000000000000000000000000000000000000000000000000000000000000000",
+    "stripe": "0000000000000000000000000000000000000000000000000000000000000000",
+    "clerk": "0000000000000000000000000000000000000000000000000000000000000000",
+    "blob": "0000000000000000000000000000000000000000000000000000000000000000",
+    "redis": "0000000000000000000000000000000000000000000000000000000000000000",
+    "messaging": "0000000000000000000000000000000000000000000000000000000000000000",
+    "vercel": "0000000000000000000000000000000000000000000000000000000000000000",
+    "logs": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "reportDigests": {
+    "candidate": "0000000000000000000000000000000000000000000000000000000000000000",
+    "staging": "0000000000000000000000000000000000000000000000000000000000000000",
+    "provider": "0000000000000000000000000000000000000000000000000000000000000000",
+    "logScan": "0000000000000000000000000000000000000000000000000000000000000000",
+    "cleanup": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "artifactBindings": {
+    "candidate": {
+      "artifactId": 1,
+      "name": "staging-candidate-evidence",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository": "clementbowe14/Kapchi",
+      "workflowFile": ".github/workflows/staging-release-candidate.yml",
+      "workflowSha": "0000000000000000000000000000000000000000",
+      "runId": 1,
+      "runAttempt": 1,
+      "candidateSha": "0000000000000000000000000000000000000000",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "downloadUrl": "https://github.com/clementbowe14/Kapchi/actions/runs/1/artifacts/1"
+    },
+    "staging": {
+      "artifactId": 2,
+      "name": "staging-browser-evidence",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository": "clementbowe14/Kapchi",
+      "workflowFile": ".github/workflows/staging-release-gate.yml",
+      "workflowSha": "0000000000000000000000000000000000000000",
+      "runId": 1,
+      "runAttempt": 1,
+      "candidateSha": "0000000000000000000000000000000000000000",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "downloadUrl": "https://github.com/clementbowe14/Kapchi/actions/runs/1/artifacts/2"
+    },
+    "provider": {
+      "artifactId": 3,
+      "name": "staging-provider-evidence",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository": "clementbowe14/Kapchi",
+      "workflowFile": ".github/workflows/staging-release-gate.yml",
+      "workflowSha": "0000000000000000000000000000000000000000",
+      "runId": 1,
+      "runAttempt": 1,
+      "candidateSha": "0000000000000000000000000000000000000000",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "downloadUrl": "https://github.com/clementbowe14/Kapchi/actions/runs/1/artifacts/3"
+    },
+    "logScan": {
+      "artifactId": 4,
+      "name": "staging-log-scan-evidence",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository": "clementbowe14/Kapchi",
+      "workflowFile": ".github/workflows/staging-release-gate.yml",
+      "workflowSha": "0000000000000000000000000000000000000000",
+      "runId": 1,
+      "runAttempt": 1,
+      "candidateSha": "0000000000000000000000000000000000000000",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "downloadUrl": "https://github.com/clementbowe14/Kapchi/actions/runs/1/artifacts/4"
+    },
+    "cleanup": {
+      "artifactId": 5,
+      "name": "staging-cleanup-evidence",
+      "archiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository": "clementbowe14/Kapchi",
+      "workflowFile": ".github/workflows/staging-release-gate.yml",
+      "workflowSha": "0000000000000000000000000000000000000000",
+      "runId": 1,
+      "runAttempt": 1,
+      "candidateSha": "0000000000000000000000000000000000000000",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "downloadUrl": "https://github.com/clementbowe14/Kapchi/actions/runs/1/artifacts/5"
+    }
+  },
+  "scenarioResults": [],
+  "evidenceStatus": {
+    "candidate": "pending",
+    "staging": "pending",
+    "provider": "pending",
+    "logScan": "pending",
+    "cleanup": "pending"
+  },
+  "resourceControl": {
+    "reportDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "status": "pending",
+    "resourceCount": 0,
+    "expectedResourceCount": 0,
+    "expectedResourceDigest": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "blockers": ["Template only: no staging gate has run"],
+  "decision": {
+    "value": "NO-GO",
+    "reasonCodes": ["TEMPLATE_ONLY"],
+    "derivedBy": "scripts/validate-staging-gate.mjs",
+    "finalizedAt": "2026-01-01T00:00:00.000Z"
+  }
+}

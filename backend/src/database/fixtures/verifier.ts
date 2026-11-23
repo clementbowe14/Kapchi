@@ -2,15 +2,18 @@ import type { Pool, QueryResultRow } from "pg";
 import { SalesAnalyticsRepository } from "../../modules/admin-analytics/repository.js";
 import {
   expectedCurrentUsdAnalytics,
+  FIXTURE_MARKER_ID,
   fixtureCarts,
   fixtureOrders,
   reportingWindows
 } from "./admin-workflows.js";
 import { operationalReferences } from "./core.js";
+import { seedListings } from "../seed.js";
 import { verifyOperationalFixtures } from "./operational.js";
 import {
   FixtureSafetyError,
   assertInitializedFixtureDatabase,
+  fingerprint,
   stableJson,
   type FixtureQueryable
 } from "./safety.js";
@@ -30,9 +33,85 @@ function fail(code: string, tableAlias: string) {
   );
 }
 
+export async function assertCatalogAttestations(
+  db: FixtureQueryable,
+  expectedStripeAccountId?: string,
+) {
+  const expectedAttestations = seedListings.flatMap((listing) =>
+    listing.priceVariants.map((variant) => ({
+      fixtureKey: `catalog.variant.${listing.slug}.${variant.variantKey}`,
+      pricingFingerprint: fingerprint({
+        active: true,
+        currency: "usd",
+        customizationKind: variant.customizationKind,
+        listingSlug: listing.slug,
+        unitAmountCents: variant.unitAmountCents,
+        variantKey: variant.variantKey
+      })
+    })),
+  );
+  const driftedMappings = await count(
+    db,
+    `select count(*) from listing_price_variants variants
+      join listings listings on listings.id=variants.listing_id
+      join listing_customization_sets listing_customizations
+        on listing_customizations.id=variants.listing_customization_set_id
+      join customization_sets customizations
+        on customizations.id=listing_customizations.customization_set_id
+      join kapchi_fixture.owned_rows owned on owned.table_name='listing_price_variants' and owned.row_id=variants.id::text
+      left join kapchi_fixture.catalog_attestations attestations on attestations.fixture_key=owned.fixture_key
+      where variants.active and variants.stripe_price_id not like 'price_local_seed_%'
+        and (attestations.fixture_key is null
+             or attestations.stripe_price_id is distinct from variants.stripe_price_id
+             or attestations.stripe_product_id is distinct from variants.stripe_product_id
+             or attestations.livemode
+             or $1::text is null or attestations.stripe_account_id is distinct from $1
+             or attestations.marker_id is distinct from $2::uuid
+             or attestations.listing_slug is distinct from listings.slug
+             or attestations.variant_key is distinct from variants.variant_key
+             or attestations.customization_kind is distinct from customizations.kind::text
+             or attestations.unit_amount_cents is distinct from variants.unit_amount_cents
+             or attestations.currency is distinct from variants.currency
+             or attestations.currency is distinct from 'usd'
+             or listings.stripe_product_id is distinct from variants.stripe_product_id
+             or listings.currency is distinct from 'usd'
+             or not exists (
+               select 1
+                 from unnest($5::text[], $6::integer[])
+                   expected_listing(slug, base_price_cents)
+                where expected_listing.slug=listings.slug
+                  and expected_listing.base_price_cents=listings.base_price_cents
+             )
+             or (owned.fixture_key=any($7::text[])
+               and listings.default_stripe_price_id is distinct from variants.stripe_price_id)
+             or not exists (
+               select 1
+                 from unnest($3::text[], $4::text[])
+                   expected(fixture_key, pricing_fingerprint)
+                where expected.fixture_key=owned.fixture_key
+                  and expected.pricing_fingerprint=attestations.pricing_fingerprint
+             ))`,
+    [
+      expectedStripeAccountId ?? null,
+      FIXTURE_MARKER_ID,
+      expectedAttestations.map((entry) => entry.fixtureKey),
+      expectedAttestations.map((entry) => entry.pricingFingerprint),
+      seedListings.map((listing) => listing.slug),
+      seedListings.map((listing) => listing.basePriceCents),
+      seedListings.map((listing) =>
+        `catalog.variant.${listing.slug}.${listing.priceVariants[0]?.variantKey}`,
+      )
+    ],
+  );
+  if (driftedMappings) {
+    fail("FIXTURE_CATALOG_ATTESTATION_MISSING", "catalog_attestations");
+  }
+}
+
 export async function verifyFixtureDatabase(input: {
   databaseUrl?: string;
   db: FixtureQueryable & Partial<Pick<Pool, "connect">>;
+  expectedStripeAccountId?: string;
   nodeEnv?: string;
   token?: string;
 }) {
@@ -174,17 +253,7 @@ export async function verifyFixtureDatabase(input: {
   );
   if (activeExports) fail("FIXTURE_EXPORT_WORK_ELIGIBLE", "shipping_exports");
 
-  const unattestedLiveMappings = await count(
-    input.db,
-    `select count(*) from listing_price_variants variants
-      join listings listings on listings.id=variants.listing_id
-      join kapchi_fixture.owned_rows owned on owned.table_name='listing_price_variants' and owned.row_id=variants.id::text
-      left join kapchi_fixture.catalog_attestations attestations on attestations.fixture_key=owned.fixture_key
-      where variants.active and variants.stripe_price_id not like 'price_local_seed_%'
-        and (attestations.fixture_key is null or attestations.stripe_price_id<>variants.stripe_price_id
-             or attestations.stripe_product_id<>variants.stripe_product_id or attestations.livemode)`,
-  );
-  if (unattestedLiveMappings) fail("FIXTURE_CATALOG_ATTESTATION_MISSING", "catalog_attestations");
+  await assertCatalogAttestations(input.db, input.expectedStripeAccountId);
 
   const operational = await verifyOperationalFixtures(
     input.db,

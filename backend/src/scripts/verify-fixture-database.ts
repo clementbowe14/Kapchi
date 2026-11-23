@@ -11,6 +11,7 @@ export async function runFixtureVerify() {
     const result = await verifyFixtureDatabase({
       databaseUrl: process.env.DATABASE_URL,
       db: pool,
+      expectedStripeAccountId: process.env.KAPCHI_STRIPE_TEST_ACCOUNT_ID,
       nodeEnv: process.env.NODE_ENV,
       token: process.env.KAPCHI_FIXTURE_DATABASE_TOKEN
     });

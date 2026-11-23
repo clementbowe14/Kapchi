@@ -11,6 +11,9 @@ const environmentSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid("development", "test", "production")
     .default("development"),
+  KAPCHI_ENVIRONMENT: Joi.string()
+    .valid("local", "test", "staging", "production")
+    .optional(),
   HOST: Joi.string().hostname().allow("0.0.0.0", "localhost").default("0.0.0.0"),
   PORT: Joi.number().port().default(4000),
   LOG_LEVEL: Joi.string()
@@ -160,6 +163,7 @@ type EnvironmentShape = {
   MESSAGE_WEBHOOK_SECRET?: string;
   MESSAGE_CANARY_DESTINATION?: string;
   NODE_ENV: "development" | "test" | "production";
+  KAPCHI_ENVIRONMENT?: "local" | "test" | "staging" | "production";
   ORDER_LOOKUP_BASE_URL: string;
   PORT: number;
   REDIS_URL: string;
@@ -231,8 +235,40 @@ function isExactOrigin(value: string, requireHttps: boolean) {
   }
 }
 
+function deployedEnvironment(environment: EnvironmentShape) {
+  return environment.VERCEL === "1" || Boolean(environment.VERCEL_ENV);
+}
+
+function resolvedKapchiEnvironment(environment: EnvironmentShape) {
+  return environment.KAPCHI_ENVIRONMENT ??
+    (environment.NODE_ENV === "production"
+      ? "production"
+      : environment.NODE_ENV === "test" ? "test" : "local");
+}
+
+function environmentMatrixErrors(environment: EnvironmentShape) {
+  const errors: string[] = [];
+  const kapchiEnvironment = resolvedKapchiEnvironment(environment);
+  const permittedNodeEnvironments = {
+    local: new Set(["development", "test"]),
+    test: new Set(["test"]),
+    staging: new Set(["production"]),
+    production: new Set(["production"])
+  } as const;
+
+  if (deployedEnvironment(environment) && !environment.KAPCHI_ENVIRONMENT) {
+    errors.push("- KAPCHI_ENVIRONMENT: is required for deployed environments");
+  }
+  if (!permittedNodeEnvironments[kapchiEnvironment].has(environment.NODE_ENV as never)) {
+    errors.push(`- KAPCHI_ENVIRONMENT: ${kapchiEnvironment} cannot run with NODE_ENV=${environment.NODE_ENV}`);
+  }
+
+  return errors;
+}
+
 function productionConfigurationErrors(environment: EnvironmentShape) {
-  if (environment.NODE_ENV !== "production") return [];
+  const kapchiEnvironment = resolvedKapchiEnvironment(environment);
+  if (!["staging", "production"].includes(kapchiEnvironment)) return [];
 
   const errors: string[] = [];
   const origins = splitList(environment.CORS_ALLOWED_ORIGINS);
@@ -293,15 +329,39 @@ function productionConfigurationErrors(environment: EnvironmentShape) {
   if (environment.DATABASE_SSL_MODE === "disable" || environment.DATABASE_SSL_MODE === "no-verify") {
     errors.push("- DATABASE_SSL_MODE: must verify TLS in production");
   }
-  if (/^(sk_test_|rk_test_|test|placeholder)/i.test(environment.STRIPE_SECRET_KEY)) {
-    errors.push("- STRIPE_SECRET_KEY: test or placeholder credentials are forbidden in production");
-  }
-  for (const [name, value] of [
-    ["CLERK_PUBLISHABLE_KEY", environment.CLERK_PUBLISHABLE_KEY],
-    ["CLERK_SECRET_KEY", environment.CLERK_SECRET_KEY]
-  ] as const) {
-    if (/^(pk_test_|sk_test_|test|placeholder)/i.test(value)) {
-      errors.push(`- ${name}: test or placeholder credentials are forbidden in production`);
+  const stripeIsTest = /^(sk_test_|rk_test_)/i.test(environment.STRIPE_SECRET_KEY);
+  const clerkPublishableIsTest = /^pk_test_/i.test(environment.CLERK_PUBLISHABLE_KEY);
+  const clerkSecretIsTest = /^sk_test_/i.test(environment.CLERK_SECRET_KEY);
+  if (kapchiEnvironment === "production") {
+    if (stripeIsTest || /^(test|placeholder)/i.test(environment.STRIPE_SECRET_KEY)) {
+      errors.push("- STRIPE_SECRET_KEY: test or placeholder credentials are forbidden in production");
+    }
+    for (const [name, value] of [
+      ["CLERK_PUBLISHABLE_KEY", environment.CLERK_PUBLISHABLE_KEY],
+      ["CLERK_SECRET_KEY", environment.CLERK_SECRET_KEY]
+    ] as const) {
+      if (/^(pk_test_|sk_test_|test|placeholder)/i.test(value)) {
+        errors.push(`- ${name}: test or placeholder credentials are forbidden in production`);
+      }
+    }
+  } else {
+    if (!stripeIsTest) {
+      errors.push("- STRIPE_SECRET_KEY: staging requires a Stripe test-mode key");
+    }
+    if (!clerkPublishableIsTest || !clerkSecretIsTest) {
+      errors.push("- CLERK_PUBLISHABLE_KEY: staging requires Clerk test-instance keys");
+    }
+    let databaseName = "";
+    try {
+      databaseName = new URL(environment.DATABASE_URL).pathname.toLowerCase();
+    } catch {
+      // Joi reports malformed database URLs before this safety check runs.
+    }
+    if (!/(staging|test)/.test(databaseName) || /(prod|production|live)/.test(databaseName)) {
+      errors.push("- DATABASE_URL: staging database name must contain staging or test and must not look like production");
+    }
+    if (environment.MESSAGE_DELIVERY_URL && !environment.MESSAGE_CANARY_DESTINATION) {
+      errors.push("- MESSAGE_CANARY_DESTINATION: staging messaging must use an explicit allowlisted destination");
     }
   }
 
@@ -368,7 +428,10 @@ export function validateEnvironment(
   }
 
   const environment = value as EnvironmentShape;
-  const productionErrors = productionConfigurationErrors(environment);
+  const productionErrors = [
+    ...environmentMatrixErrors(environment),
+    ...productionConfigurationErrors(environment)
+  ];
   if (productionErrors.length > 0) {
     throw new Error([
       "Invalid backend environment configuration:",
@@ -411,6 +474,7 @@ export function validateEnvironment(
 
   return {
     ...environment,
+    KAPCHI_ENVIRONMENT: resolvedKapchiEnvironment(environment),
     DATABASE_SSL_MODE:
       environment.DATABASE_SSL_MODE ??
       (environment.NODE_ENV === "production" ? "require" : "disable")

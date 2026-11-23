@@ -13,7 +13,8 @@
     "test:e2e": "playwright test",
     "test:e2e:public": "playwright test --project=public-desktop",
     "test:e2e:admin": "playwright test --project=admin-desktop --project=admin-mobile",
-    "test:e2e:real": "playwright test --config=playwright.real.config.ts"
+    "test:e2e:real": "playwright test --config=playwright.real.config.ts",
+    "test:e2e:staging": "playwright test --config=playwright.staging.config.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.0.7",

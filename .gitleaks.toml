@@ -6,6 +6,7 @@ regexes = [
   '''postgres(?:ql)?://(?:replace_me|user|kapchi)(?:[A-Za-z0-9_-]*):(?:replace_me|pass|password|kapchi)(?:[A-Za-z0-9_-]*)@(?:localhost|127\.0\.0\.1|db\.example\.com)(?::[0-9]+)?/[A-Za-z0-9_-]+''',
   '''postgresql://\.\.\.''',
   '''decodeURIComponent\(url\.password\)''',
+  '''^password$''',
 ]
 
 [[rules]]

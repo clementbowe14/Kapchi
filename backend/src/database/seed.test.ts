@@ -19,6 +19,7 @@ import {
 import {
   assertSafeLocalSeedTarget,
   localSeedFixtures,
+  seedListing,
   seedFabrics,
   seedListings
 } from "./seed.js";
@@ -125,6 +126,13 @@ describe("fixture ownership", () => {
 });
 
 describe("admin workflow fixture catalog", () => {
+  it("rejects a focused listing outside the deterministic fixture catalog", async () => {
+    await expect(seedListing({ query: vi.fn() } as never, {
+      ...seedListings[0],
+      slug: "unknown-fixture-listing"
+    })).rejects.toThrow("Unknown fixture listing");
+  });
+
   it("keeps deterministic IDs, natural keys, and synthetic contacts unique", () => {
     expect(new Set(fixtureOrders.map((order) => order.id)).size).toBe(fixtureOrders.length);
     expect(new Set(fixtureOrders.map((order) => order.publicOrderNumber)).size).toBe(fixtureOrders.length);

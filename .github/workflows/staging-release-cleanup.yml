@@ -1,0 +1,52 @@
+name: Staging release gate cleanup
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-release-gate
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile expired staging intents
+    runs-on: ubuntu-latest
+    env:
+      CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
+      STAGING_CLERK_TARGET_IDENTITY: ${{ vars.STAGING_CLERK_TARGET_IDENTITY }}
+      STAGING_GATE_CONTROL_DATABASE_ID: ${{ secrets.STAGING_GATE_CONTROL_DATABASE_ID }}
+      STAGING_GATE_DATABASE_URL: ${{ secrets.STAGING_GATE_DATABASE_URL }}
+      STAGING_PRODUCTION_IDENTITY_DENYLIST: ${{ vars.STAGING_PRODUCTION_IDENTITY_DENYLIST }}
+    steps:
+      - name: Check out trusted cleanup code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Set up Node.js
+        uses: actions/setup-node@1e60f620b9541d8ca1515c0754c040f38a9c0c9c # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install trusted cleanup dependencies
+        working-directory: backend
+        run: npm ci --ignore-scripts
+      - name: Fail closed without dedicated control-plane configuration
+        run: |
+          test -n "${STAGING_GATE_DATABASE_URL}" || { echo "STAGING_GATE_DATABASE_URL is not configured" >&2; exit 1; }
+          test -n "${STAGING_GATE_CONTROL_DATABASE_ID}" || { echo "STAGING_GATE_CONTROL_DATABASE_ID is not configured" >&2; exit 1; }
+          test -n "${CLERK_SECRET_KEY}" || { echo "STAGING_CLERK_SECRET_KEY is not configured" >&2; exit 1; }
+          test -n "${STAGING_CLERK_TARGET_IDENTITY}" || { echo "STAGING_CLERK_TARGET_IDENTITY is not configured" >&2; exit 1; }
+          test -n "${STAGING_PRODUCTION_IDENTITY_DENYLIST}" || { echo "STAGING_PRODUCTION_IDENTITY_DENYLIST is not configured" >&2; exit 1; }
+      - name: Recover and clean expired staging attempts
+        working-directory: backend
+        run: npm exec -- tsx src/scripts/staging-gate/cleanup-command.ts
+      - name: Purge eligible verified tombstones
+        run: |
+          psql "${STAGING_GATE_DATABASE_URL}" -v ON_ERROR_STOP=1 -c "delete from staging_gate_control.resource_intents where state in ('cleaned','terminal-isolated') and cleanup_verified_at <= now() - interval '30 days' and evidence_digest is not null"

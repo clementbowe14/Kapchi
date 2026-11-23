@@ -167,7 +167,9 @@ async function validAttestation(
   db: FixtureQueryable,
   listing: CoreSeedListing,
   variant: CoreSeedListing["priceVariants"][number],
+  expectedStripeAccountId: string | undefined,
 ) {
+  if (!expectedStripeAccountId) return null;
   const fixtureKey = `catalog.variant.${listing.slug}.${variant.variantKey}`;
   const pricingFingerprint = fingerprint({
     active: true,
@@ -180,11 +182,26 @@ async function validAttestation(
   const result = await db.query<
     QueryResultRow & { stripe_price_id: string; stripe_product_id: string }
   >(
-    `select stripe_product_id, stripe_price_id
-       from kapchi_fixture.catalog_attestations
-      where fixture_key = $1 and marker_id = $2 and livemode = false
-        and listing_slug = $3 and variant_key = $4 and customization_kind = $5
-        and unit_amount_cents = $6 and currency = 'usd' and pricing_fingerprint = $7`,
+    `select attestations.stripe_product_id, attestations.stripe_price_id
+       from kapchi_fixture.catalog_attestations attestations
+       join listings on listings.slug = $3
+       join listing_price_variants variants
+         on variants.listing_id = listings.id and variants.variant_key = $4
+        and variants.active and variants.replaced_at is null
+      where attestations.fixture_key = $1 and attestations.marker_id = $2
+        and attestations.livemode = false and attestations.listing_slug = $3
+        and attestations.variant_key = $4 and attestations.customization_kind = $5
+        and attestations.unit_amount_cents = $6 and attestations.currency = 'usd'
+        and attestations.pricing_fingerprint = $7
+        and attestations.stripe_account_id = $8
+        and variants.stripe_product_id = attestations.stripe_product_id
+        and variants.stripe_price_id = attestations.stripe_price_id
+        and variants.unit_amount_cents = attestations.unit_amount_cents
+        and variants.currency = attestations.currency
+        and listings.stripe_product_id = attestations.stripe_product_id
+        and listings.base_price_cents = $9 and listings.currency = 'usd'
+        and ($10::boolean = false
+          or listings.default_stripe_price_id = attestations.stripe_price_id)`,
     [
       fixtureKey,
       "85d4a1ab-5a3c-4edf-a8e9-000000000085",
@@ -192,7 +209,10 @@ async function validAttestation(
       variant.variantKey,
       variant.customizationKind,
       variant.unitAmountCents,
-      pricingFingerprint
+      pricingFingerprint,
+      expectedStripeAccountId,
+      listing.basePriceCents,
+      variant === listing.priceVariants[0]
     ],
   );
   return result.rows[0] ?? null;
@@ -202,6 +222,7 @@ async function seedCatalog(
   db: FixtureQueryable,
   listings: readonly CoreSeedListing[],
   fabrics: readonly CoreSeedFabric[],
+  expectedStripeAccountId?: string,
 ) {
   const fonts = [
     { name: "Local Serif", css: "Georgia, serif", preview: "Class of 2026" },
@@ -277,7 +298,9 @@ async function seedCatalog(
     const listingId = ids.listings[listingIndex]!;
     const attestations = [];
     for (const variant of listing.priceVariants) {
-      attestations.push(await validAttestation(db, listing, variant));
+      attestations.push(
+        await validAttestation(db, listing, variant, expectedStripeAccountId),
+      );
     }
     const attestedProductIds = new Set(attestations.filter(Boolean).map((entry) => entry!.stripe_product_id));
     const preserveAttestations = attestations.every(Boolean) && attestedProductIds.size === 1;
@@ -416,6 +439,32 @@ async function seedCatalog(
       }
     }
   }
+}
+
+export async function seedCatalogFixtures(
+  db: FixtureQueryable,
+  input: {
+    expectedStripeAccountId?: string;
+    fabrics: readonly CoreSeedFabric[];
+    listings: readonly CoreSeedListing[];
+  },
+) {
+  await assertNoUnownedFixtureDependents(db);
+  await validateCustomizationDependencies(db);
+  await seedCatalog(
+    db,
+    input.listings,
+    input.fabrics,
+    input.expectedStripeAccountId,
+  );
+  return {
+    fabrics: input.fabrics.length,
+    listings: input.listings.length,
+    priceVariants: input.listings.reduce(
+      (total, listing) => total + listing.priceVariants.length,
+      0,
+    ),
+  };
 }
 
 async function seedIdentities(db: FixtureQueryable) {
@@ -845,14 +894,13 @@ export async function claimOperationalOwnedRow(
 export async function seedCoreFixtures(
   db: FixtureQueryable,
   input: {
+    expectedStripeAccountId?: string;
     fabrics: readonly CoreSeedFabric[];
     listings: readonly CoreSeedListing[];
     includeOperational?: boolean;
   },
 ) {
-  await assertNoUnownedFixtureDependents(db);
-  await validateCustomizationDependencies(db);
-  await seedCatalog(db, input.listings, input.fabrics);
+  await seedCatalogFixtures(db, input);
   await seedIdentities(db);
   await seedCartsAssetsAndOrders(db);
   await seedFulfillmentAndShipping(db);

@@ -1,0 +1,144 @@
+name: Staging release candidate evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    name: Secretless candidate suite
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kapchi_test
+          POSTGRES_USER: kapchi
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kapchi -d kapchi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      KAPCHI_ENVIRONMENT: test
+      DATABASE_SCHEME: postgres
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: kapchi_test
+      DATABASE_USER: kapchi
+      DATABASE_PASSWORD: password
+      DATABASE_POOL_MAX: "5"
+      DATABASE_MAX_CONNECTIONS: "20"
+      DATABASE_RESERVED_CONNECTIONS: "5"
+      DATABASE_MAX_APP_INSTANCES: "3"
+      REDIS_URL: redis://127.0.0.1:6379
+      RUN_DATABASE_INTEGRATION_TESTS: "true"
+      KAPCHI_FIXTURE_CONFIRM_DATABASE: kapchi_test
+      KAPCHI_FIXTURE_DATABASE_TOKEN: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      STAGING_GATE_CONTROL_DATABASE_ID: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuY2FuZGlkYXRlLmludmFsaWQk
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuY2FuZGlkYXRlLmludmFsaWQk
+      CLERK_SECRET_KEY: candidate-secret-key
+      CLERK_JWT_ISSUER: https://clerk.candidate.invalid
+      CLERK_JWKS_URL: https://clerk.candidate.invalid/.well-known/jwks.json
+      CLERK_WEBHOOK_SECRET: candidate_webhook_secret
+      STRIPE_SECRET_KEY: candidate-stripe-key
+      STRIPE_WEBHOOK_SECRET: candidate-stripe-webhook
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+      - name: Initialize candidate evidence
+        run: |
+          mkdir -p .staging-gate/receipts
+          printf '%s\n' '{"outcome":"pending","stage":"candidate-setup"}' > .staging-gate/setup-status.json
+      - name: Use Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            client/package-lock.json
+      - name: Configure disposable service URLs
+        run: |
+          database_url="${DATABASE_SCHEME}://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}"
+          control_database_url="${DATABASE_SCHEME}://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/kapchi_staging_gate_test"
+          echo "DATABASE_URL=${database_url}" >> "${GITHUB_ENV}"
+          echo "DATABASE_DIRECT_URL=${database_url}" >> "${GITHUB_ENV}"
+          echo "STAGING_GATE_DATABASE_URL=${control_database_url}" >> "${GITHUB_ENV}"
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+      - name: Apply candidate database migrations
+        working-directory: backend
+        run: npm run db:migrate:apply
+      - name: Seed isolated integration catalog
+        working-directory: backend
+        run: npm run db:fixtures:seed-integration-catalog
+      - name: Bootstrap disposable staging-gate control database
+        run: |
+          admin_url="${DATABASE_SCHEME}://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/postgres"
+          psql "${admin_url}" -v ON_ERROR_STOP=1 -c "create database kapchi_staging_gate_test"
+          psql "${STAGING_GATE_DATABASE_URL}" -v ON_ERROR_STOP=1 \
+            --set=control_database_id="${STAGING_GATE_CONTROL_DATABASE_ID}" \
+            --file=deploy/staging-gate-control.sql
+      - name: Complete candidate setup evidence
+        run: printf '%s\n' '{"outcome":"pass","stage":"candidate-setup"}' > .staging-gate/setup-status.json
+      - name: Backend tests
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite backend-tests --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/backend-tests.json
+      - name: Backend typecheck
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite backend-typecheck --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/backend-typecheck.json
+      - name: Client tests
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite client-tests --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/client-tests.json
+      - name: Client lint
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite client-lint --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/client-lint.json
+      - name: Client production build
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite client-build --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/client-build.json
+      - name: Repository control tests
+        continue-on-error: true
+        run: node scripts/staging-gate-evidence.mjs run-suite --root . --registry deploy/staging-release-scenarios.json --suite repository-tests --candidate-sha "${GITHUB_SHA}" --output .staging-gate/receipts/repository-tests.json
+      - name: Build derived scenario report
+        if: always()
+        run: node scripts/staging-gate-evidence.mjs build-report --root . --registry deploy/staging-release-scenarios.json --receipts .staging-gate/receipts --candidate-sha "${GITHUB_SHA}" --output .staging-gate/candidate-report.json
+      - name: Upload sanitized candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          path: .staging-gate/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+

@@ -1,0 +1,260 @@
+{
+  "registryVersion": 3,
+  "issue": 115,
+  "updatedAt": "2026-11-23T00:00:00.000Z",
+  "proofModes": ["candidate", "staging", "provider"],
+  "approvedEvidenceHosts": {
+    "stripe": ["dashboard.stripe.com"],
+    "vercel": ["vercel.com"],
+    "clerk": ["dashboard.clerk.com"],
+    "messaging": ["github.com"],
+    "logs": ["vercel.com", "github.com"]
+  },
+  "candidateSuites": [
+    {
+      "id": "backend-tests",
+      "workingDirectory": "backend",
+      "command": ["npm", "test", "--", "--reporter=json"],
+      "resultFormat": "vitest-json"
+    },
+    {
+      "id": "backend-typecheck",
+      "workingDirectory": "backend",
+      "command": ["npm", "run", "typecheck"],
+      "resultFormat": "exit-code"
+    },
+    {
+      "id": "client-tests",
+      "workingDirectory": "client",
+      "command": ["npm", "test", "--", "--reporter=json"],
+      "resultFormat": "vitest-json"
+    },
+    {
+      "id": "client-lint",
+      "workingDirectory": "client",
+      "command": ["npm", "run", "lint"],
+      "resultFormat": "exit-code"
+    },
+    {
+      "id": "client-build",
+      "workingDirectory": "client",
+      "command": ["npm", "run", "build"],
+      "resultFormat": "exit-code"
+    },
+    {
+      "id": "repository-tests",
+      "workingDirectory": ".",
+      "command": ["node", "--test", "--test-reporter=tap", "scripts/*.test.mjs"],
+      "resultFormat": "node-test-tap"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "CART-GUEST-CRUD",
+      "title": "Guest cart lifecycle",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/cart/service.test.ts","testIds":["locks hashed ownership and persists pricing, idempotency, counts, and revision"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CART-GUEST-CRUD] [CATALOG-FABRIC] persists add, quantity update, and removal"]}],
+      "fixtures": ["run-owned guest cart", "available fabric variant"],
+      "assertions": ["add, update quantity, and remove persist", "duplicate submission has one durable effect"]
+    },
+    {
+      "id": "CART-AUTH-CRUD",
+      "title": "Authenticated cart lifecycle",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/cart/plugin.test.ts","testIds":["uses the production auth middleware for authenticated cart reads"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CART-AUTH-CRUD] [CART-CLAIM-MERGE] merges a real guest cart without customization loss"]}],
+      "fixtures": ["ephemeral Clerk customer", "run-owned authenticated cart"],
+      "assertions": ["add, update quantity, and remove persist", "cart ownership remains customer-scoped"]
+    },
+    {
+      "id": "CART-CLAIM-MERGE",
+      "title": "Guest-to-customer cart merge",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/cart/claim-repository.database.integration.test.ts","testIds":["returns canonical counts and increments revision exactly once"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CART-AUTH-CRUD] [CART-CLAIM-MERGE] merges a real guest cart without customization loss"]}],
+      "fixtures": ["guest cart", "authenticated cart", "customized item"],
+      "assertions": ["quantity and fabric survive claim", "text, image asset, trim, price, and production metadata survive claim"]
+    },
+    {
+      "id": "CUSTOM-NONE",
+      "title": "No-customization checkout",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/StoleConfigurator.test.tsx","testIds":["reveals only entitled controls and hides them after switching packages"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CUSTOM-NONE] enforces allowed fields, forbidden fields, and the price snapshot"]}],
+      "fixtures": ["no-customization catalog option"],
+      "assertions": ["order snapshot has no paid customization fields", "price excludes customization charges"]
+    },
+    {
+      "id": "CUSTOM-SHORT-TEXT",
+      "title": "Short-text customization",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/StoleConfigurator.test.tsx","testIds":["reveals only entitled controls and hides them after switching packages"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CUSTOM-SHORT-TEXT] enforces allowed fields, forbidden fields, and the price snapshot"]}],
+      "fixtures": ["short-text customization option"],
+      "assertions": ["text limit, price, and order snapshot persist", "image and trim fields are denied"]
+    },
+    {
+      "id": "CUSTOM-LONG-TEXT",
+      "title": "Long-text customization",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/StoleConfigurator.test.tsx","testIds":["reveals only entitled controls and hides them after switching packages"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CUSTOM-LONG-TEXT] enforces allowed fields, forbidden fields, and the price snapshot"]}],
+      "fixtures": ["long-text customization option"],
+      "assertions": ["text limit, price, and order snapshot persist", "image and trim fields are denied"]
+    },
+    {
+      "id": "CUSTOM-TEXT-IMAGE",
+      "title": "Text and image customization",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/CustomizationImageUpload.test.tsx","testIds":["authorizes and uploads a selected customization image"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CUSTOM-TEXT-IMAGE] enforces allowed fields, forbidden fields, and the price snapshot"]}],
+      "fixtures": ["text-and-image option", "synthetic private artwork"],
+      "assertions": ["text and bound image persist with correct price", "trim is denied"]
+    },
+    {
+      "id": "CUSTOM-TEXT-IMAGE-TRIM",
+      "title": "Text, image, and trim customization",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/StoleConfigurator.test.tsx","testIds":["sanitizes unauthorized state when a package changes"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CUSTOM-TEXT-IMAGE-TRIM] enforces allowed fields, forbidden fields, and the price snapshot"]}],
+      "fixtures": ["full customization option", "synthetic private artwork", "trim size"],
+      "assertions": ["text, bound image, and trim size persist", "price and immutable order snapshot are correct"]
+    },
+    {
+      "id": "CATALOG-FABRIC",
+      "title": "Fabric selection and customer-safe display",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"client/components/StoleConfigurator.test.tsx","testIds":["shows the selected fabric image in the product gallery"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CART-GUEST-CRUD] [CATALOG-FABRIC] persists add, quantity update, and removal"]}],
+      "fixtures": ["two image-backed fabric variants"],
+      "assertions": ["selected image and immutable fabric snapshot match", "customer output omits SKU and internal IDs"]
+    },
+    {
+      "id": "CATALOG-PRICE-PRIORITY",
+      "title": "Catalog price and production priority snapshot",
+      "proofModes": ["candidate"],
+      "canonicalOwners": [{"file":"backend/src/modules/cart/service.test.ts","testIds":["locks hashed ownership and persists pricing, idempotency, counts, and revision"]}],
+      "fixtures": ["priced listing with production priority"],
+      "assertions": ["minor-unit amount and currency are immutable", "production priority is immutable"]
+    },
+    {
+      "id": "INVENTORY-RESERVATION",
+      "title": "Inventory reservation lifecycle",
+      "proofModes": ["candidate"],
+      "canonicalOwners": [{"file":"backend/src/modules/admin-inventory/repository.database.integration.test.ts","testIds":["counts a cart-to-order reservation once and expires stale holds","serializes competing reductions below committed stock"]}],
+      "fixtures": ["bounded inventory", "concurrent carts"],
+      "assertions": ["reservation converts, releases, and expires", "contention and out-of-stock requests cannot oversell"]
+    },
+    {
+      "id": "ASSET-UPLOAD-OWNERSHIP",
+      "title": "Customer artwork upload ownership",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/assets/plugin.test.ts","testIds":["finalizes a Vercel Blob upload into provider-neutral asset metadata"]},{"file":"client/e2e/admin-refund-artwork.staging.spec.ts","testIds":["[ASSET-UPLOAD-OWNERSHIP] [ASSET-ADMIN-ACCESS] artwork access respects ownership and role","[ASSET-UPLOAD-OWNERSHIP] customer can create only a run-owned upload intent"]}],
+      "providerObservations": [{"id":"ASSET-UPLOAD-OWNERSHIP:blob-object","provider":"blob"}],
+      "fixtures": ["two isolated customer carts", "synthetic artwork", "run-prefixed Blob object"],
+      "assertions": ["authorized upload, attachment, checkout preservation, and retrieval succeed", "cross-cart intent and altered or replayed completion fail", "Blob object is visible under the recorded staging provider identity"]
+    },
+    {
+      "id": "ASSET-ADMIN-ACCESS",
+      "title": "Admin artwork access boundaries",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/admin-assets/service.test.ts","testIds":["opens, validates, rechecks, and streams the bound image"]},{"file":"client/e2e/admin-refund-artwork.staging.spec.ts","testIds":["[ASSET-ADMIN-ACCESS] non-admin users cannot retrieve production artwork","[ASSET-UPLOAD-OWNERSHIP] [ASSET-ADMIN-ACCESS] artwork access respects ownership and role"]}],
+      "fixtures": ["paid attached private artwork", "unpaid, quarantined, deleted, mismatched, and unselected assets"],
+      "assertions": ["anonymous and non-admin access is denied", "admin access is limited to paid, attached, private, correctly bound, non-quarantined artwork"]
+    },
+    {
+      "id": "CHECKOUT-GUEST-SUCCESS",
+      "title": "Successful guest checkout",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/payments/checkout-service.test.ts","testIds":["uses injected redirects and durable identity for provider creation"]},{"file":"client/e2e/checkout-order.staging.spec.ts","testIds":["[CHECKOUT-GUEST-SUCCESS] creates a real guest test-mode checkout session"]}],
+      "providerObservations": [{"id":"CHECKOUT-GUEST-SUCCESS:stripe-session","provider":"stripe"}],
+      "fixtures": ["guest cart", "Stripe test payment method"],
+      "assertions": ["guest order and confirmation use a public order number", "test Checkout Session and payment are visible in the recorded staging Stripe account"]
+    },
+    {
+      "id": "CHECKOUT-AUTH-SUCCESS",
+      "title": "Successful authenticated checkout",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/payments/plugin.test.ts","testIds":["composes injected payment dependencies at the request boundary"]},{"file":"client/e2e/checkout-order.staging.spec.ts","testIds":["[CHECKOUT-AUTH-SUCCESS] creates a real customer test-mode checkout session"]}],
+      "providerObservations": [{"id":"CHECKOUT-AUTH-SUCCESS:stripe-session","provider":"stripe"}],
+      "fixtures": ["ephemeral Clerk customer", "authenticated cart", "Stripe test payment method"],
+      "assertions": ["order ownership and confirmation remain customer-bound", "test Checkout Session and payment are visible in the recorded staging Stripe account"]
+    },
+    {
+      "id": "CHECKOUT-CANCEL-DECLINE",
+      "title": "Checkout cancellation and decline",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/payments/checkout-provider.test.ts","testIds":["retrieves and normalizes an existing Stripe session"]},{"file":"client/e2e/checkout-order.staging.spec.ts","testIds":["[CHECKOUT-CANCEL-DECLINE] exercises declined payment and Stripe cancellation without losing the cart"]}],
+      "providerObservations": [{"id":"CHECKOUT-CANCEL-DECLINE:stripe-session","provider":"stripe"}],
+      "fixtures": ["cancelled Stripe session", "declined Stripe test payment method"],
+      "assertions": ["cancellation preserves a recoverable cart", "decline produces no paid order and is visible in test-mode Stripe"]
+    },
+    {
+      "id": "CHECKOUT-RETRY-DUPLICATE",
+      "title": "Checkout retry and webhook idempotency",
+      "proofModes": ["candidate"],
+      "canonicalOwners": [{"file":"backend/src/modules/payments/success-state.test.ts","testIds":["treats already-paid orders as idempotent"]}],
+      "fixtures": ["injected unknown provider outcome", "duplicate signed webhook"],
+      "assertions": ["unknown state is reconciled before another write", "cart-checkout order key is reused and duplicate delivery has one effect"]
+    },
+    {
+      "id": "ORDER-CUSTOMER-LOOKUP",
+      "title": "Customer-safe order lookup",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/orders/plugin.test.ts","testIds":["looks up an order when the submitted email matches"]},{"file":"client/e2e/checkout-order.staging.spec.ts","testIds":["[ORDER-CUSTOMER-LOOKUP] returns customer-safe order data"]}],
+      "fixtures": ["paid order with public number and contact"],
+      "assertions": ["matching public number and contact return the order", "catalog and provider identifiers are absent"]
+    },
+    {
+      "id": "ADMIN-QUEUE-TRANSITIONS",
+      "title": "Admin queue and order transitions",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/admin-orders/mutation-repository.database.integration.test.ts","testIds":["serializes replay, rejects stale writes, and orders actor-attributed events"]},{"file":"client/e2e/admin-refund-artwork.staging.spec.ts","testIds":["[ADMIN-QUEUE-TRANSITIONS] [FULFILLMENT-TRACKING] admin can read the run-owned order"]}],
+      "fixtures": ["paid queued order", "stale expected revision"],
+      "assertions": ["queue is visible and allowed transitions succeed", "forbidden or stale transitions fail and retries reuse intent keys"]
+    },
+    {
+      "id": "FULFILLMENT-TRACKING",
+      "title": "Fulfillment and customer tracking",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/modules/admin-orders/shipment-repository.database.integration.test.ts","testIds":["commits one shipment, fulfillment/order transition, event, and durable replay receipt"]},{"file":"client/e2e/admin-refund-artwork.staging.spec.ts","testIds":["[ADMIN-QUEUE-TRANSITIONS] [FULFILLMENT-TRACKING] admin can read the run-owned order"]}],
+      "fixtures": ["paid order", "synthetic carrier and tracking number"],
+      "assertions": ["admin mutation persists with expected revision", "customer lookup shows tracking without private operational fields"]
+    },
+    {
+      "id": "REFUND-FULL-PARTIAL",
+      "title": "Full and partial refunds",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/refunds/service.test.ts","testIds":["reconciles, reserves, and dispatches one successful refund"]},{"file":"client/e2e/admin-refund-artwork.staging.spec.ts","testIds":["[REFUND-FULL-PARTIAL] submits a run-owned refund intent to the real staging API"]}],
+      "providerObservations": [{"id":"REFUND-FULL-PARTIAL:stripe-refund","provider":"stripe"}],
+      "fixtures": ["captured Stripe test payment", "full and partial minor-unit refund intents"],
+      "assertions": ["amounts, currency, and persisted provider key reconcile", "refund objects are visible in the recorded staging Stripe account"]
+    },
+    {
+      "id": "REFUND-DUPLICATE-RETRY",
+      "title": "Refund duplicate and unknown-outcome handling",
+      "proofModes": ["candidate"],
+      "canonicalOwners": [{"file":"backend/src/modules/refunds/service.test.ts","testIds":["keeps ambiguous provider failures pending and reserved","returns a terminal idempotent replay without contacting Stripe"]}],
+      "fixtures": ["duplicate refund intent", "injected unknown provider outcome"],
+      "assertions": ["duplicate effects remain idempotent", "Stripe is reconciled before redispatch and unknown state blocks"]
+    },
+    {
+      "id": "MESSAGE-DELIVERY",
+      "title": "Transactional message delivery",
+      "proofModes": ["candidate", "provider"],
+      "canonicalOwners": [{"file":"backend/src/modules/admin-messaging/service.test.ts","testIds":["delivers claimed jobs and records only safe observability fields"]}],
+      "providerObservations": [{"id":"MESSAGE-DELIVERY:message-receipt","provider":"messaging"}],
+      "fixtures": ["run-owned message", "allowlisted staging destination"],
+      "assertions": ["delivery key, retries, and duplicates are durable and idempotent", "sanitized receipt proves delivery to the allowlisted destination"]
+    },
+    {
+      "id": "OBS-CORRELATION-REDACTION",
+      "title": "Cross-service correlation and redaction",
+      "proofModes": ["candidate", "staging", "provider"],
+      "canonicalOwners": [{"file":"backend/src/plugins/request-observability.test.ts","testIds":["redacts authentication, contact, payment, body, and secret fields"]},{"file":"client/e2e/observability.staging.spec.ts","testIds":["[OBS-CORRELATION-REDACTION] proves correlation and redaction from captured backend logs"]}],
+      "providerObservations": [{"id":"OBS-CORRELATION-REDACTION:log-correlation","provider":"logs"}],
+      "fixtures": ["run correlation ID", "representative HTTP, webhook, worker, and delivery events"],
+      "assertions": ["safe correlation and error codes connect each lifecycle", "logs and evidence omit forbidden sensitive fields"]
+    },
+    {
+      "id": "FIXTURE-ISOLATION-CLEANUP",
+      "title": "Run fixture isolation and cleanup",
+      "proofModes": ["candidate", "staging"],
+      "canonicalOwners": [{"file":"backend/src/scripts/staging-gate/fixture-runner.test.ts","testIds":["durably records every multi-resource intent before the first provider call"]},{"file":"client/e2e/cart-customization.staging.spec.ts","testIds":["[CART-GUEST-CRUD] [CATALOG-FABRIC] persists add, quantity update, and removal"]}],
+      "fixtures": ["disposable database", "run-prefixed provider resources", "foreign ownership sentinel"],
+      "assertions": ["recorded provider identity and run ownership prevent unowned mutation", "normal and TTL cleanup verify deletion or terminal isolation"]
+    }
+  ]
+}

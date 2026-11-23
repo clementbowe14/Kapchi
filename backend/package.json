@@ -14,6 +14,7 @@
     "db:migrate:status": "tsx src/database/migrate.ts status",
     "db:assert-local": "tsx src/database/assert-local.ts",
     "db:fixtures:init": "tsx src/scripts/init-fixture-database.ts",
+    "db:fixtures:seed-integration-catalog": "tsx src/scripts/seed-integration-catalog.ts",
     "db:fixtures:bind-admin": "tsx src/scripts/bind-fixture-admin.ts",
     "db:fixtures:unbind-admin": "tsx src/scripts/unbind-fixture-admin.ts",
     "db:seed:local": "tsx src/database/seed.ts",
