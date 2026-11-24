@@ -1,0 +1,29 @@
+name: Repository governance audit
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  main-protection:
+    name: Verify trusted-review protection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out governance source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Validate checked-in ruleset contract
+        run: node scripts/github-governance.mjs validate-contract --ruleset deploy/github-main-ruleset.json
+      - name: Verify live main-branch protection
+        run: node scripts/github-governance.mjs validate-live --repository "${GITHUB_REPOSITORY}"
