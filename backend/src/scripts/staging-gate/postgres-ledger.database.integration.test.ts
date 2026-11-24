@@ -54,6 +54,7 @@ integrationDescribe("PostgresOwnershipLedger control-plane lifecycle", () => {
     if (pool) {
       await pool.query(
         `truncate table
+           staging_gate_control.alias_intents,
            staging_gate_control.resource_intents,
            staging_gate_control.attempts
          restart identity`,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import Joi from "joi";
 import {
   loadBackendEnvironment,
@@ -22,6 +23,8 @@ const environmentSchema = Joi.object({
   CORS_ALLOWED_ORIGINS: Joi.string().trim().default("http://localhost:3000,http://127.0.0.1:3000"),
   RELEASE_SHA: Joi.string().trim().optional(),
   RELEASE_DEPLOYMENT_ID: Joi.string().trim().optional(),
+  RELEASE_ENVIRONMENT_IDENTITY_MARKER: Joi.string().min(32).optional(),
+  RELEASE_SCENARIO_REGISTRY_VERSION: Joi.string().trim().max(128).optional(),
   VERCEL: Joi.string().valid("1").optional(),
   VERCEL_ENV: Joi.string().valid("production", "preview", "development").optional(),
   VERCEL_GIT_COMMIT_SHA: Joi.string().trim().optional(),
@@ -168,6 +171,8 @@ type EnvironmentShape = {
   PORT: number;
   REDIS_URL: string;
   RELEASE_DEPLOYMENT_ID?: string;
+  RELEASE_ENVIRONMENT_IDENTITY_MARKER?: string;
+  RELEASE_SCENARIO_REGISTRY_VERSION?: string;
   RELEASE_SHA?: string;
   STRIPE_API_VERSION: string;
   STRIPE_CHECKOUT_CANCEL_URL: string;
@@ -183,6 +188,7 @@ type EnvironmentShape = {
 
 type ValidatedEnvironmentShape = EnvironmentShape & {
   DATABASE_SSL_MODE: "disable" | "require" | "no-verify";
+  KAPCHI_ENVIRONMENT: "local" | "test" | "staging" | "production";
 };
 
 function buildErrorMessage(error: Joi.ValidationError) {
@@ -490,7 +496,14 @@ export const config = Object.freeze({
     logLevel: environment.LOG_LEVEL,
     nodeEnv: environment.NODE_ENV,
     port: environment.PORT,
+    environment: environment.KAPCHI_ENVIRONMENT,
+    releaseEnvironmentIdentity: environment.RELEASE_ENVIRONMENT_IDENTITY_MARKER
+      ? createHash("sha256")
+          .update(`kapchi-deployment-identity:v1:${environment.RELEASE_ENVIRONMENT_IDENTITY_MARKER}`)
+          .digest("hex")
+      : "unconfigured",
     releaseDeploymentId: environment.RELEASE_DEPLOYMENT_ID ?? environment.VERCEL_DEPLOYMENT_ID ?? "development",
+    releaseScenarioRegistryVersion: environment.RELEASE_SCENARIO_REGISTRY_VERSION ?? "unconfigured",
     releaseSha: environment.RELEASE_SHA ?? environment.VERCEL_GIT_COMMIT_SHA ?? "development"
   },
   assets: {

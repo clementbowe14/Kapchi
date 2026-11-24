@@ -13,9 +13,10 @@ control: the repository owner must not deploy production through another path.
   It provisions temporary PostgreSQL and Redis services, runs every reviewed
   candidate suite once, and uploads seven-day sanitized evidence.
 - `staging-release-gate.yml` serializes staging attempts, verifies the candidate
-  is reachable from `main`, verifies both Vercel projects use `production` as
-  their Production Branch, validates the stable same-site aliases, and updates
-  `staging` with a normal fast-forward-only push.
+  is reachable from the immutable `main` revision that dispatched the workflow,
+  snapshots Vercel deployment and alias state, updates `staging` with a normal
+  fast-forward-only push, and invokes the shared Vercel orchestrator to verify
+  new Preview deployments and move the stable staging aliases.
 - `staging-release-cleanup.yml` runs daily, invokes the Clerk cleanup adapter,
   and fails closed when another provider resource still needs an adapter or
   absence verification.
@@ -28,8 +29,8 @@ control: the repository owner must not deploy production through another path.
 
 The credentialed browser, provider-observation, and provider-cleanup adapters
 belong to the separate staging-execution workstream. Until they exist, the
-staging workflow intentionally ends in failure after a safe preflight and
-branch update. It does not create a final record or claim that the gate ran.
+staging workflow intentionally ends in failure after Vercel orchestration and
+evidence upload. It does not create a final record or issue a `GO` decision.
 The fixture runner and Clerk adapter can produce the reviewed customer,
 non-admin, and admin identity manifest, but the hosted workflow does not yet
 invoke that runner or bind the admin subject in the staging application
@@ -71,19 +72,27 @@ limitation is recorded as `single-owner-procedural`.
 Configure these GitHub Actions secrets for the credentialed staging workflow:
 
 - `STAGING_VERCEL_TOKEN`
-- `STAGING_VERCEL_TEAM_ID`
-- `STAGING_VERCEL_STOREFRONT_PROJECT_ID`
-- `STAGING_VERCEL_API_PROJECT_ID`
-- `STAGING_DEPLOYMENT_IDENTITY_HASH`
+- `STAGING_VERCEL_PROTECTION_BYPASS_SECRET`
 - `PRODUCTION_DEPLOYMENT_IDENTITY_HASH`
 - `STAGING_GATE_DATABASE_URL`
+- `STAGING_GATE_CONTROL_DATABASE_ID`, the 64-character installation identity
+  for the physically separate staging-gate control database
 
 Configure these repository variables:
 
-- `STAGING_STOREFRONT_ALIAS`, as an HTTPS origin
-- `STAGING_API_ALIAS`, as a different HTTPS origin
+- `STAGING_VERCEL_TEAM_ID`
+- `STAGING_VERCEL_STOREFRONT_PROJECT_ID`
+- `STAGING_VERCEL_API_PROJECT_ID`
+- `STAGING_DEPLOYMENT_IDENTITY_HASH`, the public digest returned by safe release
+  identity endpoints
+- `STAGING_STOREFRONT_ALIAS`, as an exact HTTPS origin without a trailing slash
+- `STAGING_API_ALIAS`, as a different exact HTTPS origin without a trailing slash
 - `STAGING_SITE_DOMAIN`, a lowercase multi-label site shared by both direct
   sibling aliases
+- `PRODUCTION_STOREFRONT_ORIGIN`, the registered production storefront HTTPS
+  origin without a trailing slash
+- `PRODUCTION_API_ORIGIN`, the registered production API HTTPS origin without a
+  trailing slash
 - `VERCEL_OWNER_GITHUB_LOGIN`, the GitHub account linked to the Vercel project
 - `VERCEL_OWNER_VERIFIED_EMAIL_SHA256`, SHA-256 of that owner's normalized,
   verified GitHub commit email
@@ -97,8 +106,13 @@ commits must be associated by GitHub with the configured owner login and exact
 verified-email hash. Never store raw identity values or the email in evidence.
 
 Both Vercel projects must use `production` as the Production Branch. The
-`staging` branch is a persistent Preview branch with staging-only variables.
-General Preview variables must not contain production credentials.
+`staging` branch is a persistent Preview branch. Configure branch-scoped values
+for `KAPCHI_ENVIRONMENT=staging`, `RELEASE_ENVIRONMENT_IDENTITY_MARKER`, and
+`RELEASE_SCENARIO_REGISTRY_VERSION`. Do not define those identity keys as
+general Preview or Production values. General Preview variables must not contain
+production credentials. The API project must be public at the Vercel layer;
+Fastify still protects application routes. The storefront Preview remains
+protected and is probed with the bypass secret only on its exact expected host.
 
 ## Running the Candidate Suite
 
@@ -108,22 +122,53 @@ dispatching the credentialed gate:
 1. Confirm the candidate workflow completed successfully.
 2. Record its GitHub run ID and exact 40-character commit SHA.
 3. Confirm the SHA is already merged into and reachable from `main`.
-4. Dispatch **Staging release gate** and type `ADVANCE_STAGING`.
+4. Select `main`, dispatch **Staging release gate**, and type
+   `ADVANCE_STAGING`.
 
 The workflow downloads candidate evidence from the named run and verifies its
 SHA and derived decision. Missing evidence or settings stop the run before the
-branch moves.
+branch moves. The dispatch is rejected unless both `github.ref` and the workflow
+reference identify `main`; checkout uses the immutable workflow SHA with
+persisted credentials disabled.
+
+The Vercel integration uses this backend command contract from `backend/`:
+
+```text
+npm run staging:vercel -- snapshot --attempt-id ID --candidate-sha SHA --output-dir DIR
+npm run staging:vercel -- prepare  --attempt-id ID --candidate-sha SHA --output-dir DIR --snapshot FILE
+npm run staging:vercel -- verify   --attempt-id ID --candidate-sha SHA --output-dir DIR --manifest FILE
+npm run staging:vercel -- recover  --attempt-id ID --candidate-sha SHA --output-dir DIR
+```
+
+Credentials, identifiers, origins, and aliases are environment variables, never
+command-line arguments. The workflow writes artifacts under
+`.staging-gate/vercel`. `snapshot.json`, `attempt-report.json`,
+`recovery-summary.json`, and an optional `verification-receipt.json` upload even
+when orchestration fails. `staging-deployment-manifest.json` uploads only after
+successful preparation and read-back. The workflow then deliberately exits
+nonzero because issues #139 and #140 still block final release-gate execution.
 
 ## Staging Branch Safety
 
 The gate uses one repository-wide concurrency group with cancellation disabled.
-It fetches the current `staging` branch and proves that it is an ancestor of the
-candidate. The subsequent ordinary Git push rejects non-fast-forward history.
-The workflow never force-pushes.
+Before Git mutation, `snapshot` records deployment IDs and verified, recoverable
+alias baselines. The workflow then fetches the current `staging` branch and
+proves that it is an ancestor of the candidate. The subsequent ordinary Git
+push rejects non-fast-forward history. The workflow never force-pushes. Git
+authentication exists only in that step through a temporary askpass helper and
+is removed when the step exits.
 
-Before updating the branch, it queries both Vercel projects and requires their
-Production Branch to be exactly `production`. This prevents `main` or `staging`
-from being treated as the customer-facing production branch.
+The orchestrator requires both Vercel projects' Production Branch to be exactly
+`production`, validates their repository links and branch-scoped environment
+metadata, and denies registered production domains before an alias can move.
+Only deployments absent from the pre-push snapshot and bound to the exact
+candidate SHA and `staging` ref are eligible.
+
+The job records absolute deadlines at startup: preparation ends by minute 115,
+recovery ends by minute 130, artifact handling retains minutes 130 through 135,
+and GitHub terminates the job at minute 135. Backend orchestration must honor the
+exported `STAGING_GATE_*_DEADLINE_EPOCH` values rather than starting a fresh
+relative timeout.
 
 ## Resource Intent and Cleanup
 
@@ -131,6 +176,12 @@ Create a physically separate control database with
 `deploy/staging-gate-control.sql` and use an identity dedicated to trusted
 workflows. Do not grant the deployed application identity access to that
 database.
+
+Apply the control schema again when upgrading to issue #138 so the durable
+`alias_intents` table and terminal-intent protection trigger exist before the
+workflow runs. `STAGING_GATE_DATABASE_URL` must use authenticated TLS with
+`sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`; plaintext and
+certificate-bypass modes are rejected before connecting.
 
 Before a provider mutation, insert `creation-pending` with:
 
