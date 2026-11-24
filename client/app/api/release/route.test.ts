@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { GET, resolveStorefrontReleaseIdentity } from "./route";
 
 describe("storefront release identity", () => {
@@ -8,6 +9,8 @@ describe("storefront release identity", () => {
         KAPCHI_ENVIRONMENT: "staging",
         NODE_ENV: "production",
         RELEASE_DEPLOYMENT_ID: "dpl_explicit",
+        RELEASE_ENVIRONMENT_IDENTITY_MARKER: "marker-value-with-at-least-thirty-two-bytes",
+        RELEASE_SCENARIO_REGISTRY_VERSION: "2026-11-24.1",
         RELEASE_SHA: "a".repeat(40),
         VERCEL_DEPLOYMENT_ID: "dpl_system",
         VERCEL_ENV: "preview",
@@ -15,7 +18,11 @@ describe("storefront release identity", () => {
       }),
     ).toEqual({
       environment: "staging",
+      environmentIdentity: createHash("sha256")
+        .update("kapchi-deployment-identity:v1:marker-value-with-at-least-thirty-two-bytes")
+        .digest("hex"),
       releaseDeploymentId: "dpl_explicit",
+      registryVersion: "2026-11-24.1",
       releaseSha: "a".repeat(40),
     });
   });
@@ -30,7 +37,9 @@ describe("storefront release identity", () => {
       }),
     ).toEqual({
       environment: "preview",
+      environmentIdentity: "unconfigured",
       releaseDeploymentId: "dpl_system",
+      registryVersion: "unconfigured",
       releaseSha: "b".repeat(40),
     });
   });
@@ -41,6 +50,8 @@ describe("storefront release identity", () => {
 
     expect(Object.keys(body).sort()).toEqual([
       "environment",
+      "environmentIdentity",
+      "registryVersion",
       "releaseDeploymentId",
       "releaseSha",
     ]);

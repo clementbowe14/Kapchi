@@ -8,8 +8,11 @@ export type ReadinessCode = "DATABASE_UNAVAILABLE" | "REDIS_UNAVAILABLE" | "MIGR
 type DependencyState = "ready" | "unready" | "unconfigured";
 type ReadinessResult = {
   dependencies: Record<ReadinessDependency, DependencyState>;
+  environment: string;
+  environmentIdentity: string;
   failedDependencyCodes: ReadinessCode[];
   releaseDeploymentId: string;
+  registryVersion: string;
   releaseSha: string;
   status: "ready" | "unready";
 };
@@ -75,8 +78,11 @@ export function createReadinessProbe(
 
     return {
       dependencies,
+      environment: config.app.environment,
+      environmentIdentity: config.app.releaseEnvironmentIdentity,
       failedDependencyCodes: [...new Set(failedDependencyCodes)].sort(),
       releaseDeploymentId: config.app.releaseDeploymentId,
+      registryVersion: config.app.releaseScenarioRegistryVersion,
       releaseSha: config.app.releaseSha,
       status: failedDependencyCodes.length === 0 ? "ready" : "unready"
     };
@@ -88,8 +94,11 @@ export function createReadinessProbe(
     inFlight = deadline(execute(), options.overallTimeoutMs)
       .catch((): ReadinessResult => ({
         dependencies: { database: "unready", redis: "unready", migrations: "unready", privateAssetProvider: "unready" },
+        environment: config.app.environment,
+        environmentIdentity: config.app.releaseEnvironmentIdentity,
         failedDependencyCodes: ["READINESS_TIMEOUT"],
         releaseDeploymentId: config.app.releaseDeploymentId,
+        registryVersion: config.app.releaseScenarioRegistryVersion,
         releaseSha: config.app.releaseSha,
         status: "unready"
       }))
@@ -120,14 +129,21 @@ const healthPlugin: FastifyPluginAsync<HealthPluginOptions> = async (fastify, op
     overallTimeoutMs: options.overallTimeoutMs ?? 1_500
   });
 
-  fastify.get("/health", async () => ({
-    releaseDeploymentId: config.app.releaseDeploymentId,
-    releaseSha: config.app.releaseSha,
-    service: "kapchi-backend",
-    status: "ok"
-  }));
+  fastify.get("/health", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return {
+      environment: config.app.environment,
+      environmentIdentity: config.app.releaseEnvironmentIdentity,
+      releaseDeploymentId: config.app.releaseDeploymentId,
+      registryVersion: config.app.releaseScenarioRegistryVersion,
+      releaseSha: config.app.releaseSha,
+      service: "kapchi-backend",
+      status: "ok"
+    };
+  });
 
   fastify.get("/ready", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
     const result = await probe();
     if (result.status === "unready") {
       fastify.log.warn({ event: "readiness.failed", failedDependencyCodes: result.failedDependencyCodes }, "Readiness check failed");
