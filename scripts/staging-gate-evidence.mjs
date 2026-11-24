@@ -58,17 +58,29 @@ function summarizeVitest(stdout, exitCode) {
       failed: Number(report.numFailedTests ?? 0),
       skipped: Number(report.numPendingTests ?? 0)
     };
+    const suiteFailures = Array.isArray(report.testResults)
+      ? report.testResults.filter((result) =>
+          result.status === "failed" &&
+          !(result.assertionResults ?? []).some((assertion) => assertion.status === "failed"))
+      : [];
+    summary.failed += suiteFailures.length;
+    summary.total += suiteFailures.length;
     if (exitCode !== 0 && summary.failed === 0) {
       summary.failed = 1;
       summary.total += 1;
     }
     const outcome = exitCode !== 0 || summary.failed > 0 ? "fail" : summary.skipped > 0 || summary.total === 0 ? "pending" : "pass";
     const executedTests = Array.isArray(report.testResults)
-      ? report.testResults.flatMap((result) => (result.assertionResults ?? []).map((assertion) => ({
-        file: result.name,
-        id: assertion.title,
-        status: assertion.status
-      })))
+      ? report.testResults.flatMap((result) => [
+          ...(result.assertionResults ?? []).map((assertion) => ({
+            file: result.name,
+            id: assertion.title,
+            status: assertion.status
+          })),
+          ...(suiteFailures.includes(result)
+            ? [{ file: result.name, id: "[suite failure]", status: "failed" }]
+            : [])
+        ])
       : [];
     return { outcome, ...summary, executedTests };
   } catch {

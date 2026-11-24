@@ -167,6 +167,42 @@ test("preserves failed Vitest identities when the command exits nonzero", async 
   }]);
 });
 
+test("records a failed Vitest suite hook when every assertion passed", async () => {
+  const executeCommand = async () => ({
+    exitCode: 1,
+    signal: null,
+    stdout: JSON.stringify({
+      numTotalTestSuites: 1,
+      numTotalTests: 1,
+      numPassedTests: 1,
+      numFailedTests: 0,
+      numPendingTests: 0,
+      testResults: [{
+        name: "/repo/backend/src/example.test.ts",
+        status: "failed",
+        assertionResults: [{ title: "backend contract", status: "passed" }]
+      }]
+    }),
+    stderr: ""
+  });
+  const generated = await runCandidateSuite({
+    registry,
+    suiteId: "backend-tests",
+    repositoryRoot: "/repo",
+    candidateSha,
+    workflow,
+    executeCommand,
+    now: clock()
+  });
+
+  assert.deepEqual(generated.summary, { total: 2, passed: 1, failed: 1, skipped: 0 });
+  assert.equal(generated.outcome, "fail");
+  assert.deepEqual(generated.executedTests, [
+    { file: "backend/src/example.test.ts", id: "[suite failure]", status: "failed" },
+    { file: "backend/src/example.test.ts", id: "backend contract", status: "passed" }
+  ]);
+});
+
 test("keeps malformed Vitest output fallback summaries balanced", async () => {
   const generated = await runCandidateSuite({
     registry,
