@@ -97,6 +97,54 @@ create index if not exists staging_gate_resource_intents_expiry
 create index if not exists staging_gate_resource_intents_attempt_provider_namespace
   on staging_gate_control.resource_intents (attempt_id, provider, namespace);
 
+create table if not exists staging_gate_control.alias_intents (
+  alias_intent_id bigint generated always as identity primary key,
+  intent_id text not null unique check (intent_id ~ '^alias_[0-9a-f]{32}$'),
+  attempt_id text not null references staging_gate_control.attempts(attempt_id) on delete restrict,
+  candidate_sha text not null check (candidate_sha ~ '^[0-9a-f]{40}$'),
+  projects jsonb not null,
+  prior_targets jsonb not null,
+  requested_targets jsonb not null,
+  state text not null default 'pending' check (state in ('pending', 'complete', 'restored')),
+  created_at timestamptz not null,
+  storefront_assigned_at timestamptz,
+  api_assigned_at timestamptz,
+  completed_at timestamptz,
+  restored_at timestamptz,
+  check ((completed_at is not null) = (state = 'complete')),
+  check ((restored_at is not null) = (state = 'restored')),
+  check (state <> 'complete' or (storefront_assigned_at is not null and api_assigned_at is not null))
+);
+
+create index if not exists staging_gate_alias_intents_unfinished
+  on staging_gate_control.alias_intents (state, created_at);
+
+create or replace function staging_gate_control.protect_terminal_alias_intent()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.state in ('complete', 'restored') then
+    if tg_op = 'DELETE' then
+      raise exception 'terminal staging alias intents are immutable';
+    end if;
+    if new is distinct from old then
+      raise exception 'terminal staging alias intents are immutable';
+    end if;
+  end if;
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists staging_gate_alias_intent_terminal_immutable
+  on staging_gate_control.alias_intents;
+create trigger staging_gate_alias_intent_terminal_immutable
+before update or delete on staging_gate_control.alias_intents
+for each row execute function staging_gate_control.protect_terminal_alias_intent();
+
 create or replace function staging_gate_control.protect_cleanup_tombstone()
 returns trigger
 language plpgsql

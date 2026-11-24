@@ -29,6 +29,7 @@
     "messages:dispatch": "tsx src/scripts/dispatch-messages.ts",
     "operations:health": "tsx src/operations/health.ts",
     "e2e:admin-orders:reset": "tsx src/scripts/reset-admin-order-e2e.ts",
+    "staging:vercel": "tsx src/scripts/staging-gate/vercel-command.ts",
     "start": "node dist/server.js",
     "release:validate": "node ../scripts/validate-launch-record.mjs",
     "release:verify-production": "node ../scripts/verify-production.mjs",
