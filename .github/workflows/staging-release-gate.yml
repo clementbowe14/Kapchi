@@ -25,50 +25,81 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  preflight:
-    name: Verify release controls
+  orchestrate:
+    name: Verify and orchestrate staging deployments
     runs-on: ubuntu-latest
+    timeout-minutes: 135
     env:
-      VERCEL_TOKEN: ${{ secrets.STAGING_VERCEL_TOKEN }}
-      VERCEL_TEAM_ID: ${{ secrets.STAGING_VERCEL_TEAM_ID }}
-      STOREFRONT_PROJECT_ID: ${{ secrets.STAGING_VERCEL_STOREFRONT_PROJECT_ID }}
-      API_PROJECT_ID: ${{ secrets.STAGING_VERCEL_API_PROJECT_ID }}
-      STAGING_DEPLOYMENT_IDENTITY_HASH: ${{ secrets.STAGING_DEPLOYMENT_IDENTITY_HASH }}
-      PRODUCTION_DEPLOYMENT_IDENTITY_HASH: ${{ secrets.PRODUCTION_DEPLOYMENT_IDENTITY_HASH }}
+      ATTEMPT_ID: stg_${{ github.run_id }}_${{ github.run_attempt }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      STAGING_VERCEL_TEAM_ID: ${{ vars.STAGING_VERCEL_TEAM_ID }}
+      STAGING_VERCEL_STOREFRONT_PROJECT_ID: ${{ vars.STAGING_VERCEL_STOREFRONT_PROJECT_ID }}
+      STAGING_VERCEL_API_PROJECT_ID: ${{ vars.STAGING_VERCEL_API_PROJECT_ID }}
+      STAGING_DEPLOYMENT_IDENTITY_HASH: ${{ vars.STAGING_DEPLOYMENT_IDENTITY_HASH }}
       STAGING_STOREFRONT_ALIAS: ${{ vars.STAGING_STOREFRONT_ALIAS }}
       STAGING_API_ALIAS: ${{ vars.STAGING_API_ALIAS }}
       STAGING_SITE_DOMAIN: ${{ vars.STAGING_SITE_DOMAIN }}
+      PRODUCTION_STOREFRONT_ORIGIN: ${{ vars.PRODUCTION_STOREFRONT_ORIGIN }}
+      PRODUCTION_API_ORIGIN: ${{ vars.PRODUCTION_API_ORIGIN }}
       VERCEL_OWNER_GITHUB_LOGIN: ${{ vars.VERCEL_OWNER_GITHUB_LOGIN }}
       VERCEL_OWNER_VERIFIED_EMAIL_SHA256: ${{ vars.VERCEL_OWNER_VERIFIED_EMAIL_SHA256 }}
     steps:
-      - name: Require explicit staging confirmation
+      - name: Establish immutable workflow identity and absolute deadlines
         env:
           CONFIRMATION: ${{ inputs.confirmation }}
-        run: test "${CONFIRMATION}" = "ADVANCE_STAGING" || { echo "Confirmation must equal ADVANCE_STAGING" >&2; exit 1; }
-      - name: Check out trusted workflow from main
+          DISPATCH_REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          test "${CONFIRMATION}" = "ADVANCE_STAGING" || { echo "Confirmation must equal ADVANCE_STAGING" >&2; exit 1; }
+          test "${DISPATCH_REF}" = "refs/heads/main" || { echo "The staging gate must be dispatched from main" >&2; exit 1; }
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/staging-release-gate.yml@refs/heads/main"
+          test "${WORKFLOW_REF}" = "${expected_workflow_ref}" || { echo "The dispatched workflow is not the reviewed workflow on main" >&2; exit 1; }
+          [[ "${TRUSTED_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "The trusted workflow SHA is invalid" >&2; exit 1; }
+          started_at_epoch="$(date +%s)"
+          {
+            echo "STAGING_GATE_STARTED_AT_EPOCH=${started_at_epoch}"
+            echo "STAGING_GATE_PREPARE_DEADLINE_EPOCH=$((started_at_epoch + 6900))"
+            echo "STAGING_GATE_RECOVERY_DEADLINE_EPOCH=$((started_at_epoch + 7800))"
+            echo "STAGING_GATE_EVIDENCE_DEADLINE_EPOCH=$((started_at_epoch + 8100))"
+          } >> "${GITHUB_ENV}"
+
+      - name: Check out the immutable workflow revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
-      - name: Fail closed when operator configuration is absent
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Fail closed when noncredential configuration is absent
         run: |
-          required=(VERCEL_TOKEN VERCEL_TEAM_ID STOREFRONT_PROJECT_ID API_PROJECT_ID STAGING_DEPLOYMENT_IDENTITY_HASH PRODUCTION_DEPLOYMENT_IDENTITY_HASH STAGING_STOREFRONT_ALIAS STAGING_API_ALIAS STAGING_SITE_DOMAIN VERCEL_OWNER_GITHUB_LOGIN VERCEL_OWNER_VERIFIED_EMAIL_SHA256)
+          set -euo pipefail
+          required=(STAGING_VERCEL_TEAM_ID STAGING_VERCEL_STOREFRONT_PROJECT_ID STAGING_VERCEL_API_PROJECT_ID STAGING_DEPLOYMENT_IDENTITY_HASH STAGING_STOREFRONT_ALIAS STAGING_API_ALIAS STAGING_SITE_DOMAIN PRODUCTION_STOREFRONT_ORIGIN PRODUCTION_API_ORIGIN VERCEL_OWNER_GITHUB_LOGIN VERCEL_OWNER_VERIFIED_EMAIL_SHA256 GITHUB_REPOSITORY GITHUB_REPOSITORY_ID TRUSTED_WORKFLOW_SHA)
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required staging gate setting: ${name}" >&2; exit 1; }
           done
-          test "${STAGING_DEPLOYMENT_IDENTITY_HASH}" != "${PRODUCTION_DEPLOYMENT_IDENTITY_HASH}" || { echo "Staging and production deployment identities must differ" >&2; exit 1; }
-      - name: Verify candidate is an immutable commit reachable from main
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          test "${STAGING_VERCEL_STOREFRONT_PROJECT_ID}" != "${STAGING_VERCEL_API_PROJECT_ID}" || { echo "Storefront and API projects must differ" >&2; exit 1; }
+
+      - name: Verify candidate is an immutable commit reachable from the dispatched main revision
         run: |
-          test "${#CANDIDATE_SHA}" -eq 40
+          set -euo pipefail
+          [[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "${CANDIDATE_SHA}^{commit}"
-          git merge-base --is-ancestor "${CANDIDATE_SHA}" origin/main
+          git merge-base --is-ancestor "${CANDIDATE_SHA}" "${TRUSTED_WORKFLOW_SHA}"
+
       - name: Verify candidate author belongs to the Vercel project owner
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
+          set -euo pipefail
           commit_metadata="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${CANDIDATE_SHA}")"
           author_login="$(jq -r '.author.login // empty' <<<"${commit_metadata}")"
           author_email="$(jq -r '.commit.author.email // empty' <<<"${commit_metadata}" | tr '[:upper:]' '[:lower:]' | xargs)"
@@ -80,12 +111,13 @@ jobs:
           test "${email_hash}" = "${VERCEL_OWNER_VERIFIED_EMAIL_SHA256}" || { echo "Candidate author email does not match the configured verified GitHub email" >&2; exit 1; }
           echo "candidate_author=${author_login}" >> "${GITHUB_STEP_SUMMARY}"
           echo "candidate_committer=${committer_login}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Download and recompute candidate evidence from the named run
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
+          set -euo pipefail
           run_metadata="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}")"
           test "$(jq -r .status <<<"${run_metadata}")" = "completed"
           test "$(jq -r .conclusion <<<"${run_metadata}")" = "success"
@@ -98,7 +130,7 @@ jobs:
           test "${artifact_count}" -eq 1
           jq --arg name "${artifact_name}" '.artifacts[] | select(.name == $name and .expired == false)' <<<"${artifacts}" > .staging-gate-artifact.json
           artifact_id="$(jq -r .id .staging-gate-artifact.json)"
-          mkdir -p .staging-gate/candidate-contents .staging-gate/candidate-source/deploy .staging-gate/candidate-source/backend .staging-gate/candidate-source/client
+          mkdir -p .staging-gate/candidate-contents .staging-gate/candidate-source/deploy .staging-gate/candidate-source/backend .staging-gate/candidate-source/client .staging-gate/vercel
           gh api -H "Accept: application/vnd.github+json" "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > .staging-gate/candidate.zip
           unzip -q .staging-gate/candidate.zip -d .staging-gate/candidate-contents
           node scripts/verify-staging-artifact.mjs \
@@ -120,26 +152,115 @@ jobs:
             --receipts evidence/receipts \
             --report evidence/candidate-report.json \
             --candidate-sha "${CANDIDATE_SHA}"
-      - name: Verify stable aliases are distinct and same-site
-        run: node -e 'const [aRaw,bRaw,site]=process.argv.slice(1); const dns=/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/; if(!dns.test(site)) process.exit(1); const a=new URL(aRaw); const b=new URL(bRaw); const labels=site.split(".").length; const sibling=(u)=>u.protocol==="https:"&&!u.port&&u.origin===u.href.replace(/\/$/,"")&&u.hostname.endsWith(`.${site}`)&&u.hostname.split(".").length===labels+1; if(!sibling(a)||!sibling(b)||a.hostname===b.hostname) process.exit(1)' "${STAGING_STOREFRONT_ALIAS}" "${STAGING_API_ALIAS}" "${STAGING_SITE_DOMAIN}"
-      - name: Verify both Vercel projects use the production branch
-        run: |
-          for project in "${STOREFRONT_PROJECT_ID}" "${API_PROJECT_ID}"; do
-            branch="$(curl --fail --silent --show-error --header "Authorization: Bearer ${VERCEL_TOKEN}" "https://api.vercel.com/v9/projects/${project}?teamId=${VERCEL_TEAM_ID}" | jq -r .link.productionBranch)"
-            test "${branch}" = "production" || { echo "Vercel project ${project} Production Branch is not production" >&2; exit 1; }
-          done
-      - name: Fast-forward staging branch only
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: |
-          git fetch origin staging:refs/remotes/origin/staging || true
-          if git show-ref --verify --quiet refs/remotes/origin/staging; then
-            git merge-base --is-ancestor refs/remotes/origin/staging "${CANDIDATE_SHA}"
-          fi
-          git push origin "${CANDIDATE_SHA}:refs/heads/staging"
-      - name: Stop until credentialed staging execution is implemented
-        run: |
-          echo "Staging was advanced safely, but browser/provider execution belongs to the separate staging implementation workstream." >&2
-          echo "No final gate record was created and production remains blocked." >&2
-          exit 1
 
+      - name: Verify stable aliases are distinct, same-site, and outside production
+        run: >-
+          node -e 'const [aRaw,bRaw,site,pRaw,qRaw]=process.argv.slice(1); const dns=/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/; if(!dns.test(site)) process.exit(1); const parse=(raw)=>{const u=new URL(raw); if(u.protocol!=="https:"||u.port||u.username||u.password||u.pathname!=="/"||u.search||u.hash||u.origin!==raw) process.exit(1); return u}; const a=parse(aRaw); const b=parse(bRaw); const p=parse(pRaw); const q=parse(qRaw); const labels=site.split(".").length; const sibling=(u)=>u.hostname.endsWith(`.${site}`)&&u.hostname.split(".").length===labels+1; if(!sibling(a)||!sibling(b)||a.hostname===b.hostname||[p.hostname,q.hostname].includes(a.hostname)||[p.hostname,q.hostname].includes(b.hostname)) process.exit(1)'
+          "${STAGING_STOREFRONT_ALIAS}" "${STAGING_API_ALIAS}" "${STAGING_SITE_DOMAIN}" "${PRODUCTION_STOREFRONT_ORIGIN}" "${PRODUCTION_API_ORIGIN}"
+
+      - name: Install reviewed backend dependencies
+        working-directory: backend
+        run: npm ci --ignore-scripts
+
+      - name: Snapshot Vercel deployments and recoverable alias baselines
+        working-directory: backend
+        timeout-minutes: 10
+        env:
+          STAGING_VERCEL_TOKEN: ${{ secrets.STAGING_VERCEL_TOKEN }}
+          STAGING_VERCEL_PROTECTION_BYPASS_SECRET: ${{ secrets.STAGING_VERCEL_PROTECTION_BYPASS_SECRET }}
+          PRODUCTION_DEPLOYMENT_IDENTITY_HASH: ${{ secrets.PRODUCTION_DEPLOYMENT_IDENTITY_HASH }}
+          STAGING_GATE_DATABASE_URL: ${{ secrets.STAGING_GATE_DATABASE_URL }}
+          STAGING_GATE_CONTROL_DATABASE_ID: ${{ secrets.STAGING_GATE_CONTROL_DATABASE_ID }}
+        run: >-
+          npm run staging:vercel -- snapshot
+          --attempt-id "${ATTEMPT_ID}"
+          --candidate-sha "${CANDIDATE_SHA}"
+          --output-dir "${GITHUB_WORKSPACE}/.staging-gate/vercel"
+
+      - name: Fast-forward staging branch with isolated Git credentials
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          askpass="${RUNNER_TEMP}/kapchi-staging-git-askpass.sh"
+          cleanup_askpass() { rm -f "${askpass}"; }
+          trap cleanup_askpass EXIT
+          printf '%s\n' '#!/bin/sh' 'case "$1" in' '*Username*) printf "%s\\n" "x-access-token" ;;' '*Password*) printf "%s\\n" "$GH_TOKEN" ;;' '*) exit 1 ;;' 'esac' > "${askpass}"
+          chmod 700 "${askpass}"
+          export GIT_ASKPASS="${askpass}"
+          export GIT_TERMINAL_PROMPT=0
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags "${remote}" refs/heads/staging:refs/remotes/origin/staging
+          git merge-base --is-ancestor refs/remotes/origin/staging "${CANDIDATE_SHA}"
+          git push --porcelain "${remote}" "${CANDIDATE_SHA}:refs/heads/staging"
+
+      - name: Prepare immutable Vercel staging deployments and aliases
+        working-directory: backend
+        timeout-minutes: 115
+        env:
+          STAGING_VERCEL_TOKEN: ${{ secrets.STAGING_VERCEL_TOKEN }}
+          STAGING_VERCEL_PROTECTION_BYPASS_SECRET: ${{ secrets.STAGING_VERCEL_PROTECTION_BYPASS_SECRET }}
+          PRODUCTION_DEPLOYMENT_IDENTITY_HASH: ${{ secrets.PRODUCTION_DEPLOYMENT_IDENTITY_HASH }}
+          STAGING_GATE_DATABASE_URL: ${{ secrets.STAGING_GATE_DATABASE_URL }}
+          STAGING_GATE_CONTROL_DATABASE_ID: ${{ secrets.STAGING_GATE_CONTROL_DATABASE_ID }}
+        run: |
+          set -euo pipefail
+          remaining_seconds=$((STAGING_GATE_PREPARE_DEADLINE_EPOCH - $(date +%s)))
+          test "${remaining_seconds}" -gt 0 || { echo "The absolute preparation deadline has already expired" >&2; exit 1; }
+          timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+            npm run staging:vercel -- prepare \
+            --attempt-id "${ATTEMPT_ID}" \
+            --candidate-sha "${CANDIDATE_SHA}" \
+            --output-dir "${GITHUB_WORKSPACE}/.staging-gate/vercel" \
+            --snapshot "${GITHUB_WORKSPACE}/.staging-gate/vercel/snapshot.json"
+
+      - name: Reconcile aliases and flush recovery evidence
+        if: always()
+        working-directory: backend
+        timeout-minutes: 15
+        env:
+          STAGING_VERCEL_TOKEN: ${{ secrets.STAGING_VERCEL_TOKEN }}
+          STAGING_VERCEL_PROTECTION_BYPASS_SECRET: ${{ secrets.STAGING_VERCEL_PROTECTION_BYPASS_SECRET }}
+          PRODUCTION_DEPLOYMENT_IDENTITY_HASH: ${{ secrets.PRODUCTION_DEPLOYMENT_IDENTITY_HASH }}
+          STAGING_GATE_DATABASE_URL: ${{ secrets.STAGING_GATE_DATABASE_URL }}
+          STAGING_GATE_CONTROL_DATABASE_ID: ${{ secrets.STAGING_GATE_CONTROL_DATABASE_ID }}
+        run: |
+          set -euo pipefail
+          remaining_seconds=$((STAGING_GATE_RECOVERY_DEADLINE_EPOCH - $(date +%s)))
+          test "${remaining_seconds}" -gt 0 || { echo "The absolute recovery deadline has already expired" >&2; exit 1; }
+          timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+            npm run staging:vercel -- recover \
+            --attempt-id "${ATTEMPT_ID}" \
+            --candidate-sha "${CANDIDATE_SHA}" \
+            --output-dir "${GITHUB_WORKSPACE}/.staging-gate/vercel"
+
+      - name: Upload redacted Vercel attempt and recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-vercel-attempt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .staging-gate/vercel/snapshot.json
+            .staging-gate/vercel/attempt-report.json
+            .staging-gate/vercel/recovery-summary.json
+            .staging-gate/vercel/verification-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: true
+
+      - name: Upload verified staging deployment manifest
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-deployment-manifest-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
+          path: .staging-gate/vercel/staging-deployment-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stop before final release-gate execution
+        if: always()
+        run: |
+          echo "Immutable staging deployments may be prepared, but issues #139 and #140 still block the final release gate." >&2
+          echo "No final gate record was created, no GO decision was issued, and production remains blocked." >&2
+          exit 1
