@@ -34,7 +34,6 @@ function valueAfter(argv: string[], name: string) {
   }
   return argv[index + 1]!;
 }
-
 export function parseVercelCommandArguments(argv: string[]): CommandArguments {
   const mode = argv[0] as Mode;
   if (!["snapshot", "prepare", "verify", "recover"].includes(mode)) {
@@ -54,7 +53,6 @@ export function parseVercelCommandArguments(argv: string[]): CommandArguments {
   if (mode === "verify") parsed.manifest = resolve(valueAfter(argv, "--manifest"));
   return parsed;
 }
-
 async function registryVersion() {
   const commandDirectory = dirname(fileURLToPath(import.meta.url));
   const path = resolve(commandDirectory, "../../../../deploy/staging-release-scenarios.json");
@@ -215,4 +213,3 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exitCode = 1;
   });
 }
-

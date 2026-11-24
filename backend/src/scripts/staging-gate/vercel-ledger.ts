@@ -20,7 +20,6 @@ type AliasIntentRow = {
 function iso(value: Date | string | null) {
   return value == null ? null : new Date(value).toISOString();
 }
-
 function rowToIntent(row: AliasIntentRow): AliasIntent {
   return {
     apiAssignedAt: iso(row.api_assigned_at),
@@ -36,7 +35,6 @@ function rowToIntent(row: AliasIntentRow): AliasIntent {
     storefrontAssignedAt: iso(row.storefront_assigned_at),
   };
 }
-
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
@@ -152,4 +150,3 @@ export class PostgresAliasControlLedger implements AliasControlLedger {
     if (result.rowCount !== 1) throw new Error("Alias intent could not be marked restored.");
   }
 }
-

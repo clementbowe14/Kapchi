@@ -47,7 +47,6 @@ function required(environment: NodeJS.ProcessEnv, name: string) {
   if (!value) throw new Error(`${name} is required.`);
   return value;
 }
-
 function exactHttpsOrigin(value: string, name: string) {
   const url = new URL(value);
   if (url.protocol !== "https:" || url.origin !== value || url.username || url.password || url.port ||
@@ -56,7 +55,6 @@ function exactHttpsOrigin(value: string, name: string) {
   }
   return url.hostname;
 }
-
 export function loadVercelGateConfig(
   environment: NodeJS.ProcessEnv,
   registryVersion: string,
@@ -465,4 +463,3 @@ export class VercelStagingOrchestrator {
     return { attemptId: manifest.attemptId, candidateSha: manifest.candidateSha, schemaVersion: 1 as const, verifiedAt: new Date(this.now()).toISOString() };
   }
 }
-

@@ -31,4 +31,3 @@ describe("staging:vercel CLI", () => {
       .toThrow("Unknown argument");
   });
 });
-

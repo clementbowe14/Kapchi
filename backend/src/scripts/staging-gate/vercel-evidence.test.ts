@@ -20,4 +20,3 @@ describe("Vercel staging evidence", () => {
       .rejects.toThrow("forbidden field");
   });
 });
-

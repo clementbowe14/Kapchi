@@ -11,7 +11,6 @@ function assertRedacted(value: unknown, path = "root"): void {
     assertRedacted(child, `${path}.${key}`);
   }
 }
-
 export async function writeAtomicJson(path: string, value: unknown) {
   assertRedacted(value);
   const directory = dirname(path);
@@ -37,11 +36,9 @@ export async function writeAtomicJson(path: string, value: unknown) {
   }
   return readJsonFile(path);
 }
-
 export async function readJsonFile<T>(path: string): Promise<T> {
   const source = await readFile(path, "utf8");
   const parsed = JSON.parse(source) as T;
   assertRedacted(parsed);
   return parsed;
 }
-

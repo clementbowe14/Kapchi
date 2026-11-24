@@ -139,4 +139,3 @@ describe("VercelClient", () => {
     await expect(client.getDeployment("dpl_recovery")).resolves.toMatchObject({ id: "dpl_api" });
   });
 });
-

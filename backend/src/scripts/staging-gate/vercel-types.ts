@@ -102,4 +102,3 @@ export interface AliasControlLedger {
   markAliasAssigned(intentId: string, role: ProjectRole, assignedAt: string): Promise<void>;
   markAliasRestored(intentId: string, restoredAt: string): Promise<void>;
 }
-
