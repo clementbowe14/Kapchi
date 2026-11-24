@@ -131,6 +131,42 @@ test("keeps failed command fallback summaries balanced", async () => {
   assert.equal(generated.outcome, "fail");
 });
 
+test("preserves failed Vitest identities when the command exits nonzero", async () => {
+  const executeCommand = async () => ({
+    exitCode: 1,
+    signal: null,
+    stdout: JSON.stringify({
+      numTotalTestSuites: 1,
+      numTotalTests: 1,
+      numPassedTests: 0,
+      numFailedTests: 1,
+      numPendingTests: 0,
+      testResults: [{
+        name: "/repo/backend/src/example.test.ts",
+        assertionResults: [{ title: "backend contract", status: "failed" }]
+      }]
+    }),
+    stderr: ""
+  });
+  const generated = await runCandidateSuite({
+    registry,
+    suiteId: "backend-tests",
+    repositoryRoot: "/repo",
+    candidateSha,
+    workflow,
+    executeCommand,
+    now: clock()
+  });
+
+  assert.deepEqual(generated.summary, { total: 1, passed: 0, failed: 1, skipped: 0 });
+  assert.equal(generated.outcome, "fail");
+  assert.deepEqual(generated.executedTests, [{
+    file: "backend/src/example.test.ts",
+    id: "backend contract",
+    status: "failed"
+  }]);
+});
+
 test("keeps malformed Vitest output fallback summaries balanced", async () => {
   const generated = await runCandidateSuite({
     registry,

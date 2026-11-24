@@ -47,7 +47,6 @@ function suiteMap(registry) {
 }
 
 function summarizeVitest(stdout, exitCode) {
-  if (exitCode !== 0) return { outcome: "fail", total: 1, passed: 0, failed: 1, skipped: 0, executedTests: [] };
   try {
     const marker = stdout.indexOf('{"numTotalTestSuites"');
     const start = marker >= 0 ? marker : stdout.indexOf("{");
@@ -59,7 +58,11 @@ function summarizeVitest(stdout, exitCode) {
       failed: Number(report.numFailedTests ?? 0),
       skipped: Number(report.numPendingTests ?? 0)
     };
-    const outcome = summary.failed > 0 ? "fail" : summary.skipped > 0 || summary.total === 0 ? "pending" : "pass";
+    if (exitCode !== 0 && summary.failed === 0) {
+      summary.failed = 1;
+      summary.total += 1;
+    }
+    const outcome = exitCode !== 0 || summary.failed > 0 ? "fail" : summary.skipped > 0 || summary.total === 0 ? "pending" : "pass";
     const executedTests = Array.isArray(report.testResults)
       ? report.testResults.flatMap((result) => (result.assertionResults ?? []).map((assertion) => ({
         file: result.name,
@@ -352,6 +355,15 @@ async function main() {
     await mkdir(path.dirname(output), { recursive: true });
     const receipt = await runCandidateSuite({ registry, suiteId: value("--suite"), repositoryRoot: root, candidateSha, workflow });
     await writeFile(output, `${JSON.stringify(receipt, null, 2)}\n`);
+    console.log(JSON.stringify({
+      event: "staging.gate.candidate.suite.completed",
+      suiteId: receipt.suiteId,
+      outcome: receipt.outcome,
+      summary: receipt.summary,
+      failedTests: receipt.executedTests
+        .filter(({ status }) => status === "failed")
+        .map(({ file, id }) => ({ file, id }))
+    }));
     if (receipt.outcome !== "pass") process.exitCode = 1;
     return;
   }
