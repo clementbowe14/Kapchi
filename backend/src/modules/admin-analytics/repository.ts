@@ -16,7 +16,9 @@ type SummaryRow = QueryResultRow & {
   average_order_value_minor: number | string;
   discount_minor: number | string;
   gross_sales_minor: number | string;
+  net_sales_minor: number | string;
   paid_order_count: number | string;
+  successful_refunds_minor: number | string;
   units_sold: number | string;
 };
 
@@ -29,8 +31,10 @@ type BucketRow = QueryResultRow & {
   discount_minor: number | string;
   end_exclusive: Date | string;
   gross_sales_minor: number | string;
+  net_sales_minor: number | string;
   paid_order_count: number | string;
   start_inclusive: Date | string;
+  successful_refunds_minor: number | string;
   units_sold: number | string;
 };
 
@@ -69,10 +73,10 @@ function timeBuckets(rows: BucketRow[]): SalesTimeBucket[] {
     discountMinor: safeInteger(row.discount_minor, "bucket discount"),
     endExclusive: iso(row.end_exclusive),
     grossSalesMinor: safeInteger(row.gross_sales_minor, "bucket gross sales"),
-    netSalesMinor: null,
+    netSalesMinor: safeInteger(row.net_sales_minor, "bucket net sales"),
     paidOrderCount: safeInteger(row.paid_order_count, "bucket paid order count"),
     startInclusive: iso(row.start_inclusive),
-    successfulRefundsMinor: null,
+    successfulRefundsMinor: safeInteger(row.successful_refunds_minor, "bucket successful refunds"),
     unitsSold: safeInteger(row.units_sold, "bucket units sold")
   }));
 }
@@ -113,12 +117,10 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
         values,
       );
       const bucketResult = await client.query<BucketRow>(bucketSql, [
-        query.startDate,
-        query.endDate,
+        ...values,
+        paidStatuses,
         query.timezone,
-        query.bucket,
-        query.currency,
-        paidStatuses
+        query.bucket
       ]);
       const sellerResult = await client.query<BestSellerRow>(bestSellerSql, [
         ...values,
@@ -131,18 +133,16 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
         average_order_value_minor: 0,
         discount_minor: 0,
         gross_sales_minor: 0,
+        net_sales_minor: 0,
         paid_order_count: 0,
+        successful_refunds_minor: 0,
         units_sold: 0
       };
 
       return {
         bestSellers: bestSellers(sellerResult.rows),
         capabilities: {
-          refunds: {
-            available: false,
-            dependencyIssue: 103,
-            reason: "REFUND_LEDGER_UNAVAILABLE"
-          }
+          refunds: { available: true }
         },
         cohort: {
           basis: "order_created_at",
@@ -160,8 +160,9 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
           amountUnit: "minor",
           grossSalesDefinition:
             "merchandise_before_discounts_shipping_tax_and_refunds",
-          netSalesDefinition: "unavailable_until_refund_ledger",
+          netSalesDefinition: "merchandise_less_discounts_less_unallocated_successful_payment_refunds",
           refundCohort: "associated_with_orders_in_created_at_cohort",
+          refundCoverage: "recorded_ledger_only",
           source: "postgresql"
         },
         metrics: {
@@ -171,9 +172,9 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
           ),
           discountMinor: safeInteger(summary.discount_minor, "discount"),
           grossSalesMinor: safeInteger(summary.gross_sales_minor, "gross sales"),
-          netSalesMinor: null,
+          netSalesMinor: safeInteger(summary.net_sales_minor, "net sales"),
           paidOrderCount: safeInteger(summary.paid_order_count, "paid order count"),
-          successfulRefundsMinor: null,
+          successfulRefundsMinor: safeInteger(summary.successful_refunds_minor, "successful refunds"),
           unitsSold: safeInteger(summary.units_sold, "units sold")
         },
         paymentBreakdown: breakdown(paymentResult.rows),
@@ -208,10 +209,11 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
 }
 
 const paidOrderCte = `
-  with paid_orders as (
+  paid_order_sales as (
     select
       o.id,
       o.created_at,
+      o.currency,
       o.discount_cents,
       coalesce(sum(oi.total_amount_cents) filter (
         where oi.currency = o.currency
@@ -226,15 +228,29 @@ const paidOrderCte = `
       and o.currency = $3
       and o.payment_status = any($4::payment_status[])
     group by o.id, o.created_at, o.discount_cents
+  ), paid_orders as (
+    select sales.*, refunds.successful_refunds_minor
+    from paid_order_sales sales
+    cross join lateral (
+      select coalesce(sum(r.amount_cents), 0) as successful_refunds_minor
+      from refund_operations r
+      where r.order_id = sales.id
+        and r.status = 'succeeded'
+        and r.currency = sales.currency
+    ) refunds
   )
 `;
 
 const summarySql = `
   /* sales_analytics:summary */
-  ${paidOrderCte}
+  with ${paidOrderCte}
   select
     coalesce(sum(merchandise_minor), 0)::text as gross_sales_minor,
     coalesce(sum(discount_cents), 0)::text as discount_minor,
+    coalesce(sum(successful_refunds_minor), 0)::text as successful_refunds_minor,
+    coalesce(
+      sum(merchandise_minor) - sum(discount_cents) - sum(successful_refunds_minor), 0
+    )::text as net_sales_minor,
     count(*)::text as paid_order_count,
     coalesce(sum(units_sold), 0)::text as units_sold,
     case
@@ -271,76 +287,54 @@ const fulfillmentBreakdownSql = `
 const bucketSql = `
   /* sales_analytics:time_buckets */
   with report_bounds as (
-    select
-      ($1::date::timestamp at time zone 'UTC') as start_inclusive,
-      (($2::date + 1)::timestamp at time zone 'UTC') as end_exclusive
+    select $1::timestamptz as start_inclusive, $2::timestamptz as end_exclusive
   ), local_range as (
     select
       start_inclusive,
       end_exclusive,
-      date_trunc($4, start_inclusive at time zone $3) as first_local_start,
-      end_exclusive at time zone $3 as local_end
-    from report_bounds
-  ), natural_buckets as (
-    select generate_series(
-      first_local_start,
-      local_end - interval '1 microsecond',
-      case $4
+      date_trunc($6, start_inclusive at time zone $5) as first_local_start,
+      (end_exclusive - interval '1 microsecond') at time zone $5 as last_local_instant,
+      case $6
         when 'day' then interval '1 day'
         when 'week' then interval '1 week'
         else interval '1 month'
-      end
-    ) as natural_start,
-    start_inclusive,
-    end_exclusive
+      end as bucket_step
+    from report_bounds
+  ), bucket_edges as (
+    -- Anchor both ends in UTC; a repeated local midnight can resolve after the report start.
+    select start_inclusive as edge from report_bounds
+    union
+    select end_exclusive from report_bounds
+    union
+    select natural_start at time zone $5 as edge
     from local_range
+    cross join lateral generate_series(
+      first_local_start + bucket_step, last_local_instant, bucket_step
+    ) as local_edge(natural_start)
+    where natural_start at time zone $5 > start_inclusive
+      and natural_start at time zone $5 < end_exclusive
   ), bucket_bounds as (
     select
-      greatest(
-        natural_start at time zone $3,
-        start_inclusive
-      ) as start_inclusive,
-      least(
-        (
-          natural_start + case $4
-            when 'day' then interval '1 day'
-            when 'week' then interval '1 week'
-            else interval '1 month'
-          end
-        ) at time zone $3,
-        end_exclusive
-      ) as end_exclusive
-    from natural_buckets
-  ), paid_orders as (
-    select
-      o.id,
-      o.created_at,
-      o.discount_cents,
-      coalesce(sum(oi.total_amount_cents) filter (
-        where oi.currency = o.currency
-      ), 0)::bigint as merchandise_minor,
-      coalesce(sum(oi.quantity) filter (
-        where oi.currency = o.currency
-      ), 0)::bigint as units_sold
-    from orders o
-    left join order_items oi on oi.order_id = o.id
-    where o.created_at >= ($1::date::timestamp at time zone 'UTC')
-      and o.created_at < (($2::date + 1)::timestamp at time zone 'UTC')
-      and o.currency = $5
-      and o.payment_status = any($6::payment_status[])
-    group by o.id, o.created_at, o.discount_cents
-  )
+      edge as start_inclusive,
+      lead(edge) over (order by edge) as end_exclusive
+    from bucket_edges
+  ), ${paidOrderCte}
   select
     bucket.start_inclusive,
     bucket.end_exclusive,
     coalesce(sum(paid.merchandise_minor), 0)::text as gross_sales_minor,
     coalesce(sum(paid.discount_cents), 0)::text as discount_minor,
+    coalesce(sum(paid.successful_refunds_minor), 0)::text as successful_refunds_minor,
+    coalesce(
+      sum(paid.merchandise_minor) - sum(paid.discount_cents) - sum(paid.successful_refunds_minor), 0
+    )::text as net_sales_minor,
     count(paid.id)::text as paid_order_count,
     coalesce(sum(paid.units_sold), 0)::text as units_sold
   from bucket_bounds bucket
   left join paid_orders paid
     on paid.created_at >= bucket.start_inclusive
     and paid.created_at < bucket.end_exclusive
+  where bucket.end_exclusive is not null
   group by bucket.start_inclusive, bucket.end_exclusive
   order by bucket.start_inclusive
 `;

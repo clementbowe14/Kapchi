@@ -18,10 +18,10 @@ export type SalesTimeBucket = {
   discountMinor: number;
   endExclusive: string;
   grossSalesMinor: number;
-  netSalesMinor: null;
+  netSalesMinor: number;
   paidOrderCount: number;
   startInclusive: string;
-  successfulRefundsMinor: null;
+  successfulRefundsMinor: number;
   unitsSold: number;
 };
 
@@ -36,9 +36,7 @@ export type SalesAnalyticsReport = {
   bestSellers: SalesBestSeller[];
   capabilities: {
     refunds: {
-      available: false;
-      reason: "REFUND_LEDGER_UNAVAILABLE";
-      dependencyIssue: 103;
+      available: true;
     };
   };
   cohort: {
@@ -56,17 +54,18 @@ export type SalesAnalyticsReport = {
   metadata: {
     amountUnit: "minor";
     grossSalesDefinition: "merchandise_before_discounts_shipping_tax_and_refunds";
-    netSalesDefinition: "unavailable_until_refund_ledger";
+    netSalesDefinition: "merchandise_less_discounts_less_unallocated_successful_payment_refunds";
     refundCohort: "associated_with_orders_in_created_at_cohort";
+    refundCoverage: "recorded_ledger_only";
     source: "postgresql";
   };
   metrics: {
     averageOrderValueMinor: number;
     discountMinor: number;
     grossSalesMinor: number;
-    netSalesMinor: null;
+    netSalesMinor: number;
     paidOrderCount: number;
-    successfulRefundsMinor: null;
+    successfulRefundsMinor: number;
     unitsSold: number;
   };
   paymentBreakdown: SalesBreakdown[];

@@ -12,11 +12,11 @@ const query: SalesAnalyticsQuery = {
   timezone: "America/New_York"
 };
 
-function createPool(failureTag?: string) {
+function createPool(failure?: { tag: string; error: Error }) {
   const release = vi.fn();
   const databaseQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
-    if (failureTag && sql.includes(failureTag)) {
-      throw new Error("private database detail");
+    if (failure && sql.includes(failure.tag)) {
+      throw failure.error;
     }
     if (sql.includes("sales_analytics:bounds")) {
       return {
@@ -32,7 +32,9 @@ function createPool(failureTag?: string) {
           average_order_value_minor: "1200",
           discount_minor: "100",
           gross_sales_minor: "2500",
+          net_sales_minor: "300",
           paid_order_count: "2",
+          successful_refunds_minor: "2100",
           units_sold: "3"
         }]
       };
@@ -49,8 +51,10 @@ function createPool(failureTag?: string) {
           discount_minor: "100",
           end_exclusive: new Date("2026-09-02T04:00:00.000Z"),
           gross_sales_minor: "2000",
+          net_sales_minor: "-200",
           paid_order_count: "1",
           start_inclusive: new Date("2026-09-01T04:00:00.000Z"),
+          successful_refunds_minor: "2100",
           units_sold: "2"
         }]
       };
@@ -74,7 +78,7 @@ function createPool(failureTag?: string) {
 }
 
 describe("SalesAnalyticsRepository", () => {
-  it("builds one repeatable-read report without fabricating refunds", async () => {
+  it("builds one repeatable-read report with ledger refunds and signed net sales", async () => {
     const { databaseQuery, pool, release } = createPool();
     const report = await new SalesAnalyticsRepository(pool).getSalesReport(query);
 
@@ -82,15 +86,20 @@ describe("SalesAnalyticsRepository", () => {
       averageOrderValueMinor: 1200,
       discountMinor: 100,
       grossSalesMinor: 2500,
-      netSalesMinor: null,
+      netSalesMinor: 300,
       paidOrderCount: 2,
-      successfulRefundsMinor: null,
+      successfulRefundsMinor: 2100,
       unitsSold: 3
     });
-    expect(report.capabilities.refunds).toEqual({
-      available: false,
-      dependencyIssue: 103,
-      reason: "REFUND_LEDGER_UNAVAILABLE"
+    expect(report.timeBuckets[0]).toMatchObject({
+      netSalesMinor: -200,
+      successfulRefundsMinor: 2100
+    });
+    expect(report.capabilities.refunds).toEqual({ available: true });
+    expect(report.metadata).toMatchObject({
+      netSalesDefinition: "merchandise_less_discounts_less_unallocated_successful_payment_refunds",
+      refundCohort: "associated_with_orders_in_created_at_cohort",
+      refundCoverage: "recorded_ledger_only"
     });
     expect(report.bestSellers[0]).toMatchObject({
       label: "Archived Stole",
@@ -117,21 +126,28 @@ describe("SalesAnalyticsRepository", () => {
       ["paid", "partially_refunded", "refunded"]
     ]);
     expect(String(summary?.[0])).toContain("oi.currency = o.currency");
+    const buckets = databaseQuery.mock.calls.find(([sql]) =>
+      sql.includes("sales_analytics:time_buckets"),
+    );
+    expect(buckets?.[1]).toEqual([...summary![1]!, query.timezone, query.bucket]);
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("rolls back and releases the connection when an aggregate fails", async () => {
-    const { databaseQuery, pool, release } = createPool(
-      "sales_analytics:best_sellers",
-    );
+  it.each([
+    {
+      tag: "sales_analytics:summary",
+      error: Object.assign(new Error('relation "refund_operations" does not exist'), { code: "42P01" })
+    },
+    { tag: "sales_analytics:best_sellers", error: new Error("private database detail") }
+  ])("rolls back and releases the connection when $tag fails", async (failure) => {
+    const { databaseQuery, pool, release } = createPool(failure);
 
     await expect(
       new SalesAnalyticsRepository(pool).getSalesReport(query),
-    ).rejects.toThrow("private database detail");
+    ).rejects.toBe(failure.error);
 
-    expect(
-      databaseQuery.mock.calls.some(([sql]) => sql === "rollback"),
-    ).toBe(true);
+    expect(databaseQuery.mock.calls.at(-1)?.[0]).toBe("rollback");
+    expect(databaseQuery.mock.calls.some(([sql]) => sql === "commit")).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 });

@@ -40,17 +40,27 @@ All money fields are integer minor units. Every query filters the order currency
 and item aggregates additionally require `order_items.currency = orders.currency`.
 The endpoint never converts or adds different currencies.
 
-## Refund Capability
+## Refunds And Net Sales
 
-Issue #103 owns the reconciled refund ledger. Until that ledger exists,
-`successfulRefundsMinor` and `netSalesMinor` are `null`, and
-`capabilities.refunds` reports `REFUND_LEDGER_UNAVAILABLE`. Payment status is not
-treated as evidence of a refund amount. This report is therefore an order-cohort
-merchandise view, not a cash-flow report.
+`successfulRefundsMinor` sums successful, same-currency ledger operations for
+orders in the paid cohort, including reconciled Stripe-originated refunds.
+Pending and failed refunds are excluded. `netSalesMinor` subtracts discounts
+and the entire successful payment refund amount from gross merchandise sales.
+The ledger does not separate merchandise, shipping, and tax refunds, so net can
+be negative. Neither field represents cash flow.
+
+The summary and every bucket return integers, with zero for empty periods.
+Refunds are assigned to their order's creation bucket, regardless of refund
+date. Reconciliation can change historical totals; the end date is not an
+as-of cutoff. `capabilities.refunds.available` is true when this report is
+available, not a guarantee of historical coverage. The `recorded_ledger_only`
+coverage excludes unrecorded refunds, even for orders marked refunded. Apply the
+existing refund ledger migration before deploying this code; missing schema
+fails the report instead of returning zero.
 
 ## Authorization And Freshness
 
 The route requires a verified `admin` role through the shared Fastify auth
 guards. Customer and organization-only roles are not sufficient. Results are
-read directly from PostgreSQL on every request, so payment, order, and future
+read directly from PostgreSQL on every request, so payment, order, and
 refund commits are visible to the next report without cache invalidation.

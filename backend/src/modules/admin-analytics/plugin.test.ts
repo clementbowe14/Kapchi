@@ -51,11 +51,7 @@ const report: SalesAnalyticsReport = {
     unitsSold: 3
   }],
   capabilities: {
-    refunds: {
-      available: false,
-      dependencyIssue: 103,
-      reason: "REFUND_LEDGER_UNAVAILABLE"
-    }
+    refunds: { available: true }
   },
   cohort: {
     basis: "order_created_at",
@@ -63,8 +59,8 @@ const report: SalesAnalyticsReport = {
     bucketTimezone: "America/New_York",
     currency: "usd",
     dateBoundaryTimezone: "UTC",
-    endDateInclusive: "2026-09-30",
-    endExclusive: "2026-10-01T00:00:00.000Z",
+    endDateInclusive: "2026-09-01",
+    endExclusive: "2026-09-02T00:00:00.000Z",
     startDateInclusive: "2026-09-01",
     startInclusive: "2026-09-01T00:00:00.000Z"
   },
@@ -73,21 +69,44 @@ const report: SalesAnalyticsReport = {
     amountUnit: "minor",
     grossSalesDefinition:
       "merchandise_before_discounts_shipping_tax_and_refunds",
-    netSalesDefinition: "unavailable_until_refund_ledger",
+    netSalesDefinition:
+      "merchandise_less_discounts_less_unallocated_successful_payment_refunds",
     refundCohort: "associated_with_orders_in_created_at_cohort",
+    refundCoverage: "recorded_ledger_only",
     source: "postgresql"
   },
   metrics: {
     averageOrderValueMinor: 5700,
     discountMinor: 600,
     grossSalesMinor: 12000,
-    netSalesMinor: null,
+    netSalesMinor: 9900,
     paidOrderCount: 2,
-    successfulRefundsMinor: null,
+    successfulRefundsMinor: 1500,
     unitsSold: 3
   },
   paymentBreakdown: [{ count: 2, status: "paid" }],
-  timeBuckets: []
+  timeBuckets: [
+    {
+      discountMinor: 0,
+      endExclusive: "2026-09-01T04:00:00.000Z",
+      grossSalesMinor: 0,
+      netSalesMinor: 0,
+      paidOrderCount: 0,
+      startInclusive: "2026-09-01T00:00:00.000Z",
+      successfulRefundsMinor: 0,
+      unitsSold: 0
+    },
+    {
+      discountMinor: 600,
+      endExclusive: "2026-09-02T00:00:00.000Z",
+      grossSalesMinor: 12000,
+      netSalesMinor: 9900,
+      paidOrderCount: 2,
+      startInclusive: "2026-09-01T04:00:00.000Z",
+      successfulRefundsMinor: 1500,
+      unitsSold: 3
+    }
+  ]
 };
 
 describe("admin sales analytics plugin", () => {
@@ -106,12 +125,12 @@ describe("admin sales analytics plugin", () => {
     return app;
   }
 
-  it("returns a single-currency report to a verified admin", async () => {
+  it("returns a single-currency report with ledger-backed refund fields to a verified admin", async () => {
     const app = await buildServer();
     const response = await app.inject({
       headers: { authorization: "Bearer admin-token" },
       method: "GET",
-      url: "/admin/analytics/sales?startDate=2026-09-01&endDate=2026-09-30&timezone=America%2FNew_York&currency=USD"
+      url: "/admin/analytics/sales?startDate=2026-09-01&endDate=2026-09-01&timezone=America%2FNew_York&currency=USD"
     });
 
     expect(response.statusCode).toBe(200);
@@ -120,13 +139,9 @@ describe("admin sales analytics plugin", () => {
       bestSellerLimit: 10,
       bucket: "day",
       currency: "usd",
-      endDate: "2026-09-30",
+      endDate: "2026-09-01",
       startDate: "2026-09-01",
       timezone: "America/New_York"
-    });
-    expect(response.json().metrics).toMatchObject({
-      netSalesMinor: null,
-      successfulRefundsMinor: null
     });
     await app.close();
   });
