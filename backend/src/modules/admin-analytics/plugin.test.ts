@@ -105,6 +105,11 @@ const report: SalesAnalyticsReport = {
       unitsSold: null
     }
   },
+  customerBreakdown: {
+    newCustomerCount: 1,
+    returningCustomerCount: 0,
+    unidentifiedPaidOrderCount: 1
+  },
   fulfillmentBreakdown: [{ count: 2, status: "queued" }],
   metadata: {
     amountUnit: "minor",
@@ -166,7 +171,7 @@ describe("admin sales analytics plugin", () => {
     return app;
   }
 
-  it("returns a single-currency report with ledger-backed comparisons to a verified admin", async () => {
+  it("returns aggregate customer counts and ledger-backed comparisons to a verified admin", async () => {
     const app = await buildServer();
     const response = await app.inject({
       headers: { authorization: "Bearer admin-token" },

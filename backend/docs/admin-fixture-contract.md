@@ -18,11 +18,18 @@ UTC, daily buckets. Expected supported metrics are:
 | Paid orders | 10 |
 | Average order value | 4,320 minor units |
 | Units sold | 11 |
+| New resolved customers | 4 |
+| Returning resolved customers | 1 |
+| Unidentified paid orders | 0 |
 
 Best sellers are Classic Graduation Stole (36,500 / 7 units), then Gold Honor
 Cord (7,200 / 4 units). The EUR order is excluded. Refunds include the 2,500
 partial refund and the 2,695 full refund, including its 895 shipping charge.
 Failed and pending refund operations do not reduce net sales.
+
+The ten paid orders represent five distinct resolved identities. The guest
+records in this fixture are explicitly seeded with customer IDs. Ordinary
+unclaimed guest checkout has no such ID and is reported as unidentified.
 
 ## Orders
 
@@ -91,6 +98,5 @@ the fixture never claims a Blob object exists.
 - Promotions remain unimplemented under issue #102; no promotion rows exist.
 - Policy checkout evidence is absent while the policy bundle is draft; fixture
   orders have no Stripe Checkout Session IDs.
-- Previous-period and new-versus-returning analytics are not exposed by the
-  current API.
+- Ordinary unclaimed guest orders do not have a durable customer identity.
 - There is no production `/admin/demo` route.

@@ -42,13 +42,21 @@ const emptySummary = {
   units_sold: "0"
 };
 
+const currentCustomerCounts = {
+  new_customer_count: "0",
+  returning_customer_count: "1",
+  unidentified_paid_order_count: "1"
+};
+
 function createPool({
   current = currentSummary,
   previous = previousSummary,
+  customerCounts = currentCustomerCounts,
   failure
 }: {
   current?: typeof currentSummary;
   previous?: typeof previousSummary;
+  customerCounts?: typeof currentCustomerCounts;
   failure?: { tag: string; error: Error; startInclusive?: string };
 } = {}) {
   const release = vi.fn();
@@ -71,6 +79,9 @@ function createPool({
     }
     if (sql.includes("sales_analytics:summary")) {
       return { rows: [summaryCalls++ === 0 ? current : previous] };
+    }
+    if (sql.includes("sales_analytics:customer_breakdown")) {
+      return { rows: [customerCounts] };
     }
     if (sql.includes("sales_analytics:payment_breakdown")) {
       return { rows: [{ order_count: "2", status: "paid" }] };
@@ -123,6 +134,11 @@ describe("SalesAnalyticsRepository", () => {
       paidOrderCount: 2,
       successfulRefundsMinor: 2100,
       unitsSold: 3
+    });
+    expect(report.customerBreakdown).toEqual({
+      newCustomerCount: 0,
+      returningCustomerCount: 1,
+      unidentifiedPaidOrderCount: 1
     });
     expect(report.timeBuckets[0]).toMatchObject({
       netSalesMinor: -200,
@@ -198,6 +214,7 @@ describe("SalesAnalyticsRepository", () => {
       ["bounds", [query.startDate, query.endDate]],
       ["summary", [...current, statuses]],
       ["summary", [...previous, statuses]],
+      ["customer_breakdown", [...current, statuses]],
       ["payment_breakdown", current],
       ["fulfillment_breakdown", current],
       ["time_buckets", [...current, statuses, query.timezone, query.bucket]],
@@ -259,9 +276,21 @@ describe("SalesAnalyticsRepository", () => {
   });
 
   it("compares an empty current period to a nonempty baseline", async () => {
-    const { pool } = createPool({ current: emptySummary });
-    const { comparison } = await new SalesAnalyticsRepository(pool).getSalesReport(query);
+    const { pool } = createPool({
+      current: emptySummary,
+      customerCounts: {
+        new_customer_count: "0",
+        returning_customer_count: "0",
+        unidentified_paid_order_count: "0"
+      }
+    });
+    const { comparison, customerBreakdown } = await new SalesAnalyticsRepository(pool).getSalesReport(query);
 
+    expect(customerBreakdown).toEqual({
+      newCustomerCount: 0,
+      returningCustomerCount: 0,
+      unidentifiedPaidOrderCount: 0
+    });
     expect(comparison.hasBaseline).toBe(true);
     expect(comparison.percentChange).toEqual({
       averageOrderValueMinor: -100,
@@ -318,10 +347,19 @@ describe("SalesAnalyticsRepository", () => {
     const currentCalls = databaseQuery.mock.calls.filter(([, values]) =>
       values?.[0] === "9999-12-31T00:00:00.000Z",
     );
-    expect(currentCalls).toHaveLength(5);
+    expect(currentCalls).toHaveLength(6);
     for (const [, values] of currentCalls) {
       expect(values?.[1]).toBe("10000-01-01T00:00:00.000Z");
     }
+  });
+
+  it("rejects customer counts outside the safe integer range", async () => {
+    const { pool } = createPool({
+      customerCounts: { ...currentCustomerCounts, new_customer_count: "9007199254740992" }
+    });
+
+    await expect(new SalesAnalyticsRepository(pool).getSalesReport(query))
+      .rejects.toThrow(new RangeError("new customer count exceeds the safe integer reporting range."));
   });
 
   it.each([
@@ -334,6 +372,7 @@ describe("SalesAnalyticsRepository", () => {
       error: new Error("previous summary failed"),
       startInclusive: "2026-08-30T00:00:00.000Z"
     },
+    { tag: "sales_analytics:customer_breakdown", error: new Error("customer breakdown query failed") },
     { tag: "sales_analytics:best_sellers", error: new Error("private database detail") }
   ])("rolls back and releases the connection on $error.message", async (failure) => {
     const { databaseQuery, pool, release } = createPool({ failure });

@@ -25,6 +25,12 @@ type SummaryRow = QueryResultRow & {
   units_sold: number | string;
 };
 
+type CustomerBreakdownRow = QueryResultRow & {
+  new_customer_count: number | string;
+  returning_customer_count: number | string;
+  unidentified_paid_order_count: number | string;
+};
+
 type BreakdownRow = QueryResultRow & {
   order_count: number | string;
   status: string;
@@ -183,6 +189,10 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
         ...cohortParameters(previous, query.currency),
         paidStatuses
       ]);
+      const customerResult = await client.query<CustomerBreakdownRow>(customerBreakdownSql, [
+        ...values,
+        paidStatuses
+      ]);
       const paymentResult = await client.query<BreakdownRow>(
         paymentBreakdownSql,
         values,
@@ -204,6 +214,7 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
       ]);
       const metrics = summaryMetrics(summaryResult.rows[0]);
       const previousMetrics = summaryMetrics(previousResult.rows[0]);
+      const customerCounts = customerResult.rows[0];
 
       const report: SalesAnalyticsReport = {
         bestSellers: bestSellers(sellerResult.rows),
@@ -227,6 +238,15 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
             metrics: previousMetrics
           },
           percentChange: percentChanges(metrics, previousMetrics)
+        },
+        customerBreakdown: {
+          newCustomerCount: safeInteger(customerCounts.new_customer_count, "new customer count"),
+          returningCustomerCount: safeInteger(
+            customerCounts.returning_customer_count, "returning customer count"
+          ),
+          unidentifiedPaidOrderCount: safeInteger(
+            customerCounts.unidentified_paid_order_count, "unidentified paid order count"
+          )
         },
         fulfillmentBreakdown: breakdown(fulfillmentResult.rows),
         metadata: {
@@ -324,6 +344,57 @@ const summarySql = `
       )
     end::text as average_order_value_minor
   from paid_orders
+`;
+
+const customerBreakdownSql = `
+  /* sales_analytics:customer_breakdown */
+  with current_orders as (
+    select
+      coalesce(o.authenticated_user_id, c.user_id) as account_id,
+      case when o.authenticated_user_id is null and c.user_id is null then o.customer_id end as guest_id
+    from orders o
+    left join customers c on c.id = o.customer_id
+    where o.created_at >= $1::timestamptz
+      and o.created_at < $2::timestamptz
+      and o.currency = $3
+      and o.payment_status = any($4::payment_status[])
+  ), identities as (
+    select account_id, guest_id, count(*) as order_count
+    from current_orders
+    group by account_id, guest_id
+  ), classified as materialized (
+    -- Evaluate the history probes once per identity, not once per aggregate filter.
+    select
+      i.order_count,
+      case when i.account_id is not null or i.guest_id is not null then
+        (
+          i.account_id is not null and exists (
+            select 1
+            from orders prior
+            where prior.authenticated_user_id = i.account_id
+              and prior.created_at < $1::timestamptz
+              and prior.payment_status = any($4::payment_status[])
+              -- PostgreSQL greatest ignores null paid_at, leaving created_at as the fallback.
+              and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
+          )
+        ) or exists (
+          select 1
+          from orders prior
+          where prior.customer_id = coalesce(linked.id, i.guest_id)
+            and prior.authenticated_user_id is null
+            and prior.created_at < $1::timestamptz
+            and prior.payment_status = any($4::payment_status[])
+            and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
+        )
+      end as is_returning
+    from identities i
+    left join customers linked on linked.user_id = i.account_id
+  )
+  select
+    (count(*) filter (where is_returning is false))::text as new_customer_count,
+    (count(*) filter (where is_returning is true))::text as returning_customer_count,
+    coalesce(sum(order_count) filter (where is_returning is null), 0)::text as unidentified_paid_order_count
+  from classified
 `;
 
 const paymentBreakdownSql = `
