@@ -13,14 +13,16 @@ UTC, daily buckets. Expected supported metrics are:
 | --- | ---: |
 | Gross sales | 43,700 minor units |
 | Discounts | 500 minor units |
+| Successful ledger refunds | 5,195 minor units |
+| Net sales | 38,005 minor units |
 | Paid orders | 10 |
 | Average order value | 4,320 minor units |
 | Units sold | 11 |
 
 Best sellers are Classic Graduation Stole (36,500 / 7 units), then Gold Honor
-Cord (7,200 / 4 units). The EUR order is excluded. `netSalesMinor` and
-`successfulRefundsMinor` remain `null` because the current analytics API still
-reports refund metrics unavailable.
+Cord (7,200 / 4 units). The EUR order is excluded. Refunds include the 2,500
+partial refund and the 2,695 full refund, including its 895 shipping charge.
+Failed and pending refund operations do not reduce net sales.
 
 ## Orders
 
@@ -89,6 +91,6 @@ the fixture never claims a Blob object exists.
 - Promotions remain unimplemented under issue #102; no promotion rows exist.
 - Policy checkout evidence is absent while the policy bundle is draft; fixture
   orders have no Stripe Checkout Session IDs.
-- Previous-period/new-returning analytics output and refund-derived net sales are
-  not exposed by the current API.
+- Previous-period and new-versus-returning analytics are not exposed by the
+  current API.
 - There is no production `/admin/demo` route.

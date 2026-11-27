@@ -142,9 +142,9 @@ describe("admin workflow fixture catalog", () => {
       averageOrderValueMinor: 4320,
       discountMinor: 500,
       grossSalesMinor: 43700,
-      netSalesMinor: null,
+      netSalesMinor: 38005,
       paidOrderCount: 10,
-      successfulRefundsMinor: null,
+      successfulRefundsMinor: 5195,
       unitsSold: 11
     });
   });

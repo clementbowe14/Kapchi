@@ -16,6 +16,7 @@ Supported query fields:
   and `\` are treated literally.
 - `createdFrom` and `createdTo`: optional inclusive UTC calendar dates. A range
   is bounded to 366 days.
+- `currency`: optional three-letter currency code, normalized to lowercase.
 - `orderStatus`, `paymentStatus`, and `fulfillmentStatus`: independent status
   filters.
 - `listingId` and `fabricId`: historical item drill-down filters.

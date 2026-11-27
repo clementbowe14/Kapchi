@@ -207,6 +207,32 @@ describe("admin order plugin", () => {
     await app.close();
   });
 
+  it("accepts and normalizes a 366-day paid drill-down below year 0100", async () => {
+    const app = await buildServer();
+    const params = new URLSearchParams({
+      createdFrom: "0098-12-31",
+      createdTo: "0099-12-31",
+      currency: " UsD ",
+      lifecycle: "all",
+      paidOnly: "true"
+    });
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "GET",
+      url: `/admin/orders?${params}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.search).toHaveBeenCalledWith(expect.objectContaining({
+      createdFrom: "0098-12-31",
+      createdTo: "0099-12-31",
+      currency: "usd",
+      lifecycle: "all",
+      paidOnly: true
+    }));
+    await app.close();
+  });
+
   it.each([
     { authorization: undefined, statusCode: 401 },
     { authorization: "Bearer customer-token", statusCode: 403 }
@@ -270,9 +296,15 @@ describe("admin order plugin", () => {
   });
 
   it.each([
+    "/admin/orders?createdFrom=0000-01-01",
+    "/admin/orders?createdTo=0000-12-31",
+    "/admin/orders?createdFrom=0098-12-30&createdTo=0099-12-31",
+    "/admin/orders?createdFrom=0099-02-29",
     "/admin/orders?createdFrom=2026-02-30",
     "/admin/orders?createdFrom=2026-10-25&createdTo=2026-10-01",
     "/admin/orders?createdFrom=2025-01-01&createdTo=2026-01-02",
+    "/admin/orders?currency=USDX",
+    "/admin/orders?currency=US1",
     "/admin/orders?unknown=true"
   ])("rejects invalid search contracts", async (url) => {
     const app = await buildServer();
