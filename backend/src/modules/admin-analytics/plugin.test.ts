@@ -59,10 +59,51 @@ const report: SalesAnalyticsReport = {
     bucketTimezone: "America/New_York",
     currency: "usd",
     dateBoundaryTimezone: "UTC",
+    drillDown: {
+      createdFrom: "2026-09-01",
+      createdTo: "2026-09-01",
+      currency: "usd",
+      lifecycle: "all",
+      paidOnly: true
+    },
     endDateInclusive: "2026-09-01",
     endExclusive: "2026-09-02T00:00:00.000Z",
     startDateInclusive: "2026-09-01",
     startInclusive: "2026-09-01T00:00:00.000Z"
+  },
+  comparison: {
+    hasBaseline: false,
+    previousPeriod: {
+      drillDown: {
+        createdFrom: "2026-08-31",
+        createdTo: "2026-08-31",
+        currency: "usd",
+        lifecycle: "all",
+        paidOnly: true
+      },
+      endDateInclusive: "2026-08-31",
+      endExclusive: "2026-09-01T00:00:00.000Z",
+      metrics: {
+        averageOrderValueMinor: 0,
+        discountMinor: 0,
+        grossSalesMinor: 0,
+        netSalesMinor: 0,
+        paidOrderCount: 0,
+        successfulRefundsMinor: 0,
+        unitsSold: 0
+      },
+      startDateInclusive: "2026-08-31",
+      startInclusive: "2026-08-31T00:00:00.000Z"
+    },
+    percentChange: {
+      averageOrderValueMinor: null,
+      discountMinor: null,
+      grossSalesMinor: null,
+      netSalesMinor: null,
+      paidOrderCount: null,
+      successfulRefundsMinor: null,
+      unitsSold: null
+    }
   },
   fulfillmentBreakdown: [{ count: 2, status: "queued" }],
   metadata: {
@@ -125,7 +166,7 @@ describe("admin sales analytics plugin", () => {
     return app;
   }
 
-  it("returns a single-currency report with ledger-backed refund fields to a verified admin", async () => {
+  it("returns a single-currency report with ledger-backed comparisons to a verified admin", async () => {
     const app = await buildServer();
     const response = await app.inject({
       headers: { authorization: "Bearer admin-token" },
@@ -147,6 +188,23 @@ describe("admin sales analytics plugin", () => {
   });
 
   it.each([
+    ["0100-01-01", "0101-01-01"],
+    ["9999-12-31", "9999-12-31"]
+  ])("accepts the existing UTC date range %s through %s", async (startDate, endDate) => {
+    const app = await buildServer();
+    const params = new URLSearchParams({ currency: "usd", endDate, startDate, timezone: "UTC" });
+    const response = await app.inject({
+      headers: { authorization: "Bearer admin-token" },
+      method: "GET",
+      url: `/admin/analytics/sales?${params}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(getSalesReport).toHaveBeenCalledWith(expect.objectContaining({ startDate, endDate }));
+    await app.close();
+  });
+
+  it.each([
     { authorization: undefined, statusCode: 401 },
     { authorization: "Bearer customer-token", statusCode: 403 }
   ])("requires the exact admin role", async ({ authorization, statusCode }) => {
@@ -163,6 +221,8 @@ describe("admin sales analytics plugin", () => {
   });
 
   it.each([
+    ["0000-01-01", "0000-01-01", "UTC"],
+    ["0100-01-01", "0101-01-02", "UTC"],
     ["2026-02-30", "2026-03-01", "UTC"],
     ["2026-10-01", "2026-09-01", "UTC"],
     ["2025-01-01", "2026-01-02", "UTC"],

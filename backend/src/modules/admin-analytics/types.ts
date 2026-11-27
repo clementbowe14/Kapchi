@@ -32,6 +32,31 @@ export type SalesBestSeller = {
   unitsSold: number;
 };
 
+export type SalesPeriodBounds = {
+  endDateInclusive: string;
+  endExclusive: string;
+  startDateInclusive: string;
+  startInclusive: string;
+};
+
+export type SalesDrillDown = {
+  createdFrom: string;
+  createdTo: string;
+  currency: string;
+  lifecycle: "all";
+  paidOnly: true;
+};
+
+export type SalesMetrics = {
+  averageOrderValueMinor: number;
+  discountMinor: number;
+  grossSalesMinor: number;
+  netSalesMinor: number;
+  paidOrderCount: number;
+  successfulRefundsMinor: number;
+  unitsSold: number;
+};
+
 export type SalesAnalyticsReport = {
   bestSellers: SalesBestSeller[];
   capabilities: {
@@ -39,16 +64,21 @@ export type SalesAnalyticsReport = {
       available: true;
     };
   };
-  cohort: {
+  cohort: SalesPeriodBounds & {
     basis: "order_created_at";
     bucket: SalesBucketGranularity;
-    dateBoundaryTimezone: "UTC";
-    currency: string;
-    endDateInclusive: string;
-    endExclusive: string;
-    startDateInclusive: string;
-    startInclusive: string;
     bucketTimezone: string;
+    currency: string;
+    dateBoundaryTimezone: "UTC";
+    drillDown: SalesDrillDown;
+  };
+  comparison: {
+    hasBaseline: boolean;
+    previousPeriod: SalesPeriodBounds & {
+      drillDown: SalesDrillDown;
+      metrics: SalesMetrics;
+    };
+    percentChange: { [Metric in keyof SalesMetrics]: number | null };
   };
   fulfillmentBreakdown: SalesBreakdown[];
   metadata: {
@@ -59,15 +89,7 @@ export type SalesAnalyticsReport = {
     refundCoverage: "recorded_ledger_only";
     source: "postgresql";
   };
-  metrics: {
-    averageOrderValueMinor: number;
-    discountMinor: number;
-    grossSalesMinor: number;
-    netSalesMinor: number;
-    paidOrderCount: number;
-    successfulRefundsMinor: number;
-    unitsSold: number;
-  };
+  metrics: SalesMetrics;
   paymentBreakdown: SalesBreakdown[];
   timeBuckets: SalesTimeBucket[];
 };
