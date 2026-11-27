@@ -40,6 +40,32 @@ All money fields are integer minor units. Every query filters the order currency
 and item aggregates additionally require `order_items.currency = orders.currency`.
 The endpoint never converts or adds different currencies.
 
+## New And Returning Customers
+
+`customerBreakdown` applies only to the current order cohort. It returns
+`newCustomerCount`, `returningCustomerCount`, and `unidentifiedPaidOrderCount`.
+The report counts paid, partially refunded, and refunded orders in the selected
+currency and UTC order-created range. Each resolved identity appears at most once.
+
+The order's authenticated account ID takes precedence. Otherwise, a persisted
+customer record linked to an account counts toward that account; an unlinked
+customer record counts separately as a guest/customer identity. The report does
+not link identities by email, phone, name, guest session, or provider data.
+
+A resolved customer is returning if they have a qualifying earlier purchase in
+any currency, including before the previous comparison window. To count as
+earlier, the effective success time must be strictly before the current period
+starts. It is the later of order creation and `paid_at`, or order creation alone
+if `paid_at` is missing on a historical record. `paid_at` is when Kapchi recorded
+success, not necessarily when the provider captured payment. Old records, late
+confirmation, and later identity links can change historical counts.
+
+Ordinary unclaimed guest checkout has no durable customer ID. Its orders count
+as unidentified even with contact details. Unidentified orders are not counted
+as distinct people. The paid order total is identified orders plus unidentified
+orders; the new and returning counts are distinct identities, not order totals.
+Only aggregate counts are returned. An empty paid cohort returns three zeros.
+
 ## Previous Period And Order Drill-Down
 
 `comparison.previousPeriod` returns the preceding UTC dates and boundaries, plus

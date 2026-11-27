@@ -12,11 +12,16 @@ const integrationDescribe =
   process.env.RUN_DATABASE_INTEGRATION_TESTS === "true" ? describe : describe.skip;
 
 type TestOrder = {
+  authenticatedUserId?: string;
   createdAt: string;
   currency: string;
+  customerEmail?: string;
+  customerId?: string;
   discountMinor: number;
   fulfillmentStatus: string;
   items: { quantity: number; unitAmountMinor: number }[];
+  legacyUserId?: string;
+  paidAt?: string | null;
   paymentStatus: string;
   productLabel?: string;
   shippingMinor?: number;
@@ -25,6 +30,7 @@ type TestOrder = {
 };
 
 integrationDescribe("SalesAnalyticsRepository database", () => {
+  const customerIds: string[] = [];
   const orderIds: string[] = [];
   const userIds: string[] = [];
   let pool: Pool;
@@ -39,16 +45,42 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       await pool.query("delete from refund_operations where order_id = any($1::uuid[])", [orderIds]);
       await pool.query("delete from orders where id = any($1::uuid[])", [orderIds]);
     }
+    if (customerIds.length > 0) {
+      await pool.query("delete from customers where id = any($1::uuid[])", [customerIds]);
+    }
     if (userIds.length > 0) {
       await pool.query("delete from users where id = any($1::uuid[])", [userIds]);
     }
     orderIds.length = 0;
+    customerIds.length = 0;
     userIds.length = 0;
   });
 
   afterAll(async () => {
     await pool?.end();
   });
+
+  async function insertUser(email?: string) {
+    const id = randomUUID();
+    userIds.push(id);
+    await pool.query(
+      "insert into users (id, auth_provider, auth_subject, email) values ($1, 'clerk', $2, $3)",
+      [id, `analytics-${id}`, email ?? null],
+    );
+    return id;
+  }
+
+  async function insertCustomer(email: string, { id = randomUUID(), userId }: {
+    id?: string;
+    userId?: string;
+  } = {}) {
+    customerIds.push(id);
+    await pool.query(
+      "insert into customers (id, user_id, email) values ($1, $2, $3)",
+      [id, userId ?? null, email],
+    );
+    return id;
+  }
 
   async function insertOrder(testOrder: TestOrder) {
     const orderId = randomUUID();
@@ -58,17 +90,19 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
     );
     const shippingMinor = testOrder.shippingMinor ?? 0;
     const taxMinor = testOrder.taxMinor ?? 0;
+    const paidAt = testOrder.paidAt === undefined
+      ? (["unpaid", "failed"].includes(testOrder.paymentStatus) ? null : testOrder.createdAt)
+      : testOrder.paidAt;
     orderIds.push(orderId);
     await pool.query(
       `
         insert into orders (
           id, public_order_number, status, payment_status, fulfillment_status,
           subtotal_cents, discount_cents, total_cents, currency, paid_at, created_at,
-          shipping_cents, tax_cents, stripe_payment_intent_id
+          shipping_cents, tax_cents, stripe_payment_intent_id, authenticated_user_id,
+          customer_id, customer_email, user_id
         ) values (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9,
-          case when $4::payment_status = 'unpaid' then null else $10::timestamptz end,
-          $10::timestamptz, $11, $12, $13
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
         )
       `,
       [
@@ -81,10 +115,15 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
         testOrder.discountMinor,
         grossMinor + shippingMinor + taxMinor - testOrder.discountMinor,
         testOrder.currency,
+        paidAt,
         testOrder.createdAt,
         shippingMinor,
         taxMinor,
-        `pi_analytics_${orderId}`
+        `pi_analytics_${orderId}`,
+        testOrder.authenticatedUserId ?? null,
+        testOrder.customerId ?? null,
+        testOrder.customerEmail ?? null,
+        testOrder.legacyUserId ?? null
       ],
     );
     for (const { quantity, unitAmountMinor } of testOrder.items) {
@@ -183,11 +222,18 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
   ) {
     const repository = new AdminOrderRepository(pool);
     const query = { ...filters, discountedOnly: false, refundedOnly: false, limit: 1, sort };
-    const first = await repository.search(query);
-    expect(first.nextCursor).not.toBeNull();
-    const second = await repository.search({ ...query, cursor: first.nextCursor! });
-    expect(second.nextCursor).toBeNull();
-    return [...first.orders, ...second.orders].map(({ id }) => id);
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await repository.search({ ...query, cursor });
+      expect(page.orders.length).toBeLessThanOrEqual(query.limit);
+      for (const { id } of page.orders) {
+        expect(ids).not.toContain(id);
+        ids.push(id);
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    return ids;
   }
 
   it("compares contiguous leap-month periods and reconciles each paid drill-down across pages", async () => {
@@ -238,6 +284,141 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
     expect(await walkPaidOrders(cohort.drillDown, "created_desc")).toEqual([currentLater, currentEarlier]);
     expect(await walkPaidOrders(previous.drillDown, "created_asc")).toEqual([previousEarlier, previousLater]);
     expect(await walkPaidOrders(previous.drillDown, "created_desc")).toEqual([previousLater, previousEarlier]);
+  });
+
+  it("resolves durable customer identities and reconciles paid order coverage across pages", async () => {
+    const email = "shared-analytics@example.test";
+    const returningAccount = await insertUser(email);
+    const otherAccount = await insertUser(email);
+    const newAccount = await insertUser(email);
+    const linkedReturning = await insertCustomer(email, { userId: returningAccount });
+    const linkedOther = await insertCustomer(email, { userId: otherAccount });
+    const linkedNew = await insertCustomer(email, { userId: newAccount });
+    const sameUuidGuest = await insertCustomer(email, { id: returningAccount });
+    const repeatGuest = await insertCustomer(email);
+    const order = (date: string, overrides: Partial<TestOrder> = {}) =>
+      comparisonOrder(date, { customerEmail: email, ...overrides });
+
+    // Only an old, other-currency order through the account link makes this account returning.
+    await order("2025-01-01T00:00:00Z", { currency: "eur", customerId: linkedReturning });
+    await order("2025-01-02T00:00:00Z", {
+      authenticatedUserId: otherAccount, customerId: linkedNew
+    });
+
+    const identified = [
+      await order("2026-07-01T00:00:00Z", {
+        authenticatedUserId: returningAccount, customerId: linkedOther
+      }),
+      await order("2026-07-01T01:00:00Z", { customerId: linkedReturning }),
+      await order("2026-07-01T02:00:00Z", { authenticatedUserId: newAccount }),
+      await order("2026-07-01T03:00:00Z", { customerId: sameUuidGuest }),
+      await order("2026-07-01T04:00:00Z", { customerId: repeatGuest }),
+      await order("2026-07-01T05:00:00Z", { customerId: repeatGuest })
+    ];
+    const contactOnlyGuest = await order("2026-07-01T06:00:00Z");
+    const legacyOnly = await order("2026-07-01T07:00:00Z", {
+      legacyUserId: `analytics-${returningAccount}`
+    });
+    await order("2026-07-01T08:00:00Z", { currency: "eur", authenticatedUserId: otherAccount });
+    await order("2026-07-02T00:00:00Z", { authenticatedUserId: otherAccount });
+
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "2026-07-01",
+      endDate: "2026-07-01", timezone: "America/New_York"
+    });
+    expect(report.comparison.hasBaseline).toBe(false);
+    expect(report.comparison.previousPeriod.metrics.paidOrderCount).toBe(0);
+    expect(report.customerBreakdown).toEqual({
+      newCustomerCount: 3,
+      returningCustomerCount: 1,
+      unidentifiedPaidOrderCount: 2
+    });
+
+    const orderIds = await walkPaidOrders(report.cohort.drillDown, "created_asc");
+    expect(orderIds).toEqual([...identified, contactOnlyGuest, legacyOnly]);
+    expect(orderIds).toHaveLength(report.metrics.paidOrderCount);
+    expect(report.metrics.paidOrderCount - report.customerBreakdown.unidentifiedPaidOrderCount)
+      .toBe(identified.length);
+
+    const serialized = JSON.stringify(report);
+    for (const privateValue of [email, returningAccount, otherAccount, newAccount,
+      linkedReturning, linkedOther, linkedNew, repeatGuest]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+  });
+
+  it.each<{
+    label: string;
+    priorViaAccount?: boolean;
+    prior?: Partial<TestOrder> & Pick<TestOrder, "createdAt">;
+    currentPaidAt?: string;
+    returning: 0 | 1;
+  }>([
+    {
+      label: "a prior account partial refund paid one microsecond before the start",
+      priorViaAccount: true,
+      prior: {
+        createdAt: "2026-06-29T12:00:00Z", paidAt: "2026-06-30T23:59:59.999999Z",
+        paymentStatus: "partially_refunded"
+      },
+      returning: 1
+    },
+    {
+      label: "a prior order paid exactly at the start",
+      prior: { createdAt: "2026-06-29T12:00:00Z", paidAt: "2026-07-01T00:00:00Z" },
+      returning: 0
+    },
+    {
+      label: "a prior order paid after the start",
+      prior: { createdAt: "2026-06-29T12:00:00Z", paidAt: "2026-07-01T00:00:01Z" },
+      returning: 0
+    },
+    {
+      label: "a prior full refund with no payment timestamp",
+      prior: {
+        createdAt: "2026-06-29T12:00:00Z", paidAt: null, paymentStatus: "refunded", status: "refunded"
+      },
+      returning: 1
+    },
+    {
+      label: "a prior unpaid order",
+      prior: { createdAt: "2026-06-29T12:00:00Z", paymentStatus: "unpaid", status: "pending_payment" },
+      returning: 0
+    },
+    {
+      label: "a prior failed order",
+      prior: { createdAt: "2026-06-29T12:00:00Z", paymentStatus: "failed", status: "pending_payment" },
+      returning: 0
+    },
+    {
+      label: "a current order with a payment timestamp before creation",
+      currentPaidAt: "2026-06-30T23:59:59.999999Z",
+      returning: 0
+    },
+    {
+      label: "a current order paid after the cohort ends",
+      currentPaidAt: "2026-07-02T00:00:00Z",
+      returning: 0
+    }
+  ])("classifies first recorded purchases with $label", async ({ prior, priorViaAccount, currentPaidAt, returning }) => {
+    const userId = priorViaAccount ? await insertUser() : undefined;
+    const customerId = await insertCustomer("customer-analytics@example.test", { userId });
+    if (prior) {
+      const identity = userId ? { authenticatedUserId: userId } : { customerId };
+      await comparisonOrder(prior.createdAt, { ...prior, ...identity });
+    }
+    await comparisonOrder("2026-07-01T00:00:00Z", { customerId, paidAt: currentPaidAt });
+
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "2026-07-01",
+      endDate: "2026-07-01", timezone: "UTC"
+    });
+    expect(report.metrics.paidOrderCount).toBe(1);
+    expect(report.customerBreakdown).toEqual({
+      newCustomerCount: 1 - returning,
+      returningCustomerCount: returning,
+      unidentifiedPaidOrderCount: 0
+    });
   });
 
   it("keeps a very early UTC boundary exact and the derived dates usable in order search", async () => {
@@ -385,12 +566,7 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       `,
       [firstOrderId],
     );
-    const actorId = randomUUID();
-    userIds.push(actorId);
-    await pool.query(
-      "insert into users (id, auth_provider, auth_subject) values ($1, 'clerk', $2)",
-      [actorId, `analytics-${actorId}`],
-    );
+    const actorId = await insertUser();
     await insertRefund(firstOrderId, { actorId, amountMinor: 700 });
     await insertRefund(firstOrderId, {
       amountMinor: 1450,
@@ -484,8 +660,11 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
   });
 
   it("returns continuous zero buckets for an empty period", async () => {
-    await comparisonOrder("2026-01-31T00:00:00Z", {
+    await comparisonOrder("2026-02-01T00:00:00Z", {
       currency: "zzz", paymentStatus: "unpaid", status: "pending_payment"
+    });
+    await comparisonOrder("2026-02-02T00:00:00Z", {
+      currency: "zzz", paymentStatus: "failed", status: "pending_payment"
     });
     const report = await new SalesAnalyticsRepository(pool).getSalesReport({
       bestSellerLimit: 10,
@@ -504,6 +683,11 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       paidOrderCount: 0,
       successfulRefundsMinor: 0,
       unitsSold: 0
+    });
+    expect(report.customerBreakdown).toEqual({
+      newCustomerCount: 0,
+      returningCustomerCount: 0,
+      unidentifiedPaidOrderCount: 0
     });
     expect(report.timeBuckets).toMatchObject([
       { grossSalesMinor: 0, netSalesMinor: 0, successfulRefundsMinor: 0 },

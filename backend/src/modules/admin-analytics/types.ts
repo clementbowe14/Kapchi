@@ -80,6 +80,11 @@ export type SalesAnalyticsReport = {
     };
     percentChange: { [Metric in keyof SalesMetrics]: number | null };
   };
+  customerBreakdown: {
+    newCustomerCount: number;
+    returningCustomerCount: number;
+    unidentifiedPaidOrderCount: number;
+  };
   fulfillmentBreakdown: SalesBreakdown[];
   metadata: {
     amountUnit: "minor";

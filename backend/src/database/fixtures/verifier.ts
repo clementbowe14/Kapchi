@@ -135,6 +135,7 @@ export async function verifyFixtureDatabase(input: {
     });
     if (
       stableJson(report.metrics) !== stableJson(expected) ||
+      stableJson(report.customerBreakdown) !== stableJson(expectedCurrentUsdAnalytics.customerBreakdown) ||
       stableJson(report.paymentBreakdown) !== stableJson(expectedCurrentUsdAnalytics.paymentBreakdown) ||
       stableJson(report.fulfillmentBreakdown) !== stableJson(expectedCurrentUsdAnalytics.fulfillmentBreakdown) ||
       stableJson(report.bestSellers) !== stableJson(expectedCurrentUsdAnalytics.bestSellers)

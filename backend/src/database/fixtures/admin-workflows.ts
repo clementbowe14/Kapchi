@@ -219,6 +219,11 @@ export const expectedCurrentUsdAnalytics = {
       unitsSold: 4
     }
   ],
+  customerBreakdown: {
+    newCustomerCount: 4,
+    returningCustomerCount: 1,
+    unidentifiedPaidOrderCount: 0
+  },
   fulfillmentBreakdown: [
     { status: "not_started", count: 2 },
     { status: "queued", count: 2 },
