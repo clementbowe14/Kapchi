@@ -4,6 +4,9 @@ import type {
   SalesAnalyticsReport,
   SalesBestSeller,
   SalesBreakdown,
+  SalesDrillDown,
+  SalesMetrics,
+  SalesPeriodBounds,
   SalesTimeBucket
 } from "./types.js";
 
@@ -46,6 +49,7 @@ type BestSellerRow = QueryResultRow & {
 };
 
 const paidStatuses = ["paid", "partially_refunded", "refunded"];
+const millisecondsPerDay = 86_400_000;
 
 function iso(value: Date | string) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -59,6 +63,66 @@ function safeInteger(value: number | string, field: string) {
   }
 
   return parsed;
+}
+
+function previousPeriod(current: SalesPeriodBounds): SalesPeriodBounds {
+  const start = Date.parse(current.startInclusive);
+  const duration = Date.parse(current.endExclusive) - start;
+  const startInclusive = new Date(start - duration).toISOString();
+  return {
+    endDateInclusive: new Date(start - millisecondsPerDay).toISOString().slice(0, 10),
+    endExclusive: current.startInclusive,
+    startDateInclusive: startInclusive.slice(0, 10),
+    startInclusive
+  };
+}
+
+function cohortParameters(bounds: SalesPeriodBounds, currency: string) {
+  // PostgreSQL expects an unsigned year for the exclusive end after 9999-12-31.
+  return [
+    bounds.startInclusive,
+    bounds.endExclusive.replace(/^\+0*/, ""),
+    currency
+  ];
+}
+
+function drillDown(bounds: SalesPeriodBounds, currency: string): SalesDrillDown {
+  return {
+    createdFrom: bounds.startDateInclusive,
+    createdTo: bounds.endDateInclusive,
+    currency,
+    lifecycle: "all",
+    paidOnly: true
+  };
+}
+
+function summaryMetrics(row: SummaryRow | undefined): SalesMetrics {
+  return {
+    averageOrderValueMinor: safeInteger(row?.average_order_value_minor ?? 0, "average order value"),
+    discountMinor: safeInteger(row?.discount_minor ?? 0, "discount"),
+    grossSalesMinor: safeInteger(row?.gross_sales_minor ?? 0, "gross sales"),
+    netSalesMinor: safeInteger(row?.net_sales_minor ?? 0, "net sales"),
+    paidOrderCount: safeInteger(row?.paid_order_count ?? 0, "paid order count"),
+    successfulRefundsMinor: safeInteger(row?.successful_refunds_minor ?? 0, "successful refunds"),
+    unitsSold: safeInteger(row?.units_sold ?? 0, "units sold")
+  };
+}
+
+function percentChanges(current: SalesMetrics, previous: SalesMetrics) {
+  function change(metric: keyof SalesMetrics) {
+    const baseline = previous[metric];
+    return baseline === 0 ? null : (current[metric] - baseline) / Math.abs(baseline) * 100;
+  }
+
+  return {
+    averageOrderValueMinor: change("averageOrderValueMinor"),
+    discountMinor: change("discountMinor"),
+    grossSalesMinor: change("grossSalesMinor"),
+    netSalesMinor: change("netSalesMinor"),
+    paidOrderCount: change("paidOrderCount"),
+    successfulRefundsMinor: change("successfulRefundsMinor"),
+    unitsSold: change("unitsSold")
+  };
 }
 
 function breakdown(rows: BreakdownRow[]): SalesBreakdown[] {
@@ -103,9 +167,20 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
     try {
       await client.query("begin transaction isolation level repeatable read read only");
       const bounds = await this.loadBounds(client, query);
-      const values = [bounds.start_inclusive, bounds.end_exclusive, query.currency];
+      const current: SalesPeriodBounds = {
+        endDateInclusive: query.endDate,
+        endExclusive: iso(bounds.end_exclusive),
+        startDateInclusive: query.startDate,
+        startInclusive: iso(bounds.start_inclusive)
+      };
+      const previous = previousPeriod(current);
+      const values = cohortParameters(current, query.currency);
       const summaryResult = await client.query<SummaryRow>(summarySql, [
         ...values,
+        paidStatuses
+      ]);
+      const previousResult = await client.query<SummaryRow>(summarySql, [
+        ...cohortParameters(previous, query.currency),
         paidStatuses
       ]);
       const paymentResult = await client.query<BreakdownRow>(
@@ -127,33 +202,31 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
         paidStatuses,
         query.bestSellerLimit
       ]);
-      await client.query("commit");
+      const metrics = summaryMetrics(summaryResult.rows[0]);
+      const previousMetrics = summaryMetrics(previousResult.rows[0]);
 
-      const summary = summaryResult.rows[0] ?? {
-        average_order_value_minor: 0,
-        discount_minor: 0,
-        gross_sales_minor: 0,
-        net_sales_minor: 0,
-        paid_order_count: 0,
-        successful_refunds_minor: 0,
-        units_sold: 0
-      };
-
-      return {
+      const report: SalesAnalyticsReport = {
         bestSellers: bestSellers(sellerResult.rows),
         capabilities: {
           refunds: { available: true }
         },
         cohort: {
+          ...current,
           basis: "order_created_at",
           bucket: query.bucket,
           bucketTimezone: query.timezone,
           currency: query.currency,
           dateBoundaryTimezone: "UTC",
-          endDateInclusive: query.endDate,
-          endExclusive: iso(bounds.end_exclusive),
-          startDateInclusive: query.startDate,
-          startInclusive: iso(bounds.start_inclusive),
+          drillDown: drillDown(current, query.currency)
+        },
+        comparison: {
+          hasBaseline: previousMetrics.paidOrderCount > 0,
+          previousPeriod: {
+            ...previous,
+            drillDown: drillDown(previous, query.currency),
+            metrics: previousMetrics
+          },
+          percentChange: percentChanges(metrics, previousMetrics)
         },
         fulfillmentBreakdown: breakdown(fulfillmentResult.rows),
         metadata: {
@@ -165,21 +238,12 @@ export class SalesAnalyticsRepository implements SalesAnalyticsReader {
           refundCoverage: "recorded_ledger_only",
           source: "postgresql"
         },
-        metrics: {
-          averageOrderValueMinor: safeInteger(
-            summary.average_order_value_minor,
-            "average order value",
-          ),
-          discountMinor: safeInteger(summary.discount_minor, "discount"),
-          grossSalesMinor: safeInteger(summary.gross_sales_minor, "gross sales"),
-          netSalesMinor: safeInteger(summary.net_sales_minor, "net sales"),
-          paidOrderCount: safeInteger(summary.paid_order_count, "paid order count"),
-          successfulRefundsMinor: safeInteger(summary.successful_refunds_minor, "successful refunds"),
-          unitsSold: safeInteger(summary.units_sold, "units sold")
-        },
+        metrics,
         paymentBreakdown: breakdown(paymentResult.rows),
         timeBuckets: timeBuckets(bucketResult.rows)
       };
+      await client.query("commit");
+      return report;
     } catch (error) {
       await client.query("rollback");
       throw error;

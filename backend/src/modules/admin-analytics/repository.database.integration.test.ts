@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { loadBackendEnvironment } from "../../config/load-environment.js";
+import { AdminOrderRepository } from "../admin-orders/repository.js";
+import type { AdminOrderSearchQuery } from "../admin-orders/types.js";
 import { SalesAnalyticsRepository } from "./repository.js";
 
 loadBackendEnvironment();
@@ -161,6 +163,153 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       ],
     );
   }
+
+  function comparisonOrder(createdAt: string, overrides: Partial<TestOrder> = {}) {
+    return insertOrder({
+      createdAt,
+      currency: "cmp",
+      discountMinor: 0,
+      fulfillmentStatus: "queued",
+      items: [{ quantity: 1, unitAmountMinor: 100 }],
+      paymentStatus: "paid",
+      status: "paid",
+      ...overrides
+    });
+  }
+
+  async function walkPaidOrders(
+    filters: Pick<AdminOrderSearchQuery, "createdFrom" | "createdTo" | "currency" | "lifecycle" | "paidOnly">,
+    sort: AdminOrderSearchQuery["sort"],
+  ) {
+    const repository = new AdminOrderRepository(pool);
+    const query = { ...filters, discountedOnly: false, refundedOnly: false, limit: 1, sort };
+    const first = await repository.search(query);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await repository.search({ ...query, cursor: first.nextCursor! });
+    expect(second.nextCursor).toBeNull();
+    return [...first.orders, ...second.orders].map(({ id }) => id);
+  }
+
+  it("compares contiguous leap-month periods and reconciles each paid drill-down across pages", async () => {
+    const previousEarlier = await comparisonOrder("2024-02-29T12:00:00.123400Z");
+    const previousLater = await comparisonOrder("2024-02-29T12:00:00.123456Z", {
+      paymentStatus: "refunded", shippingMinor: 200, status: "refunded"
+    });
+    await insertRefund(previousLater, { amountMinor: 250, currency: "cmp" });
+    const currentEarlier = await comparisonOrder("2024-03-01T00:00:00.000000Z");
+    const currentLater = await comparisonOrder("2024-03-01T00:00:00.000456Z");
+    await comparisonOrder("2024-02-29T09:00:00Z", { currency: "oth" });
+    await comparisonOrder("2024-03-01T09:00:00Z", { currency: "oth" });
+    const unpaid = { paymentStatus: "unpaid", status: "pending_payment" };
+    await comparisonOrder("2024-02-29T09:00:00Z", unpaid);
+    await comparisonOrder("2024-03-01T09:00:00Z", unpaid);
+    await comparisonOrder("2024-02-26T23:59:59.999999Z");
+    await comparisonOrder("2024-03-04T00:00:00Z");
+
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10,
+      bucket: "day",
+      currency: "cmp",
+      endDate: "2024-03-03",
+      startDate: "2024-03-01",
+      timezone: "America/New_York"
+    });
+    const { comparison, cohort } = report;
+    const previous = comparison.previousPeriod;
+    expect(previous).toMatchObject({
+      startDateInclusive: "2024-02-27",
+      endDateInclusive: "2024-02-29",
+      startInclusive: "2024-02-27T00:00:00.000Z",
+      endExclusive: cohort.startInclusive,
+      metrics: { grossSalesMinor: 200, netSalesMinor: -50, paidOrderCount: 2, successfulRefundsMinor: 250 }
+    });
+    expect(report.metrics).toMatchObject({ grossSalesMinor: 200, netSalesMinor: 200, paidOrderCount: 2 });
+    expect(comparison.hasBaseline).toBe(true);
+    expect(comparison.percentChange).toEqual({
+      averageOrderValueMinor: 0,
+      discountMinor: null,
+      grossSalesMinor: 0,
+      netSalesMinor: 500,
+      paidOrderCount: 0,
+      successfulRefundsMinor: -100,
+      unitsSold: 0
+    });
+    expect(await walkPaidOrders(cohort.drillDown, "created_asc")).toEqual([currentEarlier, currentLater]);
+    expect(await walkPaidOrders(cohort.drillDown, "created_desc")).toEqual([currentLater, currentEarlier]);
+    expect(await walkPaidOrders(previous.drillDown, "created_asc")).toEqual([previousEarlier, previousLater]);
+    expect(await walkPaidOrders(previous.drillDown, "created_desc")).toEqual([previousLater, previousEarlier]);
+  });
+
+  it("keeps a very early UTC boundary exact and the derived dates usable in order search", async () => {
+    const previousId = await comparisonOrder("0099-12-31T23:59:59.999999Z");
+    const currentId = await comparisonOrder("0100-01-01T00:00:00Z");
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10, bucket: "month", currency: "cmp", startDate: "0100-01-01",
+      endDate: "0101-01-01", timezone: "UTC"
+    });
+    const previous = report.comparison.previousPeriod;
+    expect(previous).toMatchObject({
+      startDateInclusive: "0098-12-31",
+      endDateInclusive: "0099-12-31",
+      startInclusive: "0098-12-31T00:00:00.000Z",
+      endExclusive: "0100-01-01T00:00:00.000Z",
+      metrics: { paidOrderCount: 1 }
+    });
+    expect(report.metrics.paidOrderCount).toBe(1);
+    const repository = new AdminOrderRepository(pool);
+    const defaults = { discountedOnly: false, refundedOnly: false, limit: 25, sort: "created_desc" } as const;
+    for (const [filters, expected] of [[previous.drillDown, previousId], [report.cohort.drillDown, currentId]] as const) {
+      const page = await repository.search({ ...filters, ...defaults });
+      expect(page.orders.map(({ id }) => id)).toEqual([expected]);
+      expect(page.nextCursor).toBeNull();
+    }
+  });
+
+  it("supports the last four-digit date without changing its public exclusive end", async () => {
+    await comparisonOrder("9999-12-31T23:59:59.999999Z");
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "9999-12-31",
+      endDate: "9999-12-31", timezone: "UTC"
+    });
+    expect(report.cohort.endExclusive).toBe("+010000-01-01T00:00:00.000Z");
+    expect(report.metrics.paidOrderCount).toBe(1);
+    expect(report.timeBuckets).toMatchObject([{ endExclusive: report.cohort.endExclusive, paidOrderCount: 1 }]);
+    expect(report.comparison).toMatchObject({
+      hasBaseline: false,
+      previousPeriod: { startDateInclusive: "9999-12-30", endDateInclusive: "9999-12-30" }
+    });
+  });
+
+  it("keeps the baseline in the same snapshot when a previous refund commits between reads", async () => {
+    const orderId = await comparisonOrder("2026-01-01T00:00:00Z");
+    let refundCommitted = false;
+    const reportingPool = {
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          query: async (sql: string, values?: unknown[]) => {
+            const result = await client.query(sql, values);
+            if (sql.includes("sales_analytics:summary") && !refundCommitted) {
+              await insertRefund(orderId, { amountMinor: 40, currency: "cmp" });
+              refundCommitted = true;
+            }
+            return result;
+          },
+          release: () => client.release()
+        } as unknown as PoolClient;
+      }
+    };
+    const query = {
+      bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "2026-01-02",
+      endDate: "2026-01-02", timezone: "UTC"
+    } as const;
+    const inFlight = await new SalesAnalyticsRepository(reportingPool).getSalesReport(query);
+    expect(refundCommitted).toBe(true);
+    expect(inFlight.comparison.previousPeriod.metrics).toMatchObject({ netSalesMinor: 100, successfulRefundsMinor: 0 });
+    expect(inFlight.comparison.percentChange.netSalesMinor).toBe(-100);
+    const next = await new SalesAnalyticsRepository(pool).getSalesReport(query);
+    expect(next.comparison.previousPeriod.metrics).toMatchObject({ netSalesMinor: 60, successfulRefundsMinor: 40 });
+  });
 
   it("reconciles refund and sales totals without item fanout or currency and cohort leakage", async () => {
     const firstOrderId = await insertOrder({
@@ -335,6 +484,9 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
   });
 
   it("returns continuous zero buckets for an empty period", async () => {
+    await comparisonOrder("2026-01-31T00:00:00Z", {
+      currency: "zzz", paymentStatus: "unpaid", status: "pending_payment"
+    });
     const report = await new SalesAnalyticsRepository(pool).getSalesReport({
       bestSellerLimit: 10,
       bucket: "day",
@@ -357,6 +509,9 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       { grossSalesMinor: 0, netSalesMinor: 0, successfulRefundsMinor: 0 },
       { grossSalesMinor: 0, netSalesMinor: 0, successfulRefundsMinor: 0 }
     ]);
+    expect(report.comparison.hasBaseline).toBe(false);
+    expect(report.comparison.previousPeriod.metrics).toEqual(report.metrics);
+    expect(Object.values(report.comparison.percentChange)).toEqual(Array(7).fill(null));
   });
 
   it("keeps local calendar-day buckets nonoverlapping across daylight saving time", async () => {

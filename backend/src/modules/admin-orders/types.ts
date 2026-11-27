@@ -28,6 +28,7 @@ export type FulfillmentStatus =
 export type AdminOrderSearchQuery = {
   createdFrom?: string;
   createdTo?: string;
+  currency?: string;
   cursor?: string;
   discountedOnly: boolean;
   fabricId?: string;

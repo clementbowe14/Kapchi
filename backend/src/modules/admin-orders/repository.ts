@@ -432,9 +432,11 @@ export class AdminOrderRepository implements AdminOrderReader {
     const direction = ascending ? "asc" : "desc";
     const client = await this.pool.connect();
     try {
-      const result = await client.query<OrderRow>(
+      const result = await client.query<OrderRow & { cursor_created_at: string }>(
         `
-          select ${orderColumns}
+          select ${orderColumns},
+            to_char(orders.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+              as cursor_created_at
           from orders
           ${orderJoins}
           where (
@@ -474,6 +476,7 @@ export class AdminOrderRepository implements AdminOrderReader {
               $14::timestamptz is null
               or (orders.created_at, orders.id) ${comparator} ($14::timestamptz, $15::uuid)
             )
+            and ($17::bpchar is null or orders.currency = $17)
           order by orders.created_at ${direction}, orders.id ${direction}
           limit $16
         `,
@@ -493,7 +496,8 @@ export class AdminOrderRepository implements AdminOrderReader {
           query.lifecycle,
           cursor?.createdAt ?? null,
           cursor?.id ?? null,
-          query.limit + 1
+          query.limit + 1,
+          query.currency ?? null
         ],
       );
       const hasMore = result.rows.length > query.limit;
@@ -501,7 +505,7 @@ export class AdminOrderRepository implements AdminOrderReader {
       const last = rows.at(-1);
       return {
         nextCursor: hasMore && last
-          ? encode({ createdAt: iso(last.created_at), id: last.id, sort: query.sort })
+          ? encode({ createdAt: last.cursor_created_at, id: last.id, sort: query.sort })
           : null,
         orders: rows.map(summary)
       };

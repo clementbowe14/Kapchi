@@ -18,8 +18,8 @@ endpoint does not cache results.
 The inclusive date range is capped at 366 calendar days. The response includes
 the resolved UTC `startInclusive` and `endExclusive` boundaries. Buckets align to
 the requested timezone and clip to the report boundaries, so the first or last
-bucket can be partial. All component queries use the same half-open UTC boundaries
-and one repeatable-read transaction.
+bucket can be partial. Both periods use half-open UTC boundaries and one
+repeatable-read transaction.
 
 ## Definitions
 
@@ -39,6 +39,28 @@ and one repeatable-read transaction.
 All money fields are integer minor units. Every query filters the order currency,
 and item aggregates additionally require `order_items.currency = orders.currency`.
 The endpoint never converts or adds different currencies.
+
+## Previous Period And Order Drill-Down
+
+`comparison.previousPeriod` returns the preceding UTC dates and boundaries, plus
+the same seven summary metrics. It is immediately before the current cohort and
+has the same number of days. For example, March 1-3, 2024 compares with February
+27-29. The bucket timezone does not change either cohort. Buckets, status
+breakdowns, and best sellers are returned only for the current period.
+
+`comparison.hasBaseline` is true if at least one paid, partially refunded, or
+refunded order matches the previous cohort. When there is no baseline, its
+metrics are zero and all `comparison.percentChange` values are `null`. A metric
+with a zero baseline also returns `null`, even for zero-to-zero. Otherwise the
+change is `(current - previous) / abs(previous) * 100`; for example, `25` means
+an increase of 25%. Percentage changes are not rounded for display by the API.
+
+Pass `cohort.drillDown` or `comparison.previousPeriod.drillDown` to
+`GET /admin/orders` as query parameters. Both include inclusive UTC
+`createdFrom`/`createdTo`, `currency`, `lifecycle=all`, and `paidOnly=true`.
+Follow `nextCursor` with the same parameters to list the orders behind the paid
+metrics. The drill-down does not include unpaid orders from status breakdowns.
+The order route still requires its own admin authorization.
 
 ## Refunds And Net Sales
 

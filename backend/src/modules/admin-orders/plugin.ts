@@ -33,6 +33,7 @@ const orderParams = Joi.object({ orderId: uuid.required() }).required();
 const searchQuery = Joi.object<AdminOrderSearchQuery>({
   createdFrom: Joi.string().pattern(datePattern).optional(),
   createdTo: Joi.string().pattern(datePattern).optional(),
+  currency: Joi.string().trim().lowercase().pattern(/^[a-z]{3}$/).optional(),
   cursor: Joi.string().trim().max(1000).optional(),
   discountedOnly: Joi.boolean().default(false),
   fabricId: uuid.optional(),
@@ -92,7 +93,10 @@ const confirmShipmentBody = Joi.object<ConfirmShipmentInput>({
 
 function day(value: string) {
   const [year, month, date] = value.split("-").map(Number);
-  const instant = new Date(Date.UTC(year, month - 1, date));
+  if (year === 0) return null;
+  const instant = new Date(0);
+  // Date.UTC interprets years 0-99 as 1900-1999.
+  instant.setUTCFullYear(year, month - 1, date);
   if (
     instant.getUTCFullYear() !== year ||
     instant.getUTCMonth() !== month - 1 ||
