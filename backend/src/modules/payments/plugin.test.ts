@@ -3,6 +3,8 @@ import fastify from "fastify";
 import type { Pool, PoolClient } from "pg";
 import type { RedisClientType } from "redis";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readGuestAnalyticsCookie, signGuestAnalyticsCookie } from "./guest-analytics-cookie.js";
+import type { CheckoutStarter } from "./plugin.js";
 
 const mocks = vi.hoisted(() => ({
   constructEvent: vi.fn(),
@@ -16,6 +18,7 @@ vi.mock("../auth/jwt.js", () => ({
 
 vi.mock("../../config/index.js", () => ({
   config: {
+    app: { nodeEnv: "test" },
     payments: {
       checkout: {
         cancelUrl: "https://kapchi.test/cart",
@@ -46,8 +49,10 @@ const [
   { authPlugin },
   {
     CheckoutCatalogUnavailableError,
+    CheckoutCartNotFoundError,
     CheckoutNeedsReviewError,
-    CheckoutPolicyVersionStaleError
+    CheckoutPolicyVersionStaleError,
+    CheckoutProviderError
   },
   { createPaymentsPlugin, default: paymentsPlugin },
   { activePolicyBundle }
@@ -63,6 +68,177 @@ const policyAssertion = {
   returnsAcknowledged: true,
   termsAgreed: true
 };
+
+describe("checkout guest analytics boundary", () => {
+  const cookieName = "kapchi_guest_analytics";
+  const secret = "synthetic-cookie-secret-for-tests-only";
+  const now = new Date("2026-11-27T12:00:00Z");
+  const existingKey = Buffer.alloc(32, 16).toString("base64url");
+  const freshGuestAnalyticsKey = Buffer.alloc(32, 17).toString("base64url");
+  const signedCookie = signGuestAnalyticsCookie(existingKey, secret, now);
+  const cartId = "53fcaccc-1baa-4072-abbb-c51d20f3588b";
+  const sessionId = "valid_session_id_abcdefghijklmnopqrstuvwxyz123456789";
+  const checkoutResult = {
+    checkoutSessionId: "cs_test_guest",
+    orderId: "2db9f8e1-d0f0-4b39-b521-1ab59db038c8",
+    paymentStatus: "checkout_started" as const,
+    publicOrderNumber: "KAP-2DB9F8E1D0F0",
+    url: "https://checkout.stripe.test/session"
+  };
+
+  async function server(enabled = true, secure = false) {
+    const app = fastify({ logger: false, trustProxy: secure });
+    const analyticsCookieName = secure ? `__Host-${cookieName}` : cookieName;
+    const startCheckout = vi.fn<CheckoutStarter["startCheckout"]>()
+      .mockResolvedValue({ ...checkoutResult, freshGuestAnalyticsKey });
+    const query = vi.fn(async () => ({ rows: [{ id: cartId }] }));
+    await app.register(cookie);
+    await app.register(authPlugin);
+    app.decorate("pg", { query } as unknown as Pool);
+    await app.register(createPaymentsPlugin({
+      checkoutServiceFactory: () => ({ startCheckout }),
+      clock: { now: () => now },
+      paymentConfig: {
+        checkout: {
+          cancelUrl: "https://kapchi.test/cart",
+          successUrl: "https://kapchi.test/orders",
+          ...(enabled ? { guestAnalyticsCookieSecret: secret } : {})
+        },
+        stripe: { webhookSecret: "test-only" }
+      }
+    }), { prefix: "/payments" });
+
+    function checkout({
+      value = signedCookie, guestSession = true, gpc = false, authenticated = false,
+      extra = {}
+    }: {
+      value?: string; guestSession?: boolean; gpc?: boolean; authenticated?: boolean;
+      extra?: Record<string, unknown>;
+    } = {}) {
+      return app.inject({
+        method: "POST",
+        url: "/payments/checkout-sessions",
+        cookies: { [analyticsCookieName]: value, ...(guestSession ? { session_id: sessionId } : {}) },
+        headers: {
+          ...(secure ? { "x-forwarded-proto": "https" } : {}),
+          ...(gpc ? { "sec-gpc": "1" } : {}),
+          ...(authenticated ? { authorization: "Bearer verified-token" } : {})
+        },
+        payload: {
+          customerEmail: "guest@example.test",
+          customerPhone: "+15550101010",
+          preferredContactMethod: "email",
+          policyAssertion,
+          ...extra
+        }
+      });
+    }
+
+    return { app, checkout, query, startCheckout };
+  }
+
+  it("only sets a fresh signed key in the cookie, not the 201 body", async () => {
+    const { app, checkout, startCheckout } = await server();
+    const response = await checkout({ value: "invalid-cookie" });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual(checkoutResult);
+    expect(startCheckout.mock.calls[0]?.[3]).toEqual({ existingKey: undefined });
+    expect(response.cookies).toEqual([expect.objectContaining({
+      name: cookieName, httpOnly: true, maxAge: 7776000, path: "/", sameSite: "Lax"
+    })]);
+    expect(response.headers["set-cookie"]).not.toMatch(/Domain=|; Secure/);
+    expect(readGuestAnalyticsCookie(response.cookies[0]?.value, secret, now)).toBe(freshGuestAnalyticsKey);
+    await app.close();
+  });
+
+  it("uses the valid key without refreshing the cookie and ignores it when disabled", async () => {
+    for (const enabled of [true, false]) {
+      const { app, checkout, startCheckout } = await server(enabled);
+      const response = await checkout();
+      expect(response.statusCode).toBe(201);
+      expect(response.cookies).toHaveLength(0);
+      expect(startCheckout.mock.calls[0]?.[3]).toEqual(enabled ? { existingKey } : undefined);
+      await app.close();
+    }
+  });
+
+  it("treats an expired key as absent and does not revive it on a reused preparation", async () => {
+    const { app, checkout, startCheckout } = await server();
+    startCheckout.mockResolvedValue(checkoutResult);
+    const expired = signGuestAnalyticsCookie(existingKey, secret, new Date(now.getTime() - 7776000000));
+    const response = await checkout({ value: expired });
+    expect(response.statusCode).toBe(201);
+    expect(response.cookies).toHaveLength(0);
+    expect(startCheckout.mock.calls[0]?.[3]).toEqual({ existingKey: undefined });
+    await app.close();
+  });
+
+  it.each([
+    [new CheckoutProviderError(), 502],
+    [new CheckoutCartNotFoundError(), 404]
+  ])("honors GPC when an authorized checkout later fails with %s", async (error, status) => {
+    const { app, checkout, startCheckout } = await server();
+    startCheckout.mockRejectedValueOnce(error);
+    const response = await checkout({ gpc: true });
+    expect(response.statusCode).toBe(status);
+    expect(startCheckout.mock.calls[0]?.[3]).toBeUndefined();
+    expect(response.cookies).toEqual([expect.objectContaining({
+      name: cookieName, value: "", path: "/", expires: expect.any(Date)
+    })]);
+    await app.close();
+  });
+
+  it("uses the secure host-only name both for issuance and for GPC deletion", async () => {
+    const { app, checkout, startCheckout } = await server(true, true);
+    const issue = await checkout({ value: "invalid-cookie" });
+    const clear = await checkout({ gpc: true });
+    expect(issue.statusCode).toBe(201);
+    expect(clear.statusCode).toBe(201);
+    for (const response of [issue, clear]) {
+      expect(response.cookies).toEqual([expect.objectContaining({
+        name: `__Host-${cookieName}`, secure: true, httpOnly: true, path: "/", sameSite: "Lax"
+      })]);
+      expect(response.headers["set-cookie"]).not.toMatch(/Domain=/);
+    }
+    expect(clear.cookies[0]?.value).toBe("");
+    expect(startCheckout.mock.calls[1]?.[3]).toBeUndefined();
+    await app.close();
+  });
+
+  it("does not let the analytics cookie authorize a request or bypass body validation", async () => {
+    const { app, checkout, query, startCheckout } = await server();
+    const denied = await checkout({ guestSession: false, gpc: true });
+    const forged = await checkout({ extra: { guestAnalyticsDigest: "forged", guestAnalyticsKey: existingKey } });
+    expect(denied.statusCode).toBe(404);
+    expect(forged.statusCode).toBe(400);
+    expect(denied.cookies).toHaveLength(0);
+    expect(forged.cookies).toHaveLength(0);
+    expect(query).not.toHaveBeenCalled();
+    expect(startCheckout).not.toHaveBeenCalled();
+
+    query.mockResolvedValueOnce({ rows: [] });
+    const missingOwner = await checkout({ gpc: true });
+    expect(missingOwner.statusCode).toBe(404);
+    expect(missingOwner.cookies).toHaveLength(0);
+    expect(startCheckout).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("ignores the analytics cookie for authenticated checkout", async () => {
+    mocks.verifyClerkToken.mockResolvedValueOnce({
+      claims: {}, permissions: [], roles: [], sessionId: "sess_authenticated",
+      token: "verified-token", userId: "user_123"
+    });
+    const { app, checkout, query, startCheckout } = await server();
+    const response = await checkout({ authenticated: true, gpc: true });
+    expect(response.statusCode).toBe(201);
+    expect(response.cookies).toHaveLength(0);
+    expect(startCheckout.mock.calls[0]?.[0]).toEqual({ authSubject: "user_123" });
+    expect(startCheckout.mock.calls[0]?.[3]).toBeUndefined();
+    expect(query).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
 
 async function buildTestServer() {
   const app = fastify({ logger: false });
@@ -284,6 +460,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
         preferredContactMethod: "email"
       },
       policyAssertion,
+      undefined,
     );
     expect(mocks.stripeConstructor).not.toHaveBeenCalled();
     await app.close();
@@ -350,6 +527,7 @@ describe("paymentsPlugin Stripe webhooks", () => {
         preferredContactMethod: "phone"
       },
       policyAssertion,
+      undefined,
     );
     await app.close();
   });

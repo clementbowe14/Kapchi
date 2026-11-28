@@ -35,6 +35,9 @@ const environmentSchema = Joi.object({
 
   STRIPE_SECRET_KEY: Joi.string().trim().required(),
   STRIPE_WEBHOOK_SECRET: Joi.string().trim().required(),
+  GUEST_ANALYTICS_COOKIE_SECRET: Joi.string().trim().min(32, "utf8")
+    .messages({ "string.min": "{#label} must contain at least {#limit} bytes" })
+    .optional(),
   STRIPE_API_VERSION: Joi.string().trim().default("2026-02-25.clover"),
   STRIPE_CHECKOUT_SUCCESS_URL: Joi.when("NODE_ENV", {
     is: "production",
@@ -150,6 +153,7 @@ type EnvironmentShape = {
   DATABASE_RESERVED_CONNECTIONS: number;
   CORS_ALLOWED_ORIGINS: string;
   CRON_SECRET?: string;
+  GUEST_ANALYTICS_COOKIE_SECRET?: string;
   DATABASE_MAX_APP_INSTANCES: number;
   HOST: string;
   LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -504,6 +508,9 @@ export const config = Object.freeze({
   payments: {
     checkout: {
       cancelUrl: environment.STRIPE_CHECKOUT_CANCEL_URL,
+      ...(environment.GUEST_ANALYTICS_COOKIE_SECRET
+        ? { guestAnalyticsCookieSecret: environment.GUEST_ANALYTICS_COOKIE_SECRET }
+        : {}),
       successUrl: environment.STRIPE_CHECKOUT_SUCCESS_URL
     },
     stripe: {

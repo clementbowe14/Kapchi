@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 
@@ -502,6 +503,7 @@ describe("CheckoutRepository", () => {
     expect(orderInsert?.[1]?.[1]).toMatch(/^KAP-[A-F0-9]{12}$/);
     expect(orderInsert?.[1]?.[8]).toBe("+15550101010");
     expect(orderInsert?.[1]?.[9]).toBe("phone");
+    expect(orderInsert?.[1]?.[12]).toBeNull();
     expect(result.publicOrderNumber).toBe(orderInsert?.[1]?.[1]);
     const itemInsert = query.mock.calls.find(([sql]) =>
       String(sql).includes("insert into order_items"),
@@ -540,6 +542,41 @@ describe("CheckoutRepository", () => {
       ),
     ).toBe(true);
     expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+  });
+
+  it("stores only the digest on new eligible orders and returns only a freshly minted key", async () => {
+    const key = Buffer.alloc(32, 21).toString("base64url");
+    const row = itemRow();
+    for (const [ownerFields, existingKey] of [
+      [{}, undefined], [{}, key],
+      [{ user_id: "legacy-account" }, undefined],
+      [{ authenticated_user_id: ids.asset }, key],
+      [{ customer_id: ids.asset }, undefined]
+    ] as const) {
+      const { pool, query } = createPool((sql) => {
+        if (sql.includes("from carts")) return { rows: [{ ...cartRow(), ...ownerFields }] };
+        const mutableState = mutableStateResult(sql, row);
+        if (mutableState) return mutableState;
+        if (sql.includes("from cart_items ci")) return { rows: [row] };
+        return { rows: [] };
+      });
+      const result = await new CheckoutRepository(pool).prepareCheckout(
+        context, contact, policyAssertion, { existingKey },
+      );
+      const insert = query.mock.calls.find(([sql]) => sql.includes("insert into orders"));
+      expect(insert?.[0]).toContain("guest_analytics_digest");
+      if (Object.keys(ownerFields).length) {
+        expect(insert?.[1]?.[12]).toBeNull();
+        expect(result).not.toHaveProperty("freshGuestAnalyticsKey");
+      } else {
+        const opaqueKey = existingKey ?? result.freshGuestAnalyticsKey!;
+        expect(opaqueKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        expect(insert?.[1]?.[12]).toBe(createHash("sha256").update(opaqueKey).digest("hex"));
+        expect(JSON.stringify(query.mock.calls)).not.toContain(opaqueKey);
+        if (existingKey) expect(result).not.toHaveProperty("freshGuestAnalyticsKey");
+      }
+      expect(query.mock.calls.at(-1)?.[0]).toBe("commit");
+    }
   });
 
   it("rolls back when a mutable catalog row cannot be locked exactly once", async () => {
@@ -778,6 +815,7 @@ describe("CheckoutRepository", () => {
       context,
       contact,
       { ...policyAssertion, bundleVersion: "2026-10-01.1" },
+      {},
     );
 
     expect(result).toMatchObject({
@@ -791,6 +829,7 @@ describe("CheckoutRepository", () => {
       reusedOrder: true
     });
     expect(result.policySnapshot.bundleVersion).toBe(policyAssertion.bundleVersion);
+    expect(result).not.toHaveProperty("freshGuestAnalyticsKey");
     expect(
       query.mock.calls.some(([sql]) => String(sql).includes("insert into orders")),
     ).toBe(false);

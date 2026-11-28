@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { loadBackendEnvironment } from "../../config/load-environment.js";
@@ -19,6 +19,7 @@ type TestOrder = {
   customerId?: string;
   discountMinor: number;
   fulfillmentStatus: string;
+  guestAnalyticsDigest?: string;
   items: { quantity: number; unitAmountMinor: number }[];
   legacyUserId?: string;
   paidAt?: string | null;
@@ -100,9 +101,9 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
           id, public_order_number, status, payment_status, fulfillment_status,
           subtotal_cents, discount_cents, total_cents, currency, paid_at, created_at,
           shipping_cents, tax_cents, stripe_payment_intent_id, authenticated_user_id,
-          customer_id, customer_email, user_id
+          customer_id, customer_email, user_id, guest_analytics_digest
         ) values (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
         )
       `,
       [
@@ -123,7 +124,8 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
         testOrder.authenticatedUserId ?? null,
         testOrder.customerId ?? null,
         testOrder.customerEmail ?? null,
-        testOrder.legacyUserId ?? null
+        testOrder.legacyUserId ?? null,
+        testOrder.guestAnalyticsDigest ?? null
       ],
     );
     for (const { quantity, unitAmountMinor } of testOrder.items) {
@@ -346,6 +348,77 @@ integrationDescribe("SalesAnalyticsRepository database", () => {
       expect(serialized).not.toContain(privateValue);
     }
   });
+
+  it("deduplicates browser purchases and uses only successful history strictly before the UTC cohort", async () => {
+    const customerEmail = "shared-browser-analytics@example.test";
+    const newDigest = randomBytes(32).toString("hex");
+    const returningDigest = randomBytes(32).toString("hex");
+    const order = (date: string, overrides: Partial<TestOrder> = {}) =>
+      comparisonOrder(date, { customerEmail, ...overrides });
+
+    await order("2025-01-01T00:00:00Z", {
+      currency: "eur", guestAnalyticsDigest: returningDigest, paymentStatus: "partially_refunded"
+    });
+    await order("2026-06-29T12:00:00Z", {
+      currency: "eur", guestAnalyticsDigest: newDigest, paidAt: "2026-07-01T00:00:00Z"
+    });
+    await order("2026-06-30T12:00:00Z", {
+      currency: "eur", guestAnalyticsDigest: newDigest, paymentStatus: "failed", status: "pending_payment"
+    });
+    await order("2026-07-01T00:00:00Z", { guestAnalyticsDigest: newDigest });
+    await order("2026-07-01T01:00:00Z", { guestAnalyticsDigest: newDigest });
+    await order("2026-07-01T02:00:00Z", { guestAnalyticsDigest: returningDigest });
+    await order("2026-07-01T03:00:00Z");
+
+    const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+      bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "2026-07-01",
+      endDate: "2026-07-01", timezone: "America/New_York"
+    });
+    expect(report.metrics.paidOrderCount).toBe(4);
+    expect(report.comparison.hasBaseline).toBe(false);
+    expect(report.customerBreakdown).toEqual({
+      newCustomerCount: 1,
+      returningCustomerCount: 1,
+      unidentifiedPaidOrderCount: 1
+    });
+    const serialized = JSON.stringify(report);
+    for (const privateValue of [customerEmail, newDigest, returningDigest]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+  });
+
+  it.each(["direct", "linked", "unlinked", "legacy"] as const)(
+    "ignores a browser digest on both current and historical orders with a %s owner",
+    async (ownerType) => {
+      const customerEmail = "owned-browser-analytics@example.test";
+      const browserDigest = randomBytes(32).toString("hex");
+      const ownedDigest = randomBytes(32).toString("hex");
+      const owner: Partial<TestOrder> = {};
+      if (ownerType === "direct") {
+        owner.authenticatedUserId = await insertUser(customerEmail);
+      } else if (ownerType === "legacy") {
+        owner.legacyUserId = `legacy-${randomUUID()}`;
+      } else {
+        const userId = ownerType === "linked" ? await insertUser(customerEmail) : undefined;
+        owner.customerId = await insertCustomer(customerEmail, { userId });
+      }
+
+      // The prior order counts as history for its owner, never for the browser.
+      await comparisonOrder("2026-06-29T00:00:00Z", { ...owner, guestAnalyticsDigest: browserDigest });
+      await comparisonOrder("2026-07-01T00:00:00Z", { guestAnalyticsDigest: browserDigest });
+      await comparisonOrder("2026-07-01T01:00:00Z", { ...owner, guestAnalyticsDigest: ownedDigest });
+
+      const report = await new SalesAnalyticsRepository(pool).getSalesReport({
+        bestSellerLimit: 10, bucket: "day", currency: "cmp", startDate: "2026-07-01",
+        endDate: "2026-07-01", timezone: "UTC"
+      });
+      expect(report.customerBreakdown).toEqual({
+        newCustomerCount: 1,
+        returningCustomerCount: ownerType === "legacy" ? 0 : 1,
+        unidentifiedPaidOrderCount: ownerType === "legacy" ? 1 : 0
+      });
+    }
+  );
 
   it.each<{
     label: string;

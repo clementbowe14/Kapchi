@@ -41,12 +41,17 @@ export type CheckoutLine = {
   stripePriceId: string;
 };
 
+export type CheckoutGuestAnalytics = {
+  existingKey?: string;
+};
+
 export type PreparedCheckout = {
   cartId: string;
   cartRevision: number;
   cartStatus: "active" | "checkout_started";
   customerEmail: string;
   existingStripeSessionId: string | null;
+  freshGuestAnalyticsKey?: string;
   lines: CheckoutLine[];
   orderId: string;
   policySnapshot: CustomerPolicySnapshot;
@@ -60,6 +65,10 @@ export type CheckoutResult = {
   paymentStatus: "checkout_started";
   publicOrderNumber: string;
   url: string;
+};
+
+export type CheckoutStartResult = CheckoutResult & {
+  freshGuestAnalyticsKey?: string;
 };
 
 export type CheckoutStatus = {

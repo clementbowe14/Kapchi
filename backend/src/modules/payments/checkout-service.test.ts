@@ -9,6 +9,7 @@ import {
   type CheckoutServiceDependencies
 } from "./checkout-service.js";
 import { CheckoutPolicyVersionStaleError } from "./checkout-errors.js";
+import type { PreparedCheckout } from "./checkout-types.js";
 import { activePolicyBundle } from "../policies/policy-contract.js";
 
 const orderId = "2db9f8e1-d0f0-4b39-b521-1ab59db038c8";
@@ -43,11 +44,12 @@ const redirects = {
   successUrl: "https://kapchi.test/orders"
 };
 const now = new Date("2026-08-01T12:00:00.000Z");
+const freshGuestAnalyticsKey = Buffer.alloc(32, 23).toString("base64url");
 
 function preparedCheckout(
   id = orderId,
   existingStripeSessionId: string | null = null,
-) {
+): PreparedCheckout {
   return {
     cartId: context.cartId,
     cartRevision: 3,
@@ -224,7 +226,7 @@ describe("CheckoutService", () => {
     const repository = createRepository("cs_test_expired");
     repository.prepareCheckout
       .mockResolvedValueOnce(preparedCheckout(orderId, "cs_test_expired"))
-      .mockResolvedValueOnce(preparedCheckout(replacementOrderId));
+      .mockResolvedValueOnce({ ...preparedCheckout(replacementOrderId), freshGuestAnalyticsKey });
     retrieveSession.mockResolvedValue(
       providerSession({
         expiresAt: new Date("2026-08-01T12:30:00.000Z"),
@@ -239,7 +241,7 @@ describe("CheckoutService", () => {
       repository
     });
 
-    const result = await service.startCheckout(context, contact, policyAssertion);
+    const result = await service.startCheckout(context, contact, policyAssertion, {});
 
     expect(repository.retireTerminalCheckout).toHaveBeenCalledWith(
       orderId,
@@ -251,6 +253,8 @@ describe("CheckoutService", () => {
       `cart-checkout:${replacementOrderId}`,
     );
     expect(result.orderId).toBe(replacementOrderId);
+    expect(result.freshGuestAnalyticsKey).toBe(freshGuestAnalyticsKey);
+    expect(JSON.stringify(createSession.mock.calls)).not.toContain(freshGuestAnalyticsKey);
   });
 
   it("does not replace a complete or paid provider session", async () => {
@@ -433,20 +437,27 @@ describe("CheckoutService", () => {
     );
   });
 
-  it("retries provider timeouts with the same idempotency identity", async () => {
-    const repository = createRepository();
-    createSession
-      .mockRejectedValueOnce(new Error("provider timeout"))
-      .mockResolvedValueOnce(providerSession());
-    const { service } = createService({ repository });
+  it.each([undefined, Buffer.alloc(32, 24).toString("base64url")])(
+    "retries provider timeouts without emitting a fresh key (request key %s)", async (existingKey) => {
+      const repository = createRepository();
+      repository.prepareCheckout
+        .mockResolvedValueOnce({ ...preparedCheckout(), freshGuestAnalyticsKey })
+        .mockResolvedValueOnce({ ...preparedCheckout(), reusedOrder: true });
+      createSession
+        .mockRejectedValueOnce(new Error("provider timeout"))
+        .mockResolvedValueOnce(providerSession());
+      const { observer, service } = createService({ repository });
 
-    await expect(service.startCheckout(context, contact, policyAssertion)).rejects.toMatchObject({
-      name: "CheckoutProviderError"
-    });
-    await expect(service.startCheckout(context, contact, policyAssertion)).resolves.toMatchObject({
-      orderId
-    });
-    expect(createSession.mock.calls[0][1]).toBe(`cart-checkout:${orderId}`);
-    expect(createSession.mock.calls[1][1]).toBe(`cart-checkout:${orderId}`);
-  });
+      await expect(service.startCheckout(context, contact, policyAssertion, {})).rejects.toMatchObject({
+        name: "CheckoutProviderError"
+      });
+      const result = await service.startCheckout(context, contact, policyAssertion, { existingKey });
+      expect(result.orderId).toBe(orderId);
+      expect(result).not.toHaveProperty("freshGuestAnalyticsKey");
+      expect(createSession.mock.calls[0][1]).toBe(`cart-checkout:${orderId}`);
+      expect(createSession.mock.calls[1][1]).toBe(`cart-checkout:${orderId}`);
+      expect(JSON.stringify(createSession.mock.calls)).not.toContain(freshGuestAnalyticsKey);
+      expect(JSON.stringify(vi.mocked(observer.info).mock.calls)).not.toContain(freshGuestAnalyticsKey);
+    },
+  );
 });

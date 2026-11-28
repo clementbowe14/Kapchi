@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { hashSessionId } from "../cart/guest-session.js";
 import {
@@ -19,6 +19,7 @@ import type {
   CatalogUnavailableDisposition,
   CheckoutCartOwner,
   CheckoutContact,
+  CheckoutGuestAnalytics,
   CheckoutLine,
   PolicyAssertion,
   CheckoutReviewIssue,
@@ -332,6 +333,7 @@ export class CheckoutRepository {
     owner: CheckoutCartOwner,
     contact: CheckoutContact,
     policyAssertion: PolicyAssertion,
+    guestAnalytics?: CheckoutGuestAnalytics,
   ): Promise<PreparedCheckout> {
     const prepared = await this.withTransaction(async (client) => {
       const cart = await this.lockCheckoutCart(client, owner);
@@ -414,6 +416,17 @@ export class CheckoutRepository {
       }
 
       const orderId = randomUUID();
+      const eligibleGuestAnalytics = !("authSubject" in owner) &&
+        cart.user_id === null && cart.authenticated_user_id === null && cart.customer_id === null
+        ? guestAnalytics
+        : undefined;
+      const freshGuestAnalyticsKey = eligibleGuestAnalytics && eligibleGuestAnalytics.existingKey === undefined
+        ? randomBytes(32).toString("base64url")
+        : undefined;
+      const guestAnalyticsKey = eligibleGuestAnalytics?.existingKey ?? freshGuestAnalyticsKey;
+      const guestAnalyticsDigest = guestAnalyticsKey
+        ? createHash("sha256").update(guestAnalyticsKey).digest("hex")
+        : null;
       await client.query(
         `
           insert into orders (
@@ -432,11 +445,12 @@ export class CheckoutRepository {
             preferred_contact_method,
             subtotal_cents,
             total_cents,
-            currency
+            currency,
+            guest_analytics_digest
           ) values (
             $1, $2, $3, $4, $5, $6, $7,
             'pending_payment', 'unpaid', 'not_started',
-            $8, $9, $10, $11, $11, $12
+            $8, $9, $10, $11, $11, $12, $13
           )
         `,
         [
@@ -451,7 +465,8 @@ export class CheckoutRepository {
           contact.customerPhone,
           contact.preferredContactMethod,
           subtotal,
-          cart.currency
+          cart.currency,
+          guestAnalyticsDigest
         ],
       );
 
@@ -586,6 +601,7 @@ export class CheckoutRepository {
         cartStatus: cart.status,
         customerEmail: contact.customerEmail,
         existingStripeSessionId: null,
+        ...(freshGuestAnalyticsKey ? { freshGuestAnalyticsKey } : {}),
         lines,
         orderId,
         policySnapshot,

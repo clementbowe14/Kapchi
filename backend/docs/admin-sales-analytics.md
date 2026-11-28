@@ -49,8 +49,10 @@ currency and UTC order-created range. Each resolved identity appears at most onc
 
 The order's authenticated account ID takes precedence. Otherwise, a persisted
 customer record linked to an account counts toward that account; an unlinked
-customer record counts separately as a guest/customer identity. The report does
-not link identities by email, phone, name, guest session, or provider data.
+customer record counts separately as a guest/customer identity. A guest order
+with no account or customer owner can fall back to a persisted browser digest.
+The report does not link identities by email, phone, name, guest cart session,
+or provider data, or merge browser history into an account.
 
 A resolved customer is returning if they have a qualifying earlier purchase in
 any currency, including before the previous comparison window. To count as
@@ -60,11 +62,15 @@ if `paid_at` is missing on a historical record. `paid_at` is when Kapchi recorde
 success, not necessarily when the provider captured payment. Old records, late
 confirmation, and later identity links can change historical counts.
 
-Ordinary unclaimed guest checkout has no durable customer ID. Its orders count
-as unidentified even with contact details. Unidentified orders are not counted
-as distinct people. The paid order total is identified orders plus unidentified
-orders; the new and returning counts are distinct identities, not order totals.
+An older guest order or a checkout without browser capture remains unidentified,
+even with contact details. Unidentified orders are not counted as distinct
+people. The paid order total is identified orders plus unidentified orders; the
+new and returning counts are distinct identities, not order totals. Browser
+identities are not unique people: a shared browser can combine people and a
+different browser, cookie expiry, or clearing cookies can split the same person.
 Only aggregate counts are returned. An empty paid cohort returns three zeros.
+See [guest attribution rollout](guest-analytics.md) for capture defaults and
+retention.
 
 ## Previous Period And Order Drill-Down
 
