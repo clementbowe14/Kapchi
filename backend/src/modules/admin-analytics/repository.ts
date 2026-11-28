@@ -351,7 +351,10 @@ const customerBreakdownSql = `
   with current_orders as (
     select
       coalesce(o.authenticated_user_id, c.user_id) as account_id,
-      case when o.authenticated_user_id is null and c.user_id is null then o.customer_id end as guest_id
+      case when o.authenticated_user_id is null and c.user_id is null then o.customer_id end as guest_id,
+      case when o.user_id is null and o.authenticated_user_id is null and o.customer_id is null
+        then o.guest_analytics_digest
+      end as browser_digest
     from orders o
     left join customers c on c.id = o.customer_id
     where o.created_at >= $1::timestamptz
@@ -359,33 +362,45 @@ const customerBreakdownSql = `
       and o.currency = $3
       and o.payment_status = any($4::payment_status[])
   ), identities as (
-    select account_id, guest_id, count(*) as order_count
+    select account_id, guest_id, browser_digest, count(*) as order_count
     from current_orders
-    group by account_id, guest_id
+    group by account_id, guest_id, browser_digest
   ), classified as materialized (
     -- Evaluate the history probes once per identity, not once per aggregate filter.
     select
       i.order_count,
-      case when i.account_id is not null or i.guest_id is not null then
-        (
-          i.account_id is not null and exists (
-            select 1
-            from orders prior
-            where prior.authenticated_user_id = i.account_id
-              and prior.created_at < $1::timestamptz
-              and prior.payment_status = any($4::payment_status[])
-              -- PostgreSQL greatest ignores null paid_at, leaving created_at as the fallback.
-              and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
-          )
-        ) or exists (
+      case
+        when i.browser_digest is not null then exists (
           select 1
           from orders prior
-          where prior.customer_id = coalesce(linked.id, i.guest_id)
-            and prior.authenticated_user_id is null
+          where prior.guest_analytics_digest = i.browser_digest
             and prior.created_at < $1::timestamptz
+            and prior.user_id is null
+            and prior.authenticated_user_id is null
+            and prior.customer_id is null
             and prior.payment_status = any($4::payment_status[])
             and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
         )
+        when i.account_id is not null or i.guest_id is not null then
+          (
+            i.account_id is not null and exists (
+              select 1
+              from orders prior
+              where prior.authenticated_user_id = i.account_id
+                and prior.created_at < $1::timestamptz
+                and prior.payment_status = any($4::payment_status[])
+                -- PostgreSQL greatest ignores null paid_at, leaving created_at as the fallback.
+                and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
+            )
+          ) or exists (
+            select 1
+            from orders prior
+            where prior.customer_id = coalesce(linked.id, i.guest_id)
+              and prior.authenticated_user_id is null
+              and prior.created_at < $1::timestamptz
+              and prior.payment_status = any($4::payment_status[])
+              and greatest(prior.created_at, prior.paid_at) < $1::timestamptz
+          )
       end as is_returning
     from identities i
     left join customers linked on linked.user_id = i.account_id

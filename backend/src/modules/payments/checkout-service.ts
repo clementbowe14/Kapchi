@@ -18,8 +18,9 @@ import type {
   CatalogUnavailableDisposition,
   CheckoutContact,
   CheckoutCartOwner,
+  CheckoutGuestAnalytics,
   PolicyAssertion,
-  CheckoutResult,
+  CheckoutStartResult,
   CheckoutStatus,
   PreparedCheckout
 } from "./checkout-types.js";
@@ -43,6 +44,7 @@ export interface CheckoutRepositoryPort {
     context: CheckoutCartOwner,
     contact: CheckoutContact,
     policyAssertion: PolicyAssertion,
+    guestAnalytics?: CheckoutGuestAnalytics,
   ): Promise<PreparedCheckout>;
   retireTerminalCheckout(
     orderId: string,
@@ -130,8 +132,9 @@ export class CheckoutService {
     context: CheckoutCartOwner,
     contact: CheckoutContact,
     policyAssertion: PolicyAssertion,
-  ): Promise<CheckoutResult> {
-    let prepared = await this.prepareCheckout(context, contact, policyAssertion);
+    guestAnalytics?: CheckoutGuestAnalytics,
+  ): Promise<CheckoutStartResult> {
+    let prepared = await this.prepareCheckout(context, contact, policyAssertion, guestAnalytics);
     let session = await this.requestProviderSession(prepared);
     let disposition = sessionDisposition(session, this.clock.now());
 
@@ -166,7 +169,7 @@ export class CheckoutService {
         throw new CheckoutProviderError();
       }
 
-      prepared = await this.prepareCheckout(context, contact, policyAssertion);
+      prepared = await this.prepareCheckout(context, contact, policyAssertion, guestAnalytics);
       session = await this.requestProviderSession(prepared);
       disposition = sessionDisposition(session, this.clock.now());
 
@@ -200,7 +203,10 @@ export class CheckoutService {
       orderId: prepared.orderId,
       paymentStatus: "checkout_started",
       publicOrderNumber: prepared.publicOrderNumber,
-      url: session.url!
+      url: session.url!,
+      ...(!prepared.reusedOrder && prepared.freshGuestAnalyticsKey
+        ? { freshGuestAnalyticsKey: prepared.freshGuestAnalyticsKey }
+        : {})
     };
   }
 
@@ -208,6 +214,7 @@ export class CheckoutService {
     context: CheckoutCartOwner,
     contact: CheckoutContact,
     policyAssertion: PolicyAssertion,
+    guestAnalytics?: CheckoutGuestAnalytics,
   ) {
     this.observe("info", "checkout.preparation.started");
 
@@ -216,6 +223,7 @@ export class CheckoutService {
         context,
         contact,
         policyAssertion,
+        guestAnalytics,
       );
       this.observe("info", "checkout.preparation.succeeded", {
         cartId: prepared.cartId,

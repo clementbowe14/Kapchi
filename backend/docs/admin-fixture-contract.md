@@ -29,7 +29,8 @@ Failed and pending refund operations do not reduce net sales.
 
 The ten paid orders represent five distinct resolved identities. The guest
 records in this fixture are explicitly seeded with customer IDs. Ordinary
-unclaimed guest checkout has no such ID and is reported as unidentified.
+unclaimed guest checkout has no such ID and is reported as unidentified unless
+the optional browser capture recorded a digest on the order.
 
 ## Orders
 
@@ -98,5 +99,5 @@ the fixture never claims a Blob object exists.
 - Promotions remain unimplemented under issue #102; no promotion rows exist.
 - Policy checkout evidence is absent while the policy bundle is draft; fixture
   orders have no Stripe Checkout Session IDs.
-- Ordinary unclaimed guest orders do not have a durable customer identity.
+- Browser attribution is off by default and is not a verified customer identity.
 - There is no production `/admin/demo` route.

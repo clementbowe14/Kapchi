@@ -53,6 +53,24 @@ for (const [key, value] of Object.entries({
 const { validateEnvironment } = await import("./env.js");
 
 describe("checkout redirect environment", () => {
+  it("keeps guest analytics off by default and validates the optional backend secret in bytes", () => {
+    expect(validateEnvironment(requiredEnvironment).GUEST_ANALYTICS_COOKIE_SECRET).toBeUndefined();
+    expect(validateEnvironment(productionEnvironment).GUEST_ANALYTICS_COOKIE_SECRET).toBeUndefined();
+    const secret = "\u00e9".repeat(16);
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      GUEST_ANALYTICS_COOKIE_SECRET: secret
+    }).GUEST_ANALYTICS_COOKIE_SECRET).toBe(secret);
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      GUEST_ANALYTICS_COOKIE_SECRET: "short-private-value"
+    })).toThrow(/GUEST_ANALYTICS_COOKIE_SECRET.*32 bytes/);
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      GUEST_ANALYTICS_COOKIE_SECRET: "short-private-value"
+    })).not.toThrow(/short-private-value/);
+  });
+
   it("keeps private asset provider credentials optional", () => {
     const environment = validateEnvironment({
       ...requiredEnvironment,

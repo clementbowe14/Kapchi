@@ -39,14 +39,20 @@ import {
   type Clock
 } from "./checkout-service.js";
 import {
+  guestAnalyticsCookieSettings,
+  readGuestAnalyticsCookie,
+  signGuestAnalyticsCookie
+} from "./guest-analytics-cookie.js";
+import {
   handleCheckoutSessionCompleted,
   handlePaymentIntentSucceeded
 } from "./success-state.js";
 import type {
   CheckoutCartOwner,
   CheckoutContact,
+  CheckoutGuestAnalytics,
   CheckoutRequest,
-  CheckoutResult
+  CheckoutStartResult
 } from "./checkout-types.js";
 import { createStripeClient } from "./stripe-client.js";
 import {
@@ -172,6 +178,7 @@ function parseJsonBody(body: unknown) {
 export type PaymentsRuntimeConfig = {
   checkout: {
     cancelUrl: string;
+    guestAnalyticsCookieSecret?: string;
     successUrl: string;
   };
   stripe: {
@@ -184,7 +191,8 @@ export interface CheckoutStarter {
     context: CheckoutCartOwner,
     contact: CheckoutContact,
     policyAssertion: CheckoutRequest["policyAssertion"],
-  ): Promise<CheckoutResult>;
+    guestAnalytics?: CheckoutGuestAnalytics,
+  ): Promise<CheckoutStartResult>;
 }
 
 function observeSafely(
@@ -291,6 +299,8 @@ export function createPaymentsPlugin(
 ) {
   const plugin: FastifyPluginAsync = async (fastify) => {
     const paymentConfig = dependencies.paymentConfig ?? config.payments;
+    const { cancelUrl, guestAnalyticsCookieSecret, successUrl } = paymentConfig.checkout;
+    const clock = dependencies.clock ?? systemClock;
     const stripe = dependencies.stripeClientFactory?.() ?? createStripeClient();
     const webhookInbox =
       dependencies.webhookInboxFactory?.(fastify.pg) ??
@@ -315,10 +325,10 @@ export function createPaymentsPlugin(
 
     const serviceFor = (logger: FastifyBaseLogger) =>
       checkoutServiceFactory({
-        clock: dependencies.clock ?? systemClock,
+        clock,
         observer: observerFactory(logger),
         provider,
-        redirects: paymentConfig.checkout,
+        redirects: { cancelUrl, successUrl },
         repository
       });
 
@@ -399,16 +409,43 @@ export function createPaymentsPlugin(
           });
         }
 
+        const guest = !("authSubject" in owner);
+        const optedOut = guest && request.headers["sec-gpc"] === "1";
+        const cookie = guestAnalyticsCookieSettings(
+          config.app.nodeEnv === "production" || request.protocol === "https",
+        );
+        if (optedOut && Object.hasOwn(request.cookies, cookie.name)) {
+          reply.clearCookie(cookie.name, cookie.options);
+        }
+        const guestAnalytics = guest && guestAnalyticsCookieSecret && !optedOut
+          ? {
+            existingKey: readGuestAnalyticsCookie(
+              request.cookies[cookie.name], guestAnalyticsCookieSecret, clock.now(),
+            )
+          }
+          : undefined;
+
         try {
-          const result = await serviceFor(request.log).startCheckout(
-            owner,
-            {
-              customerEmail: checkoutRequest.customerEmail,
-              customerPhone: checkoutRequest.customerPhone,
-              preferredContactMethod: checkoutRequest.preferredContactMethod
-            },
-            checkoutRequest.policyAssertion,
-          );
+          const { freshGuestAnalyticsKey, ...result } =
+            await serviceFor(request.log).startCheckout(
+              owner,
+              {
+                customerEmail: checkoutRequest.customerEmail,
+                customerPhone: checkoutRequest.customerPhone,
+                preferredContactMethod: checkoutRequest.preferredContactMethod
+              },
+              checkoutRequest.policyAssertion,
+              guestAnalytics,
+            );
+          if (
+            guestAnalytics && !guestAnalytics.existingKey && guestAnalyticsCookieSecret && freshGuestAnalyticsKey
+          ) {
+            reply.setCookie(
+              cookie.name,
+              signGuestAnalyticsCookie(freshGuestAnalyticsKey, guestAnalyticsCookieSecret, clock.now()),
+              { ...cookie.options, maxAge: cookie.maxAge },
+            );
+          }
           return reply.code(201).send(result);
         } catch (checkoutError) {
           if (checkoutError instanceof CheckoutPolicyAssertionRequiredError) {
